@@ -1,6 +1,6 @@
 {
   "name": "pi-essentials",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
   "type": "module",
   "scripts": {
