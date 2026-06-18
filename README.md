@@ -8,7 +8,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 |---|---|---|
 | `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML → Markdown (main-content extraction, stripped boilerplate). Binary content saved untouched to a temp file. **Context-safe:** output over 32 KB or 1000 lines is written to a temp file with a preview + file path. Prevents a single fetch from flooding the context window. |
 | `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`, fetched on first use); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice (`soffice`) to PDF first. Same 32 KB / 1000-line size gate as `fetch`. |
-| `session-name.ts` | `/session-name` | Name work sessions. Manual `/session-name [name]` always works. **OFF by default:** when opted in via `settings.json`, after the first agent turn it asks the current model for a concise session name + short tab label and applies them, and renames the **Ghostty** tab via OSC 2 (only when the active terminal is really Ghostty). |
+| `session-name.ts` | `/session-name` | Name work sessions. Manual `/session-name [name]` always works. **OFF by default:** when opted in via `settings.json`, after the first agent turn it asks the current model for a concise session name + short tab label and applies them, and renames the **Ghostty** tab via OSC 2 (only when the active terminal is really Ghostty), re-asserting it each turn so the tab tracks the session name. |
 | `sword-header.ts` | `/builtin-header` | Replace the TUI startup logo with a theme-colored ASCII greatsword (hilt = accent, blade = text). **OFF by default:** only installs the header when opted in via `settings.json`. `/builtin-header` restores the built-in header at runtime. |
 
 ### fetch — content routing & context hygiene
@@ -80,8 +80,9 @@ Names work sessions so the session selector (and optionally the Ghostty tab) sho
 
 - **Manual `/session-name [name]`** - set the session name, or, with no argument, print the current one. Always available, regardless of config. A manual name wins: it suppresses later auto-naming for the session.
 - **Automatic naming (opt-in).** After the first agent turn completes, if no name is set yet, the extension asks the **current model** for a 3-6 word session title plus a 1-4 word tab label and applies both. It only runs once per session and never overwrites an existing name.
-- **Resume reflection (opt-in).** When a session that already carries a name is loaded/resumed, its tab label is re-applied so the Ghostty tab matches.
-- **Ghostty tab rename.** The short label is written via OSC 2 (`ESC ] 2 ; <label> BEL`) **only when the active terminal is really Ghostty** (`TERM_PROGRAM=ghostty`, `TERM=xterm-ghostty`, or a `GHOSTTY_*` dir env) **and** stdout is a TTY. Other terminals are never touched.
+- **Resume reflection (opt-in).** When a session that already carries a name is loaded/resumed/reloaded, its tab label is re-applied so the Ghostty tab matches.
+- **Per-turn re-assert (opt-in).** The tab is re-pinned to the session name at the start of every turn. Pi owns the OS terminal title (OSC 0, `pi - <name> - <cwd>`) and overwrites it on every name change and session switch; the re-assert is the only hook that fires *after* pi's writer on a session swap, so the Ghostty tab and the session name stay in sync instead of drifting. It self-heals: if the name was changed outside this extension, the tab label is re-derived from the new name.
+- **Ghostty tab rename.** The short label is written via OSC 2 (`ESC ] 2 ; <label> BEL`) **only when the active terminal is really Ghostty** (`TERM_PROGRAM=ghostty`, `TERM=xterm-ghostty`, or a `GHOSTTY_*` dir env) **and** stdout is a TTY. Other terminals are never touched. Auto-naming keeps its curated short label; re-derived labels (resume/external rename) are the first words of the session name.
 
 **OFF by default.** All automatic behavior (auto-naming + resume reflection) is inert until explicitly enabled. The manual command is unaffected.
 

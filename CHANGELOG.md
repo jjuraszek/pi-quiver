@@ -7,6 +7,10 @@ This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentia
 The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
 automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
 
+## v2.0.1 — 2026-06-18
+
+- **`session-name`: keep the Ghostty tab in sync with the session name.** Pi owns the OS terminal title (OSC 0, `pi - <name> - <cwd>`) and rewrites it on every name change and session switch, clobbering our short OSC-2 tab label. The extension now re-asserts the tab label at the start of every turn (`turn_start`) — the only hook that fires after pi's writer on a session swap — so the tab and the session name move together. Self-heals when the name is changed outside the extension (re-derives the label from the new name) and reflects names on reload as well as resume. No behavior when OFF (default).
+
 ## v2.0.0 — 2026-06-16
 
 - **New `session-name` extension.** Names work sessions; **OFF by default**.

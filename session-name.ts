@@ -117,12 +117,6 @@ function renameGhosttyTab(label: string, enabled: boolean): void {
 	if (clean) process.stdout.write(`\u001b]2;${clean}\u0007`);
 }
 
-/** Set the (longer) session name and replace the Ghostty tab with a short label. */
-function applyName(pi: ExtensionAPI, name: string, cfg: Config, tabLabel?: string): void {
-	pi.setSessionName(name);
-	renameGhosttyTab(tabLabel ?? toTabLabel(name), cfg.ghosttyTab);
-}
-
 type GeneratedName = { sessionName: string; tabLabel: string };
 
 /**
@@ -190,6 +184,38 @@ async function generateName(ctx: ExtensionContext): Promise<GeneratedName | unde
 
 export default function (pi: ExtensionAPI) {
 	let autoNameTried = false;
+	// The session name is the single source of truth; the tab label is derived
+	// from it. We remember the name we last reflected and the (possibly curated)
+	// label we wrote so turn_start can re-assert it - pi writes its own OS title
+	// (OSC 0: `pi - <name> - <cwd>`) on every name change and session
+	// replacement, and that writer runs after our session_start handler. A
+	// per-turn re-assert wins the race and keeps the tab in sync with the name.
+	let lastSyncedName: string | null = null;
+	let currentTabLabel: string | null = null;
+
+	// Adopt a name we set ourselves, keeping any curated tab label (auto-naming
+	// produces a separate TAB line that need not match the first words of the
+	// session name), then write the tab.
+	const setName = (cfg: Config, name: string, tabLabel?: string): void => {
+		pi.setSessionName(name);
+		lastSyncedName = name;
+		currentTabLabel = toTabLabel(tabLabel ?? name);
+		renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
+	};
+
+	// Re-assert the tab from the current session name. Self-heals when the name
+	// changed outside setName (builtin/manual rename we didn't author): the
+	// curated label no longer applies, so re-derive from the name.
+	const syncTab = (cfg: Config): void => {
+		if (!cfg.enabled || !cfg.ghosttyTab) return;
+		const name = pi.getSessionName();
+		if (!name) return;
+		if (name !== lastSyncedName) {
+			lastSyncedName = name;
+			currentTabLabel = toTabLabel(name);
+		}
+		if (currentTabLabel) renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
+	};
 
 	pi.registerCommand("session-name", {
 		description: "Set or show session name (usage: /session-name [new name])",
@@ -197,7 +223,7 @@ export default function (pi: ExtensionAPI) {
 			const name = args.trim();
 			if (name) {
 				autoNameTried = true; // manual name wins; don't auto-overwrite later
-				applyName(pi, name, loadConfig(ctx));
+				setName(loadConfig(ctx), name);
 				ctx.ui.notify(`Session named: ${name}`, "info");
 			} else {
 				const current = pi.getSessionName();
@@ -209,12 +235,28 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		const cfg = loadConfig(ctx);
 		if (!cfg.enabled) return; // off by default; opt in via settings.json
-		// A loaded/resumed session may already carry a name; reflect it on the tab.
 		const current = pi.getSessionName();
 		if (current) {
+			// A loaded/resumed/reloaded session already carries a name; reflect it.
+			// The curated tab label is not persisted, so derive from the name.
 			autoNameTried = true;
-			renameGhosttyTab(toTabLabel(current), cfg.ghosttyTab);
+			lastSyncedName = current;
+			currentTabLabel = toTabLabel(current);
+			renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
+		} else {
+			// Fresh session: clear carryover so a new name re-derives cleanly and
+			// auto-naming can run again.
+			autoNameTried = false;
+			lastSyncedName = null;
+			currentTabLabel = null;
 		}
+	});
+
+	// Re-assert at the start of every turn. This is the only signal we get that
+	// fires after pi's own OS-title writer on session replacement, so it keeps
+	// the tab pinned to the session name and picks up external renames.
+	pi.on("turn_start", async (_event, ctx) => {
+		syncTab(loadConfig(ctx));
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -225,7 +267,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const generated = await generateName(ctx);
 			if (generated && !pi.getSessionName()) {
-				applyName(pi, generated.sessionName, cfg, generated.tabLabel);
+				setName(cfg, generated.sessionName, generated.tabLabel);
 				if (ctx.hasUI) ctx.ui.notify(`Auto-named session: ${generated.sessionName}`, "info");
 			}
 		} catch {
