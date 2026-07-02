@@ -1,5 +1,5 @@
 /**
- * Shared settings-resolution for pi-essentials extensions that read opt-in
+ * Shared settings-resolution for pi-quiver extensions that read opt-in
  * config from pi's `settings.json`.
  *
  * Layers, lowest precedence first:

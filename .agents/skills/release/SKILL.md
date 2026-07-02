@@ -1,6 +1,6 @@
 ---
 name: release
-description: Use when asked to release, publish, bump the version, or cut a tag for jjuraszek/pi-essentials.
+description: Use when asked to release, publish, bump the version, or cut a tag for jjuraszek/pi-quiver.
 ---
 
 # Release
@@ -9,9 +9,9 @@ Use this skill when asked to release this package.
 
 ## Overview
 
-`pi-essentials` publishes to **npm** (public, unscoped); the `pi-package`
-keyword lists it on `https://pi.dev/packages/pi-essentials`. Users install with
-`pi install npm:pi-essentials`.
+`pi-quiver` publishes to **npm** (public, unscoped); the `pi-package`
+keyword lists it on `https://pi.dev/packages/pi-quiver`. Users install with
+`pi install npm:pi-quiver`.
 
 The release is **tag-driven and CI-executed**: pushing a `vX.Y.Z` tag triggers
 `.github/workflows/release.yml`, which gates on `tag == package.json`, runs
@@ -87,7 +87,7 @@ bash .agents/skills/release/scripts/release.sh verify 3.0.0
 ```
 
 It watches the release workflow to a terminal state (`gh` if present), polls
-`npm view pi-essentials@X.Y.Z version` until live, then checks the pi.dev
+`npm view pi-quiver@X.Y.Z version` until live, then checks the pi.dev
 catalog. Only claim success once `npm view` prints the new version. pi.dev lags
 npm by minutes to hours - report crawl lag, do not loop on it.
 
@@ -101,9 +101,10 @@ bash .agents/skills/release/scripts/release.sh sync-presets --apply    # rewrite
 ```
 
 Scans `settings.json` under `~/.pi` and this repo's parent tree. Same-form npm
-pins (`npm:pi-essentials@<old>`) are bumped by `--apply`; **git-tag pins**
-(`git:github.com/jjuraszek/pi-essentials@<ref>`, the pre-npm distribution form)
-are reported for manual migration to `npm:pi-essentials@<version>`, never
+pins (`npm:pi-quiver@<old>`) are bumped by `--apply`; **git-tag pins**
+(`git:github.com/jjuraszek/pi-quiver@<ref>`, the pre-npm distribution form) and
+stale `pi-essentials` pins (the former package name, npm or git form) are
+reported for manual migration to `npm:pi-quiver@<version>`, never
 auto-rewritten.
 
 ## Safety checks
@@ -119,14 +120,14 @@ Refuse to proceed unless ALL hold; report which failed, do not silently fix:
 
 - about to run `npm publish` locally - push the tag, let CI publish
 - picked the bump level without user confirmation
-- reported success without `npm view pi-essentials@X.Y.Z` printing the version
+- reported success without `npm view pi-quiver@X.Y.Z` printing the version
 - retrying the pi.dev fetch "until it appears" - that's crawl lag, not failure
 - editing a `~/.pi/**/settings.json` without its own explicit approval
 - `package.json` version and the tag are not the identical `X.Y.Z` string
 
 ## First-time npm setup (one-off, not per release)
 
-`pi-essentials` must be registered once as a **trusted publisher** on npmjs.com:
+`pi-quiver` must be registered once as a **trusted publisher** on npmjs.com:
 Settings -> Trusted Publishing -> GitHub Actions publisher for repo
-`jjuraszek/pi-essentials`, workflow `release.yml`. Until it exists the publish
+`jjuraszek/pi-quiver`, workflow `release.yml`. Until it exists the publish
 step cannot authenticate (403).

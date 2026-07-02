@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a pi-essentials release (major/minor/patch) - bump version, tag, push; tag-triggered CI publishes to npm.
+description: Cut a pi-quiver release (major/minor/patch) - bump version, tag, push; tag-triggered CI publishes to npm.
 ---
 
 Run a release of this package using the `release` skill at

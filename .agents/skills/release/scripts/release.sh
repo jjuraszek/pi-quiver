@@ -14,9 +14,9 @@ set -euo pipefail
 # ============================================================================
 
 # ---- CONFIG (per-repo; the ONLY block that differs between pi-* repos) ------
-PACKAGE_NAME="pi-essentials"
-REPO_SLUG="jjuraszek/pi-essentials"
-FORMER_PACKAGE_NAME=""   # never renamed; empty disables the stale-name checks
+PACKAGE_NAME="pi-quiver"
+REPO_SLUG="jjuraszek/pi-quiver"
+FORMER_PACKAGE_NAME="pi-essentials"   # renamed pi-essentials -> pi-quiver at v3.0.0; flags stale pins
 # PI_CODING_AGENT_DIR is cleared: it is set in a real pi harness shell and makes
 # getAgentDir()-based config discovery tests read real settings (see AGENTS.md).
 TEST_CMD="env -u PI_CODING_AGENT_DIR npm run test:all"

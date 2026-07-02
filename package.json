@@ -1,17 +1,17 @@
 {
-  "name": "pi-essentials",
-  "version": "2.0.2",
+  "name": "pi-quiver",
+  "version": "3.0.0",
   "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
   "author": "Jacek Juraszek",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jjuraszek/pi-essentials.git"
+    "url": "git+https://github.com/jjuraszek/pi-quiver.git"
   },
-  "homepage": "https://github.com/jjuraszek/pi-essentials#readme",
+  "homepage": "https://github.com/jjuraszek/pi-quiver#readme",
   "bugs": {
-    "url": "https://github.com/jjuraszek/pi-essentials/issues"
+    "url": "https://github.com/jjuraszek/pi-quiver/issues"
   },
   "keywords": [
     "pi-package",

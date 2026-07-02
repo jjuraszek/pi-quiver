@@ -1,6 +1,6 @@
-# pi-essentials
+# pi-quiver
 
-Personal pack of Pi coding-agent extensions, published to npm as `pi-essentials` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), and `sword-header` (themed ASCII startup header, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
+Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), and `sword-header` (themed ASCII startup header, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
 
 ## Communication Style
 
@@ -60,11 +60,11 @@ prompts/release.md                        # /release prompt template
 - **Publishability:** `package.json` `files` is an allowlist. The bundled runtime deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`, `unpdf`) stay in `dependencies` so they ship in the tarball; the `@earendil-works/*` + `@sinclair/typebox` peers are provided by the host pi runtime. `scripts/pdf_to_md.py` is in `files` because `doc_to_md.ts` loads it at runtime via `import.meta.url`. Check the tarball with `npm pack --dry-run`.
 - **`doc_to_md` engines.** `scripts/pdf_to_md.py` is the Python conversion entry point, invoked via `uv run --with pymupdf4llm==<pin> --python 3.14` (not under `tsc`/`node --test`; verify by direct uv invocation). DOCX/PPTX route through `soffice` to PDF first. `uv` and `soffice` are optional runtime system binaries; absence degrades to the `unpdf` fallback (PDF) or hard-errors (office).
 - **Releases use the `release` skill.** See [Release model](#release-model). Tag-triggered and CI-executed; the script bumps + tags + pushes, CI publishes to npm. Never `npm publish` by hand.
-- **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-essentials -p "..."` against the published package).
+- **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-quiver -p "..."` against the published package).
 
 ## Release model
 
-Published to **npm** as `pi-essentials`; installed with `pi install npm:pi-essentials`.
+Published to **npm** as `pi-quiver`; installed with `pi install npm:pi-quiver`.
 The `pi-package` keyword lists it on the pi.dev packages gallery automatically.
 Plain semver.
 
@@ -83,8 +83,9 @@ Release is **tag-triggered and CI-executed**:
 The release machinery (`release.sh`, `test.yml`, `release.yml`) is kept
 near-identical to the sibling pi-* repos; `release.sh` differs only in its
 CONFIG header (package name, repo slug, former name, test command).
-`pi-essentials` was never renamed, so `FORMER_PACKAGE_NAME` is empty and the
-stale-name checks are disabled.
+`pi-quiver` was renamed from `pi-essentials` at v3.0.0, so
+`FORMER_PACKAGE_NAME="pi-essentials"`; `sync-presets` flags stale
+`pi-essentials` pins (npm or git form) for manual migration.
 
 ### Tag scheme
 
@@ -94,6 +95,6 @@ tag without the leading `v`.
 ### One-off npm setup
 
 OIDC trusted publishing must be registered once on npmjs.com for the
-`pi-essentials` package (Settings -> Trusted Publishing -> GitHub Actions
-publisher for repo `jjuraszek/pi-essentials`, workflow `release.yml`). Until it
+`pi-quiver` package (Settings -> Trusted Publishing -> GitHub Actions
+publisher for repo `jjuraszek/pi-quiver`, workflow `release.yml`). Until it
 exists, the publish step cannot authenticate (403).

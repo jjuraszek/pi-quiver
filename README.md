@@ -1,4 +1,4 @@
-# pi-essentials
+# pi-quiver
 
 A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extensions I keep across every pi profile. First-party-quality tools, published to npm like sibling packages ([`pi-cohort`](https://github.com/jjuraszek/pi-cohort), [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers)).
 
@@ -70,7 +70,7 @@ Python is pinned to **3.14** and is not configurable.
 
 **Runtime dependencies:** `unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
 
-**Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-essentials' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
+**Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-quiver' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
 
 ### session-name — manual + opt-in automatic session naming
 
@@ -128,31 +128,31 @@ Replaces pi's built-in startup logo with a hero's greatsword (Michael J. Penick 
 
 ## Install
 
-Published to npm as the unscoped `pi-essentials` package.
+Published to npm as the unscoped `pi-quiver` package.
 
 **User scope** (all repos under your pi profile):
 
 ```bash
-pi install npm:pi-essentials
+pi install npm:pi-quiver
 ```
 
 **Project scope** (current repo only, committable via `.pi/settings.json`):
 
 ```bash
-pi install -l npm:pi-essentials
+pi install -l npm:pi-quiver
 ```
 
 **Try without installing**:
 
 ```bash
-pi -e npm:pi-essentials
+pi -e npm:pi-quiver
 ```
 
 **From a local checkout** (for hacking on the extensions):
 
 ```bash
-git clone git@github.com:jjuraszek/pi-essentials.git ~/repos/pi-essentials
-pi -e ~/repos/pi-essentials/fetch.ts
+git clone git@github.com:jjuraszek/pi-quiver.git ~/repos/pi-quiver
+pi -e ~/repos/pi-quiver/fetch.ts
 ```
 
 ## Development
@@ -187,4 +187,4 @@ bash .agents/skills/release/scripts/release.sh --dry-run patch
 It bumps `package.json`, commits `Release <version>`, runs the tests, creates
 and pushes the `vX.Y.Z` tag, then monitors the publish. See
 `.agents/skills/release/SKILL.md` for the full flow (`sync-presets` migrates
-old git-tag pins to `npm:pi-essentials@<version>`).
+old git-tag pins to `npm:pi-quiver@<version>`).

@@ -3,18 +3,20 @@
 Format follows sibling pi packages (e.g. [`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-Published to npm as `pi-essentials` (`pi install npm:pi-essentials`). Pushing a
+Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which publishes to npm
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
 ## v3.0.0 - 2026-07-02
 
-- **Distribution moved from git-tag pins to npm.** Installed with `pi install
-  npm:pi-essentials` instead of `git:github.com/jjuraszek/pi-essentials@<tag>`.
-  This is a breaking change to the install mechanism only; extension behavior is
+- **Distribution moved from git-tag pins to npm, and the package renamed
+  `pi-essentials` -> `pi-quiver`.** Installed with `pi install npm:pi-quiver`
+  instead of `git:github.com/jjuraszek/pi-essentials@<tag>`. This is a breaking
+  change to the install mechanism and package name only; extension behavior is
   unchanged. Existing git-tag-pin consumers migrate their `settings.json` entry
-  to `npm:pi-essentials@<version>` (reported by `release.sh sync-presets`).
+  to `npm:pi-quiver@<version>` (stale `pi-essentials` pins are flagged by
+  `release.sh sync-presets`).
 - **Tag-triggered CI publish.** New `.github/workflows/release.yml` publishes
   `npm publish --provenance --access public` via OIDC trusted publishing when a
   `v[0-9]+.[0-9]+.[0-9]+` tag is pushed, gated on `tag == package.json` and
@@ -66,7 +68,7 @@ via OIDC trusted publishing. The release helper at
   - **DOCX/PPTX** convert to PDF via headless LibreOffice (`soffice`, isolated per-call profile) then through the same PDF pipeline; missing `soffice` errors office inputs only. Spreadsheets/other formats out of scope.
   - **Size-gated** like `fetch` (≤ 32 KB and ≤ 1000 lines inline, else spill to `${TMPDIR}/pi-doc-to-md/` with a preview).
   - **Config via env vars:** `PI_DOC_TO_MD_PYMUPDF_VERSION` (default `1.27.2.3`), `PI_DOC_TO_MD_WARM_TIMEOUT_MS` (120000), `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` (60000), `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` (120000).
-  - **AGPL note:** PyMuPDF/pymupdf4llm are AGPL-3.0; no code is shipped (uv fetches the wheel at runtime) and it runs as a separate subprocess, keeping pi-essentials MIT.
+  - **AGPL note:** PyMuPDF/pymupdf4llm are AGPL-3.0; no code is shipped (uv fetches the wheel at runtime) and it runs as a separate subprocess, keeping pi-quiver MIT.
 - **`fetch`:** map OOXML content types (`...wordprocessingml.document`, `...presentationml.presentation`) to `.docx`/`.pptx` so fetched office docs are saved with the correct extension for the `fetch` → `doc_to_md` chain.
 - **New runtime dependency:** `unpdf`. Optional system binaries `uv` and `soffice` are detected at runtime.
 
