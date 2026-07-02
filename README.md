@@ -42,7 +42,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 
 **Truncation:** Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary over 50 MB notes `(truncated to 50MB)`.
 
-**Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. Shipped in the npm package and installed automatically on `pi install` — no manual setup needed.
+**Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. Shipped in the npm package and installed automatically on `pi install` - no manual setup needed.
 
 ### doc_to_md — local document → Markdown
 

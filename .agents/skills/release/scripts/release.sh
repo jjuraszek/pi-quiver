@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================================
 # Release helper - shared skeleton across the jjuraszek pi-* repos.
 # Only the CONFIG block below differs between repos; keep the rest byte-identical
-# so the copies stay diffable. See AGENTS.md "Release model".
+# so the two copies stay diffable. See AGENTS.md "Release model".
 #
 # Tag scheme: v<major>.<minor>.<patch>. package.json version mirrors the tag
 # without the leading "v". This script assigns the version and pushes the tag;
