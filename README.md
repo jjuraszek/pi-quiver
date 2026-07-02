@@ -1,6 +1,6 @@
 # pi-essentials
 
-A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extensions I keep across every pi profile. First-party-quality tools, versioned and tag-pinned like sibling packages ([`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune), [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers)).
+A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extensions I keep across every pi profile. First-party-quality tools, published to npm like sibling packages ([`pi-cohort`](https://github.com/jjuraszek/pi-cohort), [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers)).
 
 ## Extensions
 
@@ -42,7 +42,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 
 **Truncation:** Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary over 50 MB notes `(truncated to 50MB)`.
 
-**Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. When consumed via a git tag pin, pi installs these automatically — no manual setup needed.
+**Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. Shipped in the npm package and installed automatically on `pi install` — no manual setup needed.
 
 ### doc_to_md — local document → Markdown
 
@@ -68,7 +68,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 
 Python is pinned to **3.14** and is not configurable.
 
-**Runtime dependencies:** `unpdf` (npm, installed automatically via the git tag pin). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
+**Runtime dependencies:** `unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
 
 **Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-essentials' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
 
@@ -86,7 +86,7 @@ Names work sessions so the session selector (and optionally the Ghostty tab) sho
 
 **OFF by default.** All automatic behavior (auto-naming + resume reflection) is inert until explicitly enabled. The manual command is unaffected.
 
-**Configuration** (`settings.json`, **project `.pi/settings.json` overrides the global agent-dir `settings.json`**). The global path is resolved via pi's own `getAgentDir()` (honours `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), so it stays correct when this package is installed via a git tag pin.
+**Configuration** (`settings.json`, **project `.pi/settings.json` overrides the global agent-dir `settings.json`**). The global path is resolved via pi's own `getAgentDir()` (honours `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), so it stays correct however this package is installed.
 
 ```jsonc
 {
@@ -104,7 +104,7 @@ Boolean shorthand: `"sessionAutoName": true` enables everything (equivalent to `
 
 **Cost note:** when enabled, automatic naming makes **one extra short LLM call** per session (low reasoning effort, current model, a few-thousand-char conversation digest), once, after the first turn. When OFF (the default) it makes **no** model calls and writes **nothing** to the terminal.
 
-**Runtime dependency:** `@earendil-works/pi-ai` (the unified LLM API bundled with the pi runtime; installed automatically via the git tag pin).
+**Runtime dependency:** `@earendil-works/pi-ai` (the unified LLM API provided by the pi runtime; a peer dependency, no separate install).
 
 ### sword-header — themed ASCII startup header
 
@@ -128,24 +128,24 @@ Replaces pi's built-in startup logo with a hero's greatsword (Michael J. Penick 
 
 ## Install
 
-Consumed as a pi package via a **git tag pin** — same scheme as sibling [`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune).
+Published to npm as the unscoped `pi-essentials` package.
 
 **User scope** (all repos under your pi profile):
 
 ```bash
-pi install git:github.com/jjuraszek/pi-essentials@v0.2.0
+pi install npm:pi-essentials
 ```
 
 **Project scope** (current repo only, committable via `.pi/settings.json`):
 
 ```bash
-pi install -l git:github.com/jjuraszek/pi-essentials@v0.2.0
+pi install -l npm:pi-essentials
 ```
 
 **Try without installing**:
 
 ```bash
-pi -e git:github.com/jjuraszek/pi-essentials@v0.2.0
+pi -e npm:pi-essentials
 ```
 
 **From a local checkout** (for hacking on the extensions):
@@ -155,16 +155,36 @@ git clone git@github.com:jjuraszek/pi-essentials.git ~/repos/pi-essentials
 pi -e ~/repos/pi-essentials/fetch.ts
 ```
 
-## Release
+## Development
 
-This package is consumed via git tag pins; there is no npm publish step. Cut a
-release with the helper script (also exposed as the `/release` prompt + the
-`release` skill at `.agents/skills/release/`):
+Deps are peers (`@earendil-works/*`, `@sinclair/typebox`) plus the bundled
+runtime deps; install them transiently and run the full check:
 
 ```bash
-bash .agents/skills/release/scripts/release.sh patch    # or minor / major
+npm install
+npm run test:all      # node --test *.test.ts  +  tsc --noEmit typecheck
+```
+
+`npm test` runs the unit tests alone; `npm run typecheck` runs the type pass.
+Both run in CI on ubuntu + windows (`.github/workflows/test.yml`).
+
+## Release
+
+Published to npm by CI. Pushing a `vX.Y.Z` tag triggers
+`.github/workflows/release.yml`, which gates on `tag == package.json`, runs
+`npm run test:all`, and publishes with `npm publish --provenance --access
+public` via OIDC trusted publishing. **Never run `npm publish` by hand.**
+
+Cut a release with the helper script (also exposed as the `/release` prompt +
+the `release` skill at `.agents/skills/release/`):
+
+```bash
+bash .agents/skills/release/scripts/release.sh propose      # suggest a level
+bash .agents/skills/release/scripts/release.sh patch        # or minor / major
 bash .agents/skills/release/scripts/release.sh --dry-run patch
 ```
 
-It bumps `package.json`, creates and pushes the `vX.Y.Z` tag, then rewrites
-every `~/.pi/agent*/settings.json` that pins this repo to the new tag.
+It bumps `package.json`, commits `Release <version>`, runs the tests, creates
+and pushes the `vX.Y.Z` tag, then monitors the publish. See
+`.agents/skills/release/SKILL.md` for the full flow (`sync-presets` migrates
+old git-tag pins to `npm:pi-essentials@<version>`).

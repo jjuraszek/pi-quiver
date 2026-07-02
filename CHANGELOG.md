@@ -3,11 +3,40 @@
 Format follows sibling pi packages (e.g. [`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentials@vX.Y.Z`).
-The release helper at `.agents/skills/release/scripts/release.sh` cuts the tag and
-automatically rewrites every `~/.pi/agent*/settings.json` that pins this repo.
+Published to npm as `pi-essentials` (`pi install npm:pi-essentials`). Pushing a
+`vX.Y.Z` tag triggers `.github/workflows/release.yml`, which publishes to npm
+via OIDC trusted publishing. The release helper at
+`.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## v2.0.2 — 2026-06-28
+## v3.0.0 - 2026-07-02
+
+- **Distribution moved from git-tag pins to npm.** Installed with `pi install
+  npm:pi-essentials` instead of `git:github.com/jjuraszek/pi-essentials@<tag>`.
+  This is a breaking change to the install mechanism only; extension behavior is
+  unchanged. Existing git-tag-pin consumers migrate their `settings.json` entry
+  to `npm:pi-essentials@<version>` (reported by `release.sh sync-presets`).
+- **Tag-triggered CI publish.** New `.github/workflows/release.yml` publishes
+  `npm publish --provenance --access public` via OIDC trusted publishing when a
+  `v[0-9]+.[0-9]+.[0-9]+` tag is pushed, gated on `tag == package.json` and
+  `npm run test:all`. New `.github/workflows/test.yml` runs unit tests +
+  typecheck on ubuntu + windows for every push and PR.
+- **`release.sh` rewritten** to the shared pi-* skeleton (propose / current /
+  patch / minor / major / verify / sync-presets); only its CONFIG header is
+  repo-specific. It bumps + tags + pushes and lets CI publish; it never runs
+  `npm publish`. `sync-presets` reports old git-tag pins for manual migration
+  and bumps same-form `npm:` pins under `--apply`.
+- **`package.json`:** added `author`, `engines.node >=20`, a `files` allowlist
+  (ships the runtime `.ts`, `scripts/pdf_to_md.py`, `types/`, docs), expanded
+  `keywords`, `peerDependenciesMeta` (peers optional), a `test:all` script, and
+  `devDependencies` for the peers + type packages so CI runs offline of a pi
+  host. `typecheck` now runs via `npx tsc` (was `bun x tsc`). Bundled runtime
+  deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`,
+  `unpdf`) stay in `dependencies` and ship in the tarball.
+- **Docs:** `README`, `AGENTS.md`, the release skill, and `/release` prompt
+  updated to the npm model; added README Development section. Removed the stale
+  `.npmignore` (superseded by the `files` allowlist).
+
+## v2.0.2 - 2026-06-28
 
 - **`session-name`: fix auto-naming silently never running.** Two bugs compounded into zero auto-named sessions:
   - **Env-key auth was rejected.** `generateName` bailed on `!auth.apiKey`, but `ModelRegistry.getApiKeyAndHeaders` resolves keys with `includeFallback: false` — so a key that lives only in the environment (e.g. `ANTHROPIC_API_KEY`, the common case with no stored provider credential) returns `ok: true` with `apiKey: undefined`. The bail discarded that path even though `complete()` resolves the env key itself via `withEnvApiKey`/`getEnvApiKey`. Now only bails on `!auth.ok`, and forwards `auth.env`.

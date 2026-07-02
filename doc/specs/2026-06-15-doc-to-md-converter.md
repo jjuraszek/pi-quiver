@@ -123,7 +123,7 @@ Both pass `--with pymupdf4llm==<pin> --python 3.14`. uv's global cache makes cal
 
 ### 4.4 Office pipeline (pure command build: `soffArgs(src, profileDir, outDir)`)
 
-`.docx`/`.pptx` → PDF via headless soffice into a temp dir, then the resulting PDF feeds §4.2. Flags reuse the gridstrong `run_soffice` model (isolated throwaway profile per call, no lock contention):
+`.docx`/`.pptx` → PDF via headless soffice into a temp dir, then the resulting PDF feeds §4.2. Flags use an isolated throwaway soffice profile per call (no lock contention):
 
 ```
 soffice --headless --invisible --nocrashreport --nodefault --nofirststartwizard \

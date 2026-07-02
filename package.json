@@ -2,23 +2,45 @@
   "name": "pi-essentials",
   "version": "2.0.2",
   "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
+  "author": "Jacek Juraszek",
+  "license": "MIT",
   "type": "module",
-  "scripts": {
-    "test": "node --test \"*.test.ts\"",
-    "typecheck": "bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts"
-  },
-  "keywords": [
-    "pi-package"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jjuraszek/pi-essentials.git"
   },
-  "license": "MIT",
+  "homepage": "https://github.com/jjuraszek/pi-essentials#readme",
   "bugs": {
     "url": "https://github.com/jjuraszek/pi-essentials/issues"
   },
-  "homepage": "https://github.com/jjuraszek/pi-essentials#readme",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "fetch",
+    "markdown",
+    "pdf",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "fetch.ts",
+    "doc_to_md.ts",
+    "session-name.ts",
+    "sword-header.ts",
+    "extension-config.ts",
+    "scripts/pdf_to_md.py",
+    "types/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test \"*.test.ts\"",
+    "typecheck": "npx -y tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts",
+    "test:all": "npm run test && npm run typecheck"
+  },
   "pi": {
     "extensions": [
       "./fetch.ts",
@@ -27,6 +49,26 @@
       "./sword-header.ts"
     ]
   },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "@sinclair/typebox": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "jsdom": "^26.0.0",
@@ -34,10 +76,14 @@
     "turndown-plugin-gfm": "^1.0.2",
     "unpdf": "^1.6.0"
   },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-tui": "^0.80.3",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/jsdom": "^28.0.3",
+    "@types/node": "^26.1.0",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^6.0.3"
   }
 }

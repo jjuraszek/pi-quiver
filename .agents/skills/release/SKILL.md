@@ -1,103 +1,132 @@
 ---
 name: release
-description: Creates a repository release for the pi-essentials Pi package. Use when the user asks to do a major, minor, or patch release, bump the package version, and create and push a git tag. This package is consumed via git tag pins (`git:github.com/jjuraszek/pi-essentials@vX.Y.Z`); no npm publish step is involved.
+description: Use when asked to release, publish, bump the version, or cut a tag for jjuraszek/pi-essentials.
 ---
 
 # Release
 
-Use this skill when asked to release this package, especially through `/release major`, `/release minor`, or `/release patch`.
+Use this skill when asked to release this package.
 
-## Repository-specific release model
+## Overview
 
-This package is consumed via **git tag pins** in pi `settings.json` (e.g.
-`"git:github.com/jjuraszek/pi-essentials@v0.1.0"`), not via npm. A release
-here means:
+`pi-essentials` publishes to **npm** (public, unscoped); the `pi-package`
+keyword lists it on `https://pi.dev/packages/pi-essentials`. Users install with
+`pi install npm:pi-essentials`.
 
-1. bump the version in `package.json`
-2. create the release commit and the matching `vX.Y.Z` git tag
-3. push `main` and the tag to `origin`
-4. rewrite every `~/.pi/agent*/settings.json` that pins this repo so its
-   `@<old-ref>` becomes `@vX.Y.Z` (done by the helper script — no manual
-   bump anymore)
+The release is **tag-driven and CI-executed**: pushing a `vX.Y.Z` tag triggers
+`.github/workflows/release.yml`, which gates on `tag == package.json`, runs
+`npm run test:all`, and runs `npm publish --provenance --access public` via
+**OIDC trusted publishing**. The local flow only assigns the version and pushes
+the tag; **never run `npm publish` by hand.**
 
-There is no CI publish workflow. **Do not run `npm publish`** — nothing
-consumes the npm package.
+All mechanics live in `.agents/skills/release/scripts/release.sh`. This skill is
+the judgment layer around it: propose the level, get approval, then run the
+script. The script's CONFIG header is the only part that differs from the
+sibling pi-* copies - keep them in sync.
 
-The tag scheme (`v` prefix, semver) matches sibling pi packages, e.g.
-[`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune/tags) and
-[`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers/tags).
+## Boundaries
 
-## Inputs
+- Reads: git log/tags, `package.json`, `CHANGELOG.md`, pi `settings.json` files.
+- Writes (only when you run the matching command): `package.json` version, a
+  release commit, the `vX.Y.Z` tag, and - only with an explicit `--apply` and a
+  separate approval - `settings.json` pins.
+- Does NOT: run `npm publish`, edit consumer project files, or rewrite
+  `~/.pi/**/settings.json` without a distinct approval for that action.
 
-Accepted release types: `major`, `minor`, `patch`. If the user does not specify
-one of those three values, ask for clarification.
+## Tag scheme
 
-## Safety checks before releasing
+`v<major>.<minor>.<patch>` - plain semver, matching the workflow filter
+`v[0-9]+.[0-9]+.[0-9]+`. `package.json` `version` mirrors the tag without the
+leading `v`.
 
-- the repo working tree is clean
-- the release should go from `main`
-- the local checkout can fast-forward cleanly from `origin/main`
-- the current package version comes from `package.json`
+## Bump policy
 
-If any check fails, stop and explain why.
+| Level | When |
+|---|---|
+| `patch` | fixes, prose, internal changes that don't alter tool surface |
+| `minor` | new extension, tool, or backward-compatible feature |
+| `major` | breaking change: tool rename, config-schema break, removed behavior, distribution-mechanism change |
 
-## Preferred execution path
+## Process
 
-```bash
-bash .agents/skills/release/scripts/release.sh <major|minor|patch>
-```
-
-For a no-side-effects validation run:
-
-```bash
-bash .agents/skills/release/scripts/release.sh --dry-run patch
-```
-
-To release without touching the user's settings.json pins:
+### 1. Propose the level - require explicit approval
 
 ```bash
-bash .agents/skills/release/scripts/release.sh --no-update-pins patch
+bash .agents/skills/release/scripts/release.sh propose
 ```
 
-## What the helper script does
+Present the commits, the heuristic level, and the resulting `X.Y.Z` with a
+one-line rationale tied to specific commits. **Stop and wait** for the user to
+accept or override. Never pick the level and proceed in one step.
 
-1. validates the requested bump type
-2. ensures the working tree is clean
-3. fetches from `origin`
-4. switches to `main` if needed
-5. fast-forwards `main` from `origin/main`
-6. runs `npm run build --if-present`
-7. runs `npm run check --if-present`
-8. runs `npm version <type> -m "Release %s"` (creates commit + `vX.Y.Z` tag)
-9. pushes `main` and the new tag
-10. rewrites every `~/.pi/agent*/settings.json` that pins
-    `git:github.com/jjuraszek/pi-essentials@<ref>` so `<ref>` becomes the
-    new tag. Anything not matching that exact prefix is left alone.
+### 2. Move the CHANGELOG entry
 
-## After the script succeeds
+Promote the `## [Unreleased]` notes into a new `## vX.Y.Z - <date>` heading for
+the agreed version (match the file's existing style). Draft one if none exist.
 
-Report back with: the old version, the new version, the created tag (sha +
-name), confirmation that `main` and the tag were pushed, and which
-`~/.pi/agent*/settings.json` files got their pin bumped (one line per file in
-the script's stdout).
-
-If `--no-update-pins` was used, remind the user to bump pins manually:
+### 3. Bump, tag, push - require explicit approval of the exact command
 
 ```bash
-grep -nrH 'git:github.com/jjuraszek/pi-essentials@' $HOME/.pi/agent*/settings.json
+bash .agents/skills/release/scripts/release.sh minor     # or patch / major
+bash .agents/skills/release/scripts/release.sh current    # version already hand-set + committed
+bash .agents/skills/release/scripts/release.sh --dry-run minor   # preview, no changes
 ```
 
-## Failure handling
+The script verifies `main` + a clean tree, bumps `package.json`, commits
+`Release <version>`, runs `npm run test:all` as a pre-flight, creates the
+annotated tag, pushes `main` + the tag, then chains straight into verification.
+`current` tags the version already in `package.json` (commit your work first).
 
-- do not guess; quote the failing command or stderr
-- explain whether the release partially completed
-- if `npm version` created a commit/tag but push failed, say exactly what
-  happened before any cleanup
-- if the tag pushed but the pin rewrite failed, the release is still valid —
-  re-running the pin step is safe (pins already on `vX.Y.Z` are skipped)
+### 4. Verification (the script runs this automatically after a push)
 
-## Notes
+To re-run standalone:
 
-- Paired with the prompt template at `prompts/release.md` so the user can
-  invoke it with `/release <major|minor|patch>`.
-- Keep release responses concise and operational.
+```bash
+bash .agents/skills/release/scripts/release.sh verify           # current package.json version
+bash .agents/skills/release/scripts/release.sh verify 3.0.0
+```
+
+It watches the release workflow to a terminal state (`gh` if present), polls
+`npm view pi-essentials@X.Y.Z version` until live, then checks the pi.dev
+catalog. Only claim success once `npm view` prints the new version. pi.dev lags
+npm by minutes to hours - report crawl lag, do not loop on it.
+
+### 5. Optional - propose preset pin sync
+
+Offer only when relevant. Requires its own explicit approval before `--apply`.
+
+```bash
+bash .agents/skills/release/scripts/release.sh sync-presets            # report only
+bash .agents/skills/release/scripts/release.sh sync-presets --apply    # rewrite same-form npm pins
+```
+
+Scans `settings.json` under `~/.pi` and this repo's parent tree. Same-form npm
+pins (`npm:pi-essentials@<old>`) are bumped by `--apply`; **git-tag pins**
+(`git:github.com/jjuraszek/pi-essentials@<ref>`, the pre-npm distribution form)
+are reported for manual migration to `npm:pi-essentials@<version>`, never
+auto-rewritten.
+
+## Safety checks
+
+Refuse to proceed unless ALL hold; report which failed, do not silently fix:
+
+- working tree clean (for `current`, commit feature work first)
+- releasing from `main`
+- the target `vX.Y.Z` tag does not already exist (the script enforces this)
+- `npm run test:all` passes (the script's pre-flight; also the CI gate)
+
+## Red Flags - STOP
+
+- about to run `npm publish` locally - push the tag, let CI publish
+- picked the bump level without user confirmation
+- reported success without `npm view pi-essentials@X.Y.Z` printing the version
+- retrying the pi.dev fetch "until it appears" - that's crawl lag, not failure
+- editing a `~/.pi/**/settings.json` without its own explicit approval
+- `package.json` version and the tag are not the identical `X.Y.Z` string
+
+## First-time npm setup (one-off, not per release)
+
+`pi-essentials` must be registered once as a **trusted publisher** on npmjs.com:
+Settings -> Trusted Publishing -> GitHub Actions publisher for repo
+`jjuraszek/pi-essentials`, workflow `release.yml`. Until it exists the publish
+step cannot authenticate (403).

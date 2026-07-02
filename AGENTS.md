@@ -1,6 +1,6 @@
 # pi-essentials
 
-Personal pack of Pi coding-agent extensions, versioned and git-tag-pinned like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), and `sword-header` (themed ASCII startup header, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
+Personal pack of Pi coding-agent extensions, published to npm as `pi-essentials` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), and `sword-header` (themed ASCII startup header, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
 
 ## Communication Style
 
@@ -40,20 +40,60 @@ session-name.ts                           # session-name extension (entry in pi.
 sword-header.ts                           # sword-header extension (entry in pi.extensions; OFF by default)
 extension-config.ts                       # shared getAgentDir()-based settings.json resolution (resolveConfig)
 scripts/pdf_to_md.py                      # doc_to_md Python conversion entry point
-package.json                              # pi.extensions = ["./fetch.ts", "./doc_to_md.ts", "./session-name.ts", "./sword-header.ts"], @earendil-works peerDeps
-.agents/skills/release/SKILL.md           # release flow (git-tag-pin model)
-.agents/skills/release/scripts/release.sh # authoritative release script
+package.json                              # pi.extensions = ["./fetch.ts", "./doc_to_md.ts", "./session-name.ts", "./sword-header.ts"]; files allowlist; bundled deps + @earendil-works peerDeps
+.github/workflows/test.yml                # unit + typecheck on ubuntu + windows, every push/PR
+.github/workflows/release.yml             # tag-triggered npm publish (OIDC + provenance)
+.agents/skills/release/SKILL.md           # release flow (tag-triggered npm model)
+.agents/skills/release/scripts/release.sh # authoritative release script (CONFIG header + shared skeleton)
 prompts/release.md                        # /release prompt template
 ```
 
 ## Workflow
 
 - **Adding an extension:** drop `<name>.ts` exporting `default function (pi: ExtensionAPI)`, add `"./<name>.ts"` to `pi.extensions`, document it in `README.md`, add a `CHANGELOG.md` entry.
-- **Typecheck before committing.** The `test` (`node --test`) and `typecheck` (`bun x tsc`) scripts are wired; both require deps installed transiently first (see the install line below):
+- **Test + typecheck before committing.** `npm run test:all` runs the unit tests (`node --test *.test.ts`) then the typecheck (`tsc --noEmit`). The peer deps (`@earendil-works/*`, `@sinclair/typebox`) and type packages are in `devDependencies`, so a plain install wires everything up:
   ```bash
-  npm install --no-save @earendil-works/pi-ai @earendil-works/pi-coding-agent @earendil-works/pi-tui @sinclair/typebox @types/node jsdom @mozilla/readability turndown turndown-plugin-gfm @types/jsdom @types/turndown unpdf
-  bun x tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts types/turndown-plugin-gfm.d.ts
+  npm install
+  npm run test:all
   ```
+  This is the same command the CI test + release workflows run.
+- **Publishability:** `package.json` `files` is an allowlist. The bundled runtime deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`, `unpdf`) stay in `dependencies` so they ship in the tarball; the `@earendil-works/*` + `@sinclair/typebox` peers are provided by the host pi runtime. `scripts/pdf_to_md.py` is in `files` because `doc_to_md.ts` loads it at runtime via `import.meta.url`. Check the tarball with `npm pack --dry-run`.
 - **`doc_to_md` engines.** `scripts/pdf_to_md.py` is the Python conversion entry point, invoked via `uv run --with pymupdf4llm==<pin> --python 3.14` (not under `tsc`/`node --test`; verify by direct uv invocation). DOCX/PPTX route through `soffice` to PDF first. `uv` and `soffice` are optional runtime system binaries; absence degrades to the `unpdf` fallback (PDF) or hard-errors (office).
-- **Releases use the `release` skill.** Consumed via git **tag** pins (`git:github.com/jjuraszek/pi-essentials@vX.Y.Z`); the script bumps the version, pushes the tag, then rewrites matching pins in `~/.pi/agent*/settings.json`. No npm publish. See `.agents/skills/release/SKILL.md` (`--dry-run` / `--no-update-pins` flags).
-- **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"`.
+- **Releases use the `release` skill.** See [Release model](#release-model). Tag-triggered and CI-executed; the script bumps + tags + pushes, CI publishes to npm. Never `npm publish` by hand.
+- **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-essentials -p "..."` against the published package).
+
+## Release model
+
+Published to **npm** as `pi-essentials`; installed with `pi install npm:pi-essentials`.
+The `pi-package` keyword lists it on the pi.dev packages gallery automatically.
+Plain semver.
+
+Release is **tag-triggered and CI-executed**:
+
+1. The `release` skill (driven by `release.sh`) proposes the semver level, bumps
+   `package.json`, commits `Release <version>`, runs `npm run test:all` as a
+   pre-flight, creates the annotated `v<version>` tag, pushes `main` + tag, then
+   monitors CI and verifies npm + pi.dev. **No local `npm publish`.**
+2. Pushing a `v[0-9]+.[0-9]+.[0-9]+` tag triggers
+   `.github/workflows/release.yml`, which installs, verifies the tag matches
+   `package.json`, runs `npm run test:all`, and runs
+   `npm publish --provenance --access public` via npm OIDC trusted publishing.
+   `.github/workflows/test.yml` runs the suite on every push + PR (ubuntu + windows).
+
+The release machinery (`release.sh`, `test.yml`, `release.yml`) is kept
+near-identical to the sibling pi-* repos; `release.sh` differs only in its
+CONFIG header (package name, repo slug, former name, test command).
+`pi-essentials` was never renamed, so `FORMER_PACKAGE_NAME` is empty and the
+stale-name checks are disabled.
+
+### Tag scheme
+
+`v<major>.<minor>.<patch>` - plain semver. `package.json` `version` mirrors the
+tag without the leading `v`.
+
+### One-off npm setup
+
+OIDC trusted publishing must be registered once on npmjs.com for the
+`pi-essentials` package (Settings -> Trusted Publishing -> GitHub Actions
+publisher for repo `jjuraszek/pi-essentials`, workflow `release.yml`). Until it
+exists, the publish step cannot authenticate (403).
