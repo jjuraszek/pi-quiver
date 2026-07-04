@@ -1,6 +1,6 @@
 {
   "name": "pi-quiver",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
   "author": "Jacek Juraszek",
   "license": "MIT",
