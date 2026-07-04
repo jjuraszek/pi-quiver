@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v3.1.0 - 2026-07-04
 
 - **`fetch` auto-routes GitHub URLs through the `gh` CLI.** `github.com` issue,
   PR, and repo-root URLs are served by `gh issue|pr view --comments` /
