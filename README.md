@@ -11,6 +11,18 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 | `session-name.ts` | `/session-name` | Name work sessions. Manual `/session-name [name]` always works. **OFF by default:** when opted in via `settings.json`, after the first agent turn it asks the current model for a concise session name + short tab label and applies them, and renames the **Ghostty** tab via OSC 2 (only when the active terminal is really Ghostty), re-asserting it each turn so the tab tracks the session name. |
 | `sword-header.ts` | `/builtin-header` | Replace the TUI startup logo with a theme-colored ASCII greatsword (hilt = accent, blade = text). **OFF by default:** only installs the header when opted in via `settings.json`. `/builtin-header` restores the built-in header at runtime. |
 
+## Prerequisites
+
+The npm package's bundled JS deps install automatically on `pi install` - nothing to set up there. A few **runtime system binaries** are optional; each degrades gracefully when absent:
+
+| Prerequisite | Needed by | If absent |
+|---|---|---|
+| `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion | Degrades to the pure-JS `unpdf` fallback (no faithful tables/headings). |
+| LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
+
+None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
+
 ### fetch — content routing & context hygiene
 
 `fetch` is the main way an agent pulls external bytes into context. This extension routes responses by type to keep context tight:
@@ -37,8 +49,11 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 
 **JSON:** Pretty-printed with 2-space indent before the gate.
 
+**GitHub URLs -> `gh`:** `github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), and repo-root (`/{owner}/{repo}`) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate. Requires `gh` (see [Prerequisites](#prerequisites)); if `gh` is missing or the call fails, `fetch` silently falls back to the normal HTTP path. Pass `raw=true` to force the rendered HTML page. All other GitHub paths (`tree`, `blob`, `raw`, `releases`, gists, ...) use the HTTP path unchanged. Routing is also skipped (plain HTTP used) when the request is non-GET, carries a body, or sets custom headers. gh output is bounded by a 10 MB buffer and run through the same size gate (spilled to a file when large), not the 1 MB HTTP download cap.
+
 **Parameters:**
 - `raw=true`: Skip HTML→Markdown and JSON pretty-printing; return decoded body as-is (still subject to the size gate).
+- `raw=true` also bypasses GitHub `gh` routing (forces the HTTP/rendered path).
 
 **Truncation:** Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary over 50 MB notes `(truncated to 50MB)`.
 
@@ -68,7 +83,7 @@ A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extension
 
 Python is pinned to **3.14** and is not configurable.
 
-**Runtime dependencies:** `unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected.
+**Runtime dependencies:** `unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected. See [Prerequisites](#prerequisites) for the consolidated list.
 
 **Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-quiver' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
 

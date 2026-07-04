@@ -15,6 +15,8 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSize, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -35,6 +37,148 @@ interface FetchToolDetails {
 	spilled?: boolean;
 	file?: string;
 	lines?: number;
+	via?: "gh";
+	ghCommand?: string;
+}
+
+type GhTarget =
+	| { kind: "issue"; url: string }
+	| { kind: "pr"; url: string }
+	| { kind: "repo"; slug: string };
+
+const RESERVED_OWNERS = new Set([
+	"orgs", "users", "sponsors", "topics", "marketplace", "apps",
+	"collections", "stars", "settings", "notifications", "codespaces",
+	"features", "trending", "security", "customer-stories",
+]);
+const GH_NAME = /^[A-Za-z0-9._-]+$/;
+
+export function classifyGitHubTarget(url: URL): GhTarget | null {
+	const host = url.hostname.toLowerCase();
+	if (host !== "github.com" && host !== "www.github.com") return null;
+	const segs = url.pathname.split("/").filter((s) => s.length > 0);
+	if (segs.length < 2) return null;
+	const [owner, repo] = segs;
+	if (!GH_NAME.test(owner) || !GH_NAME.test(repo)) return null;
+	if (RESERVED_OWNERS.has(owner.toLowerCase())) return null;
+	if (segs.length === 4 && segs[2] === "issues" && /^\d+$/.test(segs[3])) {
+		return { kind: "issue", url: `https://github.com/${owner}/${repo}/issues/${segs[3]}` };
+	}
+	if (segs.length === 4 && segs[2] === "pull" && /^\d+$/.test(segs[3])) {
+		return { kind: "pr", url: `https://github.com/${owner}/${repo}/pull/${segs[3]}` };
+	}
+	if (segs.length === 2) {
+		return { kind: "repo", slug: `${owner}/${repo}` };
+	}
+	return null;
+}
+
+export function buildGhArgs(target: GhTarget): string[] {
+	if (target.kind === "issue") return ["issue", "view", target.url, "--comments"];
+	if (target.kind === "pr") return ["pr", "view", target.url, "--comments"];
+	return ["repo", "view", target.slug];
+}
+
+const GH_MAX_BUFFER = 10_000_000; // 10 MB — an order above PARSABLE_MAX_BYTES
+
+type GhResult = { ok: true; stdout: string } | { ok: false };
+export type GhRunner = (args: string[], timeoutMs: number, signal?: AbortSignal) => Promise<GhResult>;
+
+const execFileAsync = promisify(execFile);
+
+export const runGh: GhRunner = async (args, timeoutMs, signal) => {
+	try {
+		const { stdout } = await execFileAsync("gh", args, {
+			timeout: timeoutMs,
+			signal,
+			maxBuffer: GH_MAX_BUFFER,
+			encoding: "utf8",
+		});
+		if (!stdout.trim()) return { ok: false };
+		return { ok: true, stdout };
+	} catch {
+		return { ok: false };
+	}
+};
+
+interface GhRoutingParams {
+	raw?: boolean;
+	method?: string;
+	body?: string;
+	headers?: Record<string, string>;
+	timeoutMs?: number;
+}
+
+export function planGhRouting(params: GhRoutingParams, url: URL): GhTarget | null {
+	if (params.raw) return null;
+	if ((params.method ?? "GET") !== "GET") return null;
+	if (params.body) return null;
+	if (params.headers && Object.keys(params.headers).length > 0) return null;
+	return classifyGitHubTarget(url);
+}
+
+function ghCommandLabel(target: GhTarget): string {
+	if (target.kind === "issue") return "issue view --comments";
+	if (target.kind === "pr") return "pr view --comments";
+	return "repo view";
+}
+
+function ghSourceLine(target: GhTarget, ref: string): string {
+	if (target.kind === "issue") return `gh issue view ${ref} --comments`;
+	if (target.kind === "pr") return `gh pr view ${ref} --comments`;
+	return `gh repo view ${ref}`;
+}
+
+function renderGhResult(target: GhTarget, stdout: string): { content: { type: "text"; text: string }[]; details: FetchToolDetails } {
+	const body = stdout.trimEnd();
+	const ref = target.kind === "repo" ? target.slug : target.url;
+	const { spill, bytes, lines } = applyGate(body);
+	const baseDetails: FetchToolDetails = {
+		url: ref,
+		bytes,
+		lines,
+		category: "markdown",
+		via: "gh",
+		ghCommand: ghCommandLabel(target),
+	};
+	const source = `Source: ${ghSourceLine(target, ref)}`;
+	if (!spill) {
+		return {
+			content: [{ type: "text", text: [source, "", body].join("\n") }],
+			details: { ...baseDetails, spilled: false },
+		};
+	}
+	const spillUrl = target.kind === "repo" ? `https://github.com/${target.slug}` : target.url;
+	const file = spillToFile(spillUrl, body, "md");
+	return {
+		content: [{
+			type: "text",
+			text: [
+				source,
+				`Body: ${formatSize(bytes)} across ${lines} lines — written to file (too large to inline)`,
+				`Saved-To: ${file}`,
+				"",
+				"Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must. Markdown is grep-able by heading (^#).",
+				"",
+				`----- preview (first ${PREVIEW_LINES} lines) -----`,
+				buildPreview(body),
+			].join("\n"),
+		}],
+		details: { ...baseDetails, spilled: true, file },
+	};
+}
+
+export async function executeGhRouting(
+	params: GhRoutingParams,
+	url: URL,
+	signal: AbortSignal | undefined,
+	runner: GhRunner = runGh,
+): Promise<{ content: { type: "text"; text: string }[]; details: FetchToolDetails } | null> {
+	const target = planGhRouting(params, url);
+	if (!target) return null;
+	const gh = await runner(buildGhArgs(target), params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal);
+	if (!gh.ok) return null;
+	return renderGhResult(target, gh.stdout);
 }
 
 const PARSABLE_MAX_BYTES = 1_000_000; // text/markdown/json download ceiling
@@ -307,13 +451,14 @@ export default function fetchExtension(pi: ExtensionAPI) {
 		name: "fetch",
 		label: "Fetch URL",
 		description:
-			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB.",
+			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. GitHub issue/PR/repo URLs are served via the gh CLI when available (falls back to HTTP otherwise).",
 		promptSnippet: "Fetch the contents of a URL",
 		promptGuidelines: [
 			"Use fetch when the user provides a URL or asks to read web content.",
 			"Binary responses return a file path only — pass that path to a tool that can process the bytes; do not expect inline content.",
 			"When the body is written to a file, grep it or read with offset/limit. Converted Markdown is grep-able by heading (^#).",
 			"Pass raw=true to skip Markdown/JSON conversion and get the decoded body as-is (still subject to the size gate).",
+			"GitHub issue/PR/repo links are fetched through the gh CLI automatically; pass raw=true to force the rendered HTML page.",
 		],
 		parameters: Type.Object({
 			url: Type.String({ description: "Absolute http(s) URL" }),
@@ -339,6 +484,9 @@ export default function fetchExtension(pi: ExtensionAPI) {
 			if (url.protocol !== "http:" && url.protocol !== "https:") {
 				throw new Error(`Unsupported protocol: ${url.protocol}`);
 			}
+
+			const ghResult = await executeGhRouting(params, url, signal ?? undefined);
+			if (ghResult) return ghResult;
 
 			const headers = new Headers(params.headers ?? {});
 			if (!headers.has("user-agent")) headers.set("user-agent", FIREFOX_UA);
@@ -493,9 +641,11 @@ export default function fetchExtension(pi: ExtensionAPI) {
 				return new Text(theme.fg("error", firstLine), 0, 0);
 			}
 
+			const isGh = details?.via === "gh";
 			const status = details?.status;
-			const statusStyled =
-				status === undefined
+			const statusStyled = isGh
+				? theme.fg("success", "gh")
+				: status === undefined
 					? theme.fg("muted", "HTTP ?")
 					: status >= 200 && status < 300
 						? theme.fg("success", `HTTP ${status}`)
@@ -505,7 +655,9 @@ export default function fetchExtension(pi: ExtensionAPI) {
 
 			const sep = theme.fg("dim", " · ");
 			const parts: string[] = [statusStyled];
-			if (details?.contentType) {
+			if (isGh) {
+				if (details?.ghCommand) parts.push(theme.fg("muted", details.ghCommand));
+			} else if (details?.contentType) {
 				parts.push(theme.fg("muted", details.contentType.split(";")[0].trim()));
 			}
 			if (typeof details?.bytes === "number") {

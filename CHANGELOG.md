@@ -8,6 +8,16 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- **`fetch` auto-routes GitHub URLs through the `gh` CLI.** `github.com` issue,
+  PR, and repo-root URLs are served by `gh issue|pr view --comments` /
+  `gh repo view` and returned through the existing size gate, tagged with a
+  `Source: gh ...` header. Falls back silently to the HTTP path when `gh` is
+  absent, unauthenticated, or errors; `raw=true` forces the rendered page. No
+  new npm dependencies. `gh` is documented as an optional runtime binary in the
+  new README Prerequisites section.
+
 ## v3.0.1 - 2026-07-04
 
 - **`release.yml` posts GitHub Release notes.** A new `release-notes` job (`needs: publish`, `contents: write`) extracts the CHANGELOG section matching the pushed tag with `awk` and publishes it as the GitHub Release body via `gh release create` (falling back to `gh release edit`). No LLM or API key; only `github.token`.

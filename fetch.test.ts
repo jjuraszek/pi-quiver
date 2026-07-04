@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension } from "./fetch.ts";
+import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "./fetch.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -157,4 +157,97 @@ test("binaryExtension: OOXML office types map to docx/pptx (fetch->doc_to_md cha
 	assert.equal(binaryExtension("application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "docx");
 	assert.equal(binaryExtension("application/vnd.openxmlformats-officedocument.presentationml.presentation"), "pptx");
 	assert.equal(binaryExtension("application/pdf"), "pdf");
+});
+
+test("classifyGitHubTarget: issue / pr / repo shapes", () => {
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver/issues/1")), { kind: "issue", url: "https://github.com/jjuraszek/pi-quiver/issues/1" });
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver/pull/42")), { kind: "pr", url: "https://github.com/jjuraszek/pi-quiver/pull/42" });
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver")), { kind: "repo", slug: "jjuraszek/pi-quiver" });
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver/")), { kind: "repo", slug: "jjuraszek/pi-quiver" });
+});
+
+test("classifyGitHubTarget: strips query + fragment, accepts www host", () => {
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/o/r/issues/7?foo=bar#issuecomment-99")), { kind: "issue", url: "https://github.com/o/r/issues/7" });
+	assert.deepEqual(classifyGitHubTarget(new URL("https://www.github.com/o/r/pull/8#discussion")), { kind: "pr", url: "https://github.com/o/r/pull/8" });
+});
+
+test("classifyGitHubTarget: non-matches \u2192 null", () => {
+	for (const u of [
+		"https://github.com/o/r/tree/main",
+		"https://github.com/o/r/blob/main/x.ts",
+		"https://github.com/o/r/releases/tag/v1",
+		"https://github.com/o/r/issues/notanumber",
+		"https://github.com/o",
+		"https://github.example.com/o/r/issues/1",
+		"https://raw.githubusercontent.com/o/r/main/x",
+		"https://gist.github.com/o/abc123",
+		"https://github.com/orgs/some-org",
+		"https://github.com/trending/rust",
+		"https://github.com/o/r spaces/issues/1",
+		"https://github.com/orgs/foo/issues/5",
+		"https://github.com/users/bar/pull/9",
+		"https://github.com/orgs/x",
+		"https://github.com/users/x",
+		"https://github.com/sponsors/x",
+		"https://github.com/topics/x",
+		"https://github.com/marketplace/x",
+		"https://github.com/apps/x",
+		"https://github.com/collections/x",
+		"https://github.com/stars/x",
+		"https://github.com/settings/x",
+		"https://github.com/notifications/x",
+		"https://github.com/codespaces/x",
+		"https://github.com/features/x",
+		"https://github.com/trending/x",
+		"https://github.com/security/x",
+		"https://github.com/customer-stories/x",
+	]) {
+		assert.equal(classifyGitHubTarget(new URL(u)), null, u);
+	}
+});
+
+test("buildGhArgs: three shapes map to exact arg arrays", () => {
+	assert.deepEqual(buildGhArgs({ kind: "issue", url: "https://github.com/o/r/issues/1" }), ["issue", "view", "https://github.com/o/r/issues/1", "--comments"]);
+	assert.deepEqual(buildGhArgs({ kind: "pr", url: "https://github.com/o/r/pull/2" }), ["pr", "view", "https://github.com/o/r/pull/2", "--comments"]);
+	assert.deepEqual(buildGhArgs({ kind: "repo", slug: "o/r" }), ["repo", "view", "o/r"]);
+});
+
+test("planGhRouting: routes a bare issue URL, bypasses on HTTP-specific intent", () => {
+	const u = new URL("https://github.com/o/r/issues/1");
+	assert.deepEqual(planGhRouting({}, u), { kind: "issue", url: "https://github.com/o/r/issues/1" });
+	assert.equal(planGhRouting({ raw: true }, u), null);
+	assert.equal(planGhRouting({ method: "POST" }, u), null);
+	assert.equal(planGhRouting({ body: "x" }, u), null);
+	assert.equal(planGhRouting({ headers: { "x-foo": "1" } }, u), null);
+	assert.deepEqual(planGhRouting({ headers: {} }, u), { kind: "issue", url: "https://github.com/o/r/issues/1" });
+});
+
+test("executeGhRouting: success renders gh result; failure falls through (null)", async () => {
+	const okRunner = async () => ({ ok: true as const, stdout: "# Issue title\n\nbody text\n" });
+	const okResult = await executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), undefined, okRunner);
+	assert.ok(okResult, "expected a result");
+	assert.equal(okResult!.details.via, "gh");
+	assert.equal(okResult!.details.ghCommand, "issue view --comments");
+	assert.equal(okResult!.details.category, "markdown");
+	assert.equal(okResult!.details.status, undefined);
+	assert.ok(okResult!.content[0].text.startsWith("Source: gh issue view https://github.com/o/r/issues/1 --comments"));
+
+	const failRunner = async () => ({ ok: false as const });
+	const failResult = await executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), undefined, failRunner);
+	assert.equal(failResult, null);
+
+	const missResult = await executeGhRouting({}, new URL("https://github.com/o/r/tree/main"), undefined, okRunner);
+	assert.equal(missResult, null, "non-matching URL must not invoke routing");
+});
+
+test("executeGhRouting: large gh output spills to a file", async () => {
+	const big = ("line\n").repeat(1100);
+	const runner = async () => ({ ok: true as const, stdout: big });
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/pull/2"), undefined, runner);
+	assert.ok(result);
+	assert.equal(result!.details.spilled, true);
+	assert.ok(result!.details.file, "expected a spill file path");
+	assert.ok(existsSync(result!.details.file!));
+	assert.ok(result!.content[0].text.includes("Saved-To:"));
+	rmSync(result!.details.file!);
 });
