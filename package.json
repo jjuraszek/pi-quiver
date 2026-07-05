@@ -1,7 +1,7 @@
 {
   "name": "pi-quiver",
   "version": "3.1.0",
-  "description": "Personal pack of Pi coding-agent extensions. First-party-quality tools that keep context clean. Ships a context-safe fetch tool and a doc_to_md PDF/DOCX/PPTX-to-Markdown converter.",
+  "description": "Personal pack of Pi coding-agent extensions: context-safe fetch, doc_to_md PDF/DOCX/PPTX-to-Markdown conversion, session naming, and a themed ASCII startup header.",
   "author": "Jacek Juraszek",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,8 @@
     "fetch",
     "markdown",
     "pdf",
+    "docx",
+    "pptx",
     "cli"
   ],
   "engines": {
@@ -48,7 +50,12 @@
       "./doc_to_md.ts",
       "./session-name.ts",
       "./sword-header.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png"
+  },
+  "funding": {
+    "type": "buymeacoffee",
+    "url": "https://buymeacoffee.com/jjurasszek"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

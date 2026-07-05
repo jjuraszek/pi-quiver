@@ -1,6 +1,12 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png" alt="pi-quiver" width="180">
+</p>
+
 # pi-quiver
 
-A small pack of [Pi coding-agent](https://github.com/badlogic/pi-mono) extensions I keep across every pi profile. First-party-quality tools, published to npm like sibling packages ([`pi-cohort`](https://github.com/jjuraszek/pi-cohort), [`pi-superpowers`](https://github.com/jjuraszek/pi-superpowers)).
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jjurasszek)
+
+A small pack of [Pi coding-agent](https://github.com/earendil-works/pi) extensions I keep across every pi profile. First-party-quality tools, published to npm like sibling packages ([`pi-cohort`](https://github.com/jjuraszek/pi-cohort), [`pi-gauntlet`](https://github.com/jjuraszek/pi-gauntlet), [`pi-condense`](https://github.com/jjuraszek/pi-condense)).
 
 ## Extensions
 
@@ -182,6 +188,10 @@ npm run test:all      # node --test *.test.ts  +  tsc --noEmit typecheck
 
 `npm test` runs the unit tests alone; `npm run typecheck` runs the type pass.
 Both run in CI on ubuntu + windows (`.github/workflows/test.yml`).
+
+## Support
+
+If this saves you time, consider [buying me a coffee](https://buymeacoffee.com/jjurasszek).
 
 ## Release
 

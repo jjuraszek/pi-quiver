@@ -1,12 +1,21 @@
 # Changelog
 
-Format follows sibling pi packages (e.g. [`pi-context-prune`](https://github.com/jjuraszek/pi-context-prune/blob/main/CHANGELOG.md)):
+Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
 Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which publishes to npm
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
+
+## v3.1.1 - 2026-07-05
+
+Branding, funding, and gallery preview. No behavior change.
+
+- **Logo + pi.dev gallery preview.** Repo-root `pi-quiver.png` (640x640), shown in the README and wired as `pi.image`.
+- **Buy Me a Coffee funding.** `funding` in `package.json`, `.github/FUNDING.yml`, and a README badge.
+- Rewrote `description`; added `docx`, `pptx` keywords.
+- Fixed stale sibling references: README `pi-superpowers` -> `pi-gauntlet`; this CHANGELOG's format note `pi-context-prune` -> `pi-condense`.
 
 ## v3.1.0 - 2026-07-04
 
