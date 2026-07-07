@@ -44,7 +44,8 @@ interface FetchToolDetails {
 type GhTarget =
 	| { kind: "issue"; url: string }
 	| { kind: "pr"; url: string }
-	| { kind: "repo"; slug: string };
+	| { kind: "repo"; slug: string }
+	| { kind: "run"; slug: string; runId: string; url: string };
 
 const RESERVED_OWNERS = new Set([
 	"orgs", "users", "sponsors", "topics", "marketplace", "apps",
@@ -67,6 +68,9 @@ export function classifyGitHubTarget(url: URL): GhTarget | null {
 	if (segs.length === 4 && segs[2] === "pull" && /^\d+$/.test(segs[3])) {
 		return { kind: "pr", url: `https://github.com/${owner}/${repo}/pull/${segs[3]}` };
 	}
+	if (segs.length === 5 && segs[2] === "actions" && segs[3] === "runs" && /^\d+$/.test(segs[4])) {
+		return { kind: "run", slug: `${owner}/${repo}`, runId: segs[4], url: `https://github.com/${owner}/${repo}/actions/runs/${segs[4]}` };
+	}
 	if (segs.length === 2) {
 		return { kind: "repo", slug: `${owner}/${repo}` };
 	}
@@ -76,6 +80,7 @@ export function classifyGitHubTarget(url: URL): GhTarget | null {
 export function buildGhArgs(target: GhTarget): string[] {
 	if (target.kind === "issue") return ["issue", "view", target.url, "--comments"];
 	if (target.kind === "pr") return ["pr", "view", target.url, "--comments"];
+	if (target.kind === "run") return ["run", "view", target.runId, "--repo", target.slug];
 	return ["repo", "view", target.slug];
 }
 
@@ -120,12 +125,14 @@ export function planGhRouting(params: GhRoutingParams, url: URL): GhTarget | nul
 function ghCommandLabel(target: GhTarget): string {
 	if (target.kind === "issue") return "issue view --comments";
 	if (target.kind === "pr") return "pr view --comments";
+	if (target.kind === "run") return "run view";
 	return "repo view";
 }
 
 function ghSourceLine(target: GhTarget, ref: string): string {
 	if (target.kind === "issue") return `gh issue view ${ref} --comments`;
 	if (target.kind === "pr") return `gh pr view ${ref} --comments`;
+	if (target.kind === "run") return `gh run view ${target.runId} --repo ${target.slug}`;
 	return `gh repo view ${ref}`;
 }
 
@@ -451,14 +458,14 @@ export default function fetchExtension(pi: ExtensionAPI) {
 		name: "fetch",
 		label: "Fetch URL",
 		description:
-			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. GitHub issue/PR/repo URLs are served via the gh CLI when available (falls back to HTTP otherwise).",
+			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. GitHub issue/PR/repo/actions-run URLs are served via the gh CLI when available (falls back to HTTP otherwise).",
 		promptSnippet: "Fetch the contents of a URL",
 		promptGuidelines: [
 			"Use fetch when the user provides a URL or asks to read web content.",
 			"Binary responses return a file path only — pass that path to a tool that can process the bytes; do not expect inline content.",
 			"When the body is written to a file, grep it or read with offset/limit. Converted Markdown is grep-able by heading (^#).",
 			"Pass raw=true to skip Markdown/JSON conversion and get the decoded body as-is (still subject to the size gate).",
-			"GitHub issue/PR/repo links are fetched through the gh CLI automatically; pass raw=true to force the rendered HTML page.",
+			"GitHub issue/PR/repo/actions-run links are fetched through the gh CLI automatically; pass raw=true to force the rendered HTML page.",
 		],
 		parameters: Type.Object({
 			url: Type.String({ description: "Absolute http(s) URL" }),

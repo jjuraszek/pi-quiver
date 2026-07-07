@@ -61,8 +61,8 @@ A 300 KB changelog page never touches your context window - you get a preview an
 ## Architecture
 
 | Extension | Tool | What it does |
-|---|---|---|
-| `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
+| --- | --- | --- |
+| `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
 | `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
 | `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
 | `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
@@ -72,7 +72,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 ## Key concepts
 
 | Concept | Meaning |
-|---|---|
+| --- | --- |
 | Size gate | Text/Markdown/JSON output over 32 KB or 1000 lines spills to a temp file with a 60-line preview instead of inlining. |
 | Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI, everything else -> the size gate. |
 | Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
@@ -123,8 +123,8 @@ pi -e ~/repos/pi-quiver/fetch.ts
 The npm package's bundled JS deps install automatically on `pi install`. A few **runtime system binaries** are optional; each degrades gracefully when absent:
 
 | Prerequisite | Needed by | If absent |
-|---|---|---|
-| `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
+| --- | --- | --- |
+| `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo/actions-run routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
 | `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion | Degrades to the pure-JS `unpdf` fallback (no faithful tables/headings). |
 | LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
 

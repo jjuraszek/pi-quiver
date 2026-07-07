@@ -164,6 +164,7 @@ test("classifyGitHubTarget: issue / pr / repo shapes", () => {
 	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver/pull/42")), { kind: "pr", url: "https://github.com/jjuraszek/pi-quiver/pull/42" });
 	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver")), { kind: "repo", slug: "jjuraszek/pi-quiver" });
 	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-quiver/")), { kind: "repo", slug: "jjuraszek/pi-quiver" });
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-condense/actions/runs/28867698934")), { kind: "run", slug: "jjuraszek/pi-condense", runId: "28867698934", url: "https://github.com/jjuraszek/pi-condense/actions/runs/28867698934" });
 });
 
 test("classifyGitHubTarget: strips query + fragment, accepts www host", () => {
@@ -177,6 +178,9 @@ test("classifyGitHubTarget: non-matches \u2192 null", () => {
 		"https://github.com/o/r/blob/main/x.ts",
 		"https://github.com/o/r/releases/tag/v1",
 		"https://github.com/o/r/issues/notanumber",
+		"https://github.com/o/r/actions/runs/notanumber",
+		"https://github.com/o/r/actions/workflows/test.yml",
+		"https://github.com/o/r/actions/runs/123/jobs/456",
 		"https://github.com/o",
 		"https://github.example.com/o/r/issues/1",
 		"https://raw.githubusercontent.com/o/r/main/x",
@@ -210,6 +214,7 @@ test("buildGhArgs: three shapes map to exact arg arrays", () => {
 	assert.deepEqual(buildGhArgs({ kind: "issue", url: "https://github.com/o/r/issues/1" }), ["issue", "view", "https://github.com/o/r/issues/1", "--comments"]);
 	assert.deepEqual(buildGhArgs({ kind: "pr", url: "https://github.com/o/r/pull/2" }), ["pr", "view", "https://github.com/o/r/pull/2", "--comments"]);
 	assert.deepEqual(buildGhArgs({ kind: "repo", slug: "o/r" }), ["repo", "view", "o/r"]);
+	assert.deepEqual(buildGhArgs({ kind: "run", slug: "o/r", runId: "99", url: "https://github.com/o/r/actions/runs/99" }), ["run", "view", "99", "--repo", "o/r"]);
 });
 
 test("planGhRouting: routes a bare issue URL, bypasses on HTTP-specific intent", () => {

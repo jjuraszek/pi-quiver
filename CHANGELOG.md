@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v3.1.2 - 2026-07-07
+
+- **`fetch` routes GitHub Actions run URLs through `gh`.** `github.com/{owner}/{repo}/actions/runs/{id}` URLs are served by `gh run view {id} --repo {owner}/{repo}` and returned through the existing size gate with a `Source: gh run view ...` header, alongside the existing issue/PR/repo routing. Only the bare run URL routes; deeper paths (`.../runs/{id}/jobs/{jobId}`, `.../actions/workflows/{file}`) fall back to HTTP. Falls back silently when `gh` is absent/unauthenticated/errors; `raw=true` forces the rendered page.
+
 ## v3.1.1 - 2026-07-05
 
 Branding, funding, and gallery preview. No behavior change.
