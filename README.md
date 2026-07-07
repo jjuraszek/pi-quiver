@@ -6,146 +6,88 @@
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jjurasszek)
 
-A small pack of [Pi coding-agent](https://github.com/earendil-works/pi) extensions I keep across every pi profile. First-party-quality tools, published to npm like sibling packages ([`pi-cohort`](https://github.com/jjuraszek/pi-cohort), [`pi-gauntlet`](https://github.com/jjuraszek/pi-gauntlet), [`pi-condense`](https://github.com/jjuraszek/pi-condense)).
+Ground-truth ingestion for the [Pi coding agent](https://github.com/earendil-works/pi): pull real web pages, docs, and local files into context without flooding it.
 
-## Extensions
+## The problem
+
+Reasoning from a model's training memory instead of the real page, the current docs, or the actual PDF is how agents confidently ship wrong answers about APIs that changed last month. Mature engineering work has to be data-driven - the agent needs to read the real source.
+
+But the moment an agent does that, one `fetch` or PDF read can dump hundreds of kilobytes of boilerplate into context, degrading every turn after it.
+
+## Why pi-quiver exists
+
+`fetch` and `doc_to_md` bring real web pages, GitHub issues/PRs, and local PDF/DOCX/PPTX files into context - and every result is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint, so a single call can never flood the window. Ingestion is what makes data-driven work possible; the gate is what keeps it safe.
+
+`session-name` and `sword-header` are smaller, opt-in ergonomics on top - session labeling and a themed startup header.
+
+## Part of the pi agent toolkit
+
+Four independent extensions for the [pi coding agent](https://github.com/earendil-works/pi), each owning one concern of running agents seriously:
+
+- **pi-quiver** - capabilities (fetch, doc conversion, session tools)
+- [pi-cohort](https://github.com/jjuraszek/pi-cohort) - coordination (delegate to focused child agents)
+- [pi-condense](https://github.com/jjuraszek/pi-condense) - context economy (prune context, keep it recoverable)
+- [pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet) - process (the gated brainstorm->ship workflow)
+
+No code dependency between them. pi-quiver is call-level: it gates the size of what comes *in*. [pi-condense](https://github.com/jjuraszek/pi-condense) is loop-level: it prunes what's already *in context* once a tool call is done. Different problem, same discipline.
+
+## Mental model
+
+Every extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. Two tools bring real sources in (`fetch`, `doc_to_md`); two are opt-in ergonomics (`session-name`, `sword-header`).
+
+```mermaid
+flowchart LR
+    S[web page / PDF / doc] --> T["fetch / doc_to_md"]
+    T --> E[extract main content]
+    E --> G{"over 32KB or 1000 lines?"}
+    G -->|no| I[return inline to context]
+    G -->|yes| F[spill to temp file<br/>return preview + grep/read hint]
+```
+
+## Quick example
+
+```bash
+pi install npm:pi-quiver
+```
+
+```
+> fetch https://example.com/some-huge-changelog
+Saved-To: /tmp/pi-fetch/2026-...-example.com-....md
+60-line preview follows. grep '^#' the file for headings, or read a slice.
+```
+
+A 300 KB changelog page never touches your context window - you get a preview and a path.
+
+## Architecture
 
 | Extension | Tool | What it does |
 |---|---|---|
-| `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML → Markdown (main-content extraction, stripped boilerplate). Binary content saved untouched to a temp file. **Context-safe:** output over 32 KB or 1000 lines is written to a temp file with a preview + file path. Prevents a single fetch from flooding the context window. |
-| `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`, fetched on first use); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice (`soffice`) to PDF first. Same 32 KB / 1000-line size gate as `fetch`. |
-| `session-name.ts` | `/session-name` | Name work sessions. Manual `/session-name [name]` always works. **OFF by default:** when opted in via `settings.json`, after the first agent turn it asks the current model for a concise session name + short tab label and applies them, and renames the **Ghostty** tab via OSC 2 (only when the active terminal is really Ghostty), re-asserting it each turn so the tab tracks the session name. |
-| `sword-header.ts` | `/builtin-header` | Replace the TUI startup logo with a theme-colored ASCII greatsword (hilt = accent, blade = text). **OFF by default:** only installs the header when opted in via `settings.json`. `/builtin-header` restores the built-in header at runtime. |
+| `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
+| `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
+| `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
+| `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 
-## Prerequisites
+Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
-The npm package's bundled JS deps install automatically on `pi install` - nothing to set up there. A few **runtime system binaries** are optional; each degrades gracefully when absent:
+## Key concepts
 
-| Prerequisite | Needed by | If absent |
-|---|---|---|
-| `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
-| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion | Degrades to the pure-JS `unpdf` fallback (no faithful tables/headings). |
-| LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
+| Concept | Meaning |
+|---|---|
+| Size gate | Text/Markdown/JSON output over 32 KB or 1000 lines spills to a temp file with a 60-line preview instead of inlining. |
+| Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI, everything else -> the size gate. |
+| Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
+| Opt-in ergonomics | `session-name` and `sword-header` do nothing until explicitly enabled in `settings.json`. |
 
-None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
+## When to use
 
-### fetch — content routing & context hygiene
+- An agent needs to reason from a real web page, GitHub issue/PR, or local PDF/DOCX/PPTX instead of memory.
+- You want that ingestion to be safe by default, with no risk of a single call blowing the context budget.
 
-`fetch` is the main way an agent pulls external bytes into context. This extension routes responses by type to keep context tight:
+## When NOT to use
 
-**HTML → Markdown:**
-- Mozilla Readability extracts main content, strips navigation/chrome/boilerplate
-- Turndown converts to Markdown with GFM support (pipe tables, fenced code blocks, ATX headings)
-- Page title becomes a top-level `#` heading
-- Download cap: **1 MB**
-
-**Binary (images, PDFs, archives, fonts, audio/video) → temp file:**
-- Streamed untouched to `${TMPDIR}/pi-fetch/<stamp>-<host>-<hash>.<ext>` without decoding
-- Detection: content-type check + NUL-byte sniff in first ≤64 KB (catches mislabeled payloads)
-- Returns: status, content-type, size, file path — **no preview**
-- Download cap: **50 MB**
-
-**Text / Markdown / JSON size gate:**
-- Inline when **≤ 32 KB AND ≤ 1000 lines** (converted output size)
-- Otherwise **spills to file** with:
-  - HTTP status, content-type, charset, byte/line counts
-  - File path (`Saved-To:`)
-  - 60-line preview
-  - Instruction to `grep` (Markdown is grep-able by heading: `^#`) or `read` slices
-
-**JSON:** Pretty-printed with 2-space indent before the gate.
-
-**GitHub URLs -> `gh`:** `github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), and repo-root (`/{owner}/{repo}`) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate. Requires `gh` (see [Prerequisites](#prerequisites)); if `gh` is missing or the call fails, `fetch` silently falls back to the normal HTTP path. Pass `raw=true` to force the rendered HTML page. All other GitHub paths (`tree`, `blob`, `raw`, `releases`, gists, ...) use the HTTP path unchanged. Routing is also skipped (plain HTTP used) when the request is non-GET, carries a body, or sets custom headers. gh output is bounded by a 10 MB buffer and run through the same size gate (spilled to a file when large), not the 1 MB HTTP download cap.
-
-**Parameters:**
-- `raw=true`: Skip HTML→Markdown and JSON pretty-printing; return decoded body as-is (still subject to the size gate).
-- `raw=true` also bypasses GitHub `gh` routing (forces the HTTP/rendered path).
-
-**Truncation:** Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary over 50 MB notes `(truncated to 50MB)`.
-
-**Runtime dependencies:** `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. Shipped in the npm package and installed automatically on `pi install` - no manual setup needed.
-
-### doc_to_md — local document → Markdown
-
-`doc_to_md` takes a **local file path** (`.pdf`, `.docx`, `.pptx`) and returns Markdown. For remote documents, `fetch` the URL first (it saves binaries to a temp path), then pass that path here.
-
-**Two engines, auto-selected:**
-
-- **Primary — `pymupdf4llm`** (high fidelity: headings, tables, reading order). Runs as an arms-length subprocess via `uv run --with pymupdf4llm==<pin> --python 3.14`. `uv` fetches the wheel into its own cache on first use (one-time download); Python 3.14 is fixed. Warmed once per process: the first call probes/installs (generous budget), later calls reuse the warm cache with a shorter per-document budget.
-- **Fallback — `unpdf`** (pure JS, bundled PDF.js). Used when `uv` is not on `PATH`, the warm probe fails, or a conversion times out. Output is plain text with page breaks — **no faithful tables/headings**. Degraded results are marked in the output (`[Note: degraded extraction via unpdf ...]`) and carry a `Fallback-Reason:` line.
-
-**Office documents (`.docx`, `.pptx`):** converted to PDF by headless LibreOffice (`soffice`, isolated per-call profile), then fed through the same PDF pipeline. `soffice` must be on `PATH` for office inputs — otherwise the tool errors (there is no JS fallback for office→PDF). Spreadsheets and other formats are out of scope (spreadsheets paginate badly via PDF).
-
-**Size gate:** identical to `fetch` — Markdown ≤ 32 KB and ≤ 1000 lines is inlined; larger output spills to `${TMPDIR}/pi-doc-to-md/<stamp>-<basename>-<hash>.md` with a 60-line preview + a grep/read-slice hint.
-
-**Configuration (environment variables):**
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `PI_DOC_TO_MD_PYMUPDF_VERSION` | `1.27.2.3` | `pymupdf4llm` version pin passed to `uv --with` (digits/dots only) |
-| `PI_DOC_TO_MD_WARM_TIMEOUT_MS` | `120000` | Warm/install call budget — covers the cold wheel (+ managed Python) download |
-| `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` | `60000` | Per-document conversion budget (also bounds the `unpdf` fallback) |
-| `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` | `120000` | LibreOffice `.docx`/`.pptx` → PDF budget |
-
-Python is pinned to **3.14** and is not configurable.
-
-**Runtime dependencies:** `unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs still convert via the `unpdf` fallback; without `soffice`, office inputs error while PDFs are unaffected. See [Prerequisites](#prerequisites) for the consolidated list.
-
-**Licensing note:** `pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code — `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-quiver' MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
-
-### session-name — manual + opt-in automatic session naming
-
-Names work sessions so the session selector (and optionally the Ghostty tab) shows what each one is about.
-
-**Behaviors:**
-
-- **Manual `/session-name [name]`** - set the session name, or, with no argument, print the current one. Always available, regardless of config. A manual name wins: it suppresses later auto-naming for the session.
-- **Automatic naming (opt-in).** After the first agent turn completes, if no name is set yet, the extension asks the **current model** for a 3-6 word session title plus a 1-4 word tab label and applies both. It only runs once per session and never overwrites an existing name.
-- **Resume reflection (opt-in).** When a session that already carries a name is loaded/resumed/reloaded, its tab label is re-applied so the Ghostty tab matches.
-- **Per-turn re-assert (opt-in).** The tab is re-pinned to the session name at the start of every turn. Pi owns the OS terminal title (OSC 0, `pi - <name> - <cwd>`) and overwrites it on every name change and session switch; the re-assert is the only hook that fires *after* pi's writer on a session swap, so the Ghostty tab and the session name stay in sync instead of drifting. It self-heals: if the name was changed outside this extension, the tab label is re-derived from the new name.
-- **Ghostty tab rename.** The short label is written via OSC 2 (`ESC ] 2 ; <label> BEL`) **only when the active terminal is really Ghostty** (`TERM_PROGRAM=ghostty`, `TERM=xterm-ghostty`, or a `GHOSTTY_*` dir env) **and** stdout is a TTY. Other terminals are never touched. Auto-naming keeps its curated short label; re-derived labels (resume/external rename) are the first words of the session name.
-
-**OFF by default.** All automatic behavior (auto-naming + resume reflection) is inert until explicitly enabled. The manual command is unaffected.
-
-**Configuration** (`settings.json`, **project `.pi/settings.json` overrides the global agent-dir `settings.json`**). The global path is resolved via pi's own `getAgentDir()` (honours `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), so it stays correct however this package is installed.
-
-```jsonc
-{
-  // full form, defaults shown
-  "sessionAutoName": { "enabled": false, "ghosttyTab": true }
-}
-```
-
-| Key | Default | Meaning |
-|---|---|---|
-| `enabled` | `false` | Master switch for automatic naming + resume reflection. |
-| `ghosttyTab` | `true` | Whether to rename the Ghostty tab (only ever fires when the terminal is actually Ghostty). |
-
-Boolean shorthand: `"sessionAutoName": true` enables everything (equivalent to `{ "enabled": true, "ghosttyTab": true }`); `false` disables everything.
-
-**Cost note:** when enabled, automatic naming makes **one extra short LLM call** per session (low reasoning effort, current model, a few-thousand-char conversation digest), once, after the first turn. When OFF (the default) it makes **no** model calls and writes **nothing** to the terminal.
-
-**Runtime dependency:** `@earendil-works/pi-ai` (the unified LLM API provided by the pi runtime; a peer dependency, no separate install).
-
-### sword-header — themed ASCII startup header
-
-Replaces pi's built-in startup logo with a hero's greatsword (Michael J. Penick longsword, asciiart.eu). The ASCII art is verbatim; only the coloring is ours - hilt/grip/pommel use the `accent` token, the blade uses `text`, so it tracks whatever theme is active.
-
-**Behaviors:**
-
-- **TUI only.** Installs a custom header on `session_start` when `ctx.mode === "tui"`. In print/non-interactive mode (`-p`) it does nothing.
-- **`/builtin-header`** restores the built-in pi header at runtime (always available).
-
-**OFF by default.** The header is only installed when explicitly enabled via `settings.json`.
-
-**Configuration** (`settings.json`, project `.pi/settings.json` overrides the global agent-dir layer; same resolution as `session-name`):
-
-```jsonc
-{
-  "swordHeader": false           // default; true installs the header
-  // object form also accepted: "swordHeader": { "enabled": true }
-}
-```
+- You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
+- You need spreadsheet conversion - `doc_to_md` explicitly excludes spreadsheets (they paginate badly via PDF).
+- You want automatic session naming or a custom header without opting in - both stay off until you flip the config.
 
 ## Install
 
@@ -176,6 +118,31 @@ git clone git@github.com:jjuraszek/pi-quiver.git ~/repos/pi-quiver
 pi -e ~/repos/pi-quiver/fetch.ts
 ```
 
+## Prerequisites
+
+The npm package's bundled JS deps install automatically on `pi install`. A few **runtime system binaries** are optional; each degrades gracefully when absent:
+
+| Prerequisite | Needed by | If absent |
+|---|---|---|
+| `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion | Degrades to the pure-JS `unpdf` fallback (no faithful tables/headings). |
+| LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
+
+None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
+
+### session-name and sword-header config
+
+Both are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer):
+
+```jsonc
+{
+  "sessionAutoName": { "enabled": false, "ghosttyTab": true }, // or boolean shorthand
+  "swordHeader": false                                         // or { "enabled": true }
+}
+```
+
+`sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
+
 ## Development
 
 Deps are peers (`@earendil-works/*`, `@sinclair/typebox`) plus the bundled
@@ -188,6 +155,10 @@ npm run test:all      # node --test *.test.ts  +  tsc --noEmit typecheck
 
 `npm test` runs the unit tests alone; `npm run typecheck` runs the type pass.
 Both run in CI on ubuntu + windows (`.github/workflows/test.yml`).
+
+## How this fits the platform
+
+pi-quiver is how ground truth gets into an agent's context - real pages, PDFs, docs, cleanly and safely. The other three then coordinate work over it ([pi-cohort](https://github.com/jjuraszek/pi-cohort)), prune it once it's stale ([pi-condense](https://github.com/jjuraszek/pi-condense)), and govern the process end to end ([pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet)).
 
 ## Support
 
