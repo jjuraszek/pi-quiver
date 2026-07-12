@@ -66,6 +66,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
 | `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
 | `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
+| `fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
@@ -130,18 +131,19 @@ The npm package's bundled JS deps install automatically on `pi install`. A few *
 
 None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
 
-### session-name and sword-header config
+### Opt-in extension config
 
 Both are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer):
 
 ```jsonc
 {
   "sessionAutoName": { "enabled": false, "ghosttyTab": true }, // or boolean shorthand
-  "swordHeader": false                                         // or { "enabled": true }
+  "swordHeader": false,                                        // or { "enabled": true }
+  "fastMode": false                                            // or { "enabled": true }
 }
 ```
 
-`sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
+`sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `fastMode` only affects `claude-opus-4-8` requests on Anthropic's `anthropic-messages` API; enabling it opts into premium fast-mode pricing. `--fast` forces it on for one launch; `/fast on|off` toggles live. Proxy providers (opencode, cloudflare-ai-gateway) are excluded. `fastMode`'s header injection needs the `before_provider_headers` hook (pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5); on older pi the beta header is silently not sent. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
 
 ## Development
 

@@ -32,6 +32,7 @@
     "doc_to_md.ts",
     "session-name.ts",
     "sword-header.ts",
+    "fast-mode.ts",
     "extension-config.ts",
     "scripts/pdf_to_md.py",
     "types/**/*.d.ts",
@@ -41,7 +42,7 @@
   "scripts": {
     "check:agents-core": "node scripts/check-agents-core.mjs",
     "test": "node --test \"*.test.ts\"",
-    "typecheck": "npx -y tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts",
+    "typecheck": "npx -y tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts fast-mode.ts fast-mode.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts",
     "test:all": "npm run check:agents-core && npm run test && npm run typecheck"
   },
   "pi": {
@@ -49,7 +50,8 @@
       "./fetch.ts",
       "./doc_to_md.ts",
       "./session-name.ts",
-      "./sword-header.ts"
+      "./sword-header.ts",
+      "./fast-mode.ts"
     ],
     "image": "https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png"
   },
@@ -86,7 +88,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.80.3",
-    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.5",
     "@earendil-works/pi-tui": "^0.80.3",
     "@sinclair/typebox": "^0.34.49",
     "@types/jsdom": "^28.0.3",

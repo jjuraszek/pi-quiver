@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- Add `fast-mode` extension: opt-in Anthropic fast mode for Claude Opus 4.8 (`speed: "fast"` payload + `fast-mode-2026-02-01` beta header), controlled via `fastMode` settings key, `--fast` flag, and `/fast [on|off|status]`. OFF by default. Preserves OAuth identity betas.
+
 ## v3.1.2 - 2026-07-07
 
 - **`fetch` routes GitHub Actions run URLs through `gh`.** `github.com/{owner}/{repo}/actions/runs/{id}` URLs are served by `gh run view {id} --repo {owner}/{repo}` and returned through the existing size gate with a `Source: gh run view ...` header, alongside the existing issue/PR/repo routing. Only the bare run URL routes; deeper paths (`.../runs/{id}/jobs/{jobId}`, `.../actions/workflows/{file}`) fall back to HTTP. Falls back silently when `gh` is absent/unauthenticated/errors; `raw=true` forces the rendered page.

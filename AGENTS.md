@@ -1,6 +1,6 @@
 # pi-quiver
 
-Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval; GitHub issue/PR/repo URLs auto-routed through the `gh` CLI with HTTP fallback), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), and `sword-header` (themed ASCII startup header, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
+Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval; GitHub issue/PR/repo URLs auto-routed through the `gh` CLI with HTTP fallback), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), `sword-header` (themed ASCII startup header, OFF by default), and `fast-mode` (opt-in Anthropic fast mode for Opus 4.8, OFF by default). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
 
 <!-- agents-core:begin v1 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Communication Style
@@ -66,11 +66,12 @@ fetch.ts                                  # fetch extension (entry in pi.extensi
 doc_to_md.ts                              # doc_to_md extension (entry in pi.extensions)
 session-name.ts                           # session-name extension (entry in pi.extensions; OFF by default)
 sword-header.ts                           # sword-header extension (entry in pi.extensions; OFF by default)
+fast-mode.ts                              # fast-mode extension (entry in pi.extensions; OFF by default)
 extension-config.ts                       # shared getAgentDir()-based settings.json resolution (resolveConfig)
 AGENTS.core.md                            # shared-core block, byte-identical across pi-quiver/pi-cohort/pi-gauntlet/pi-condense
 scripts/check-agents-core.mjs             # asserts AGENTS.md embeds AGENTS.core.md verbatim (--fix rewrites); runs in test:all
 scripts/pdf_to_md.py                      # doc_to_md Python conversion entry point
-package.json                              # pi.extensions = ["./fetch.ts", "./doc_to_md.ts", "./session-name.ts", "./sword-header.ts"]; files allowlist; bundled deps + @earendil-works peerDeps
+package.json                              # pi.extensions = ["./fetch.ts", "./doc_to_md.ts", "./session-name.ts", "./sword-header.ts", "./fast-mode.ts"]; files allowlist; bundled deps + @earendil-works peerDeps
 .github/workflows/test.yml                # unit + typecheck on ubuntu + windows, every push/PR
 .github/workflows/release.yml             # tag-triggered npm publish (OIDC + provenance)
 .agents/skills/release/SKILL.md           # release flow (tag-triggered npm model)
