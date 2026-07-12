@@ -8,9 +8,9 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v3.2.0 - 2026-07-12
 
-- Add `fast-mode` extension: opt-in Anthropic fast mode for Claude Opus 4.8 (`speed: "fast"` payload + `fast-mode-2026-02-01` beta header), controlled via `fastMode` settings key, `--fast` flag, and `/fast [on|off|status]`. OFF by default. Preserves OAuth identity betas.
+- Add `fast-mode` extension: opt-in Anthropic fast mode for Claude Opus 4.8 (`speed: "fast"` payload + `fast-mode-2026-02-01` beta header), controlled via `fastMode` settings key, `--fast` flag, and `/fast [on|off|status]`. OFF by default. Preserves OAuth identity betas. Requires pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5 (the `before_provider_headers` hook).
 
 ## v3.1.2 - 2026-07-07
 
