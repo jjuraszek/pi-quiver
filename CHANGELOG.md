@@ -8,6 +8,11 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v3.3.1 - 2026-07-19
+
+- **`provider-stall-watchdog`: bounded multi-stall retry via `maxStallRetries`.** Each semantic stall converts to a retryable error until the budget is exhausted; previously only the first stall retried, so a longer provider outage forced manual resubmission (observed stuck streams recover in seconds on a fresh request). Default = layered `retry.maxRetries` (Pi default 3); explicit config wins; positive integer, fails closed. A successful assistant turn resets the counter, mirroring Pi's retry loop.
+- **Watchdog notices moved to the main window.** The silence warning is now a `notify(..., "warning")` transcript line instead of a bottom status-line entry; the status-line integration is removed. Recovery notices report the attempt as `(used/max)`.
+
 ## v3.3.0 - 2026-07-17
 
 - **`provider-stall-watchdog`: opt-in semantic-silence recovery.** Policy D warns after configured silence, aborts the first semantic stall, and offers it once to Pi's existing retry loop; a second stall stops without another watchdog retry. OFF by default.

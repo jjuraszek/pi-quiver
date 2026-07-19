@@ -67,7 +67,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
 | `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
-| `provider-stall-watchdog.ts` | - | Opt-in semantic-silence watchdog for human interactive TUI runs. Warns after 2 minutes and recovers after 4 minutes; policy D offers the first stall once to Pi's retry loop, then stops a second stall. OFF by default. |
+| `provider-stall-watchdog.ts` | - | Opt-in semantic-silence watchdog for human interactive TUI runs. Warns after 2 minutes and recovers after 4 minutes; policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
@@ -162,12 +162,13 @@ Recommended explicit retry and watchdog settings:
   "providerStallWatchdog": {
     "enabled": true,
     "warningMs": 120000,
-    "recoveryMs": 240000
+    "recoveryMs": 240000,
+    "maxStallRetries": 3
   }
 }
 ```
 
-`providerStallWatchdog` is OFF by default and runs only for confirmed human interactive TUI runs. JSON, RPC, print, and subagent runs are excluded by activation, not environment or session lineage. Verified with Pi 0.80.10: the first semantic stall is aborted and offered once to Pi retry; a second stall stops. Automatic continuation needs enabled Pi retry with remaining capacity. Disabled, exhausted, or incompatible retry degrades to manual resubmission. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed.
+`providerStallWatchdog` is OFF by default and runs only for confirmed human interactive TUI runs. JSON, RPC, print, and subagent runs are excluded by activation, not environment or session lineage. Verified with Pi 0.80.10: each semantic stall is aborted and offered to Pi retry until `maxStallRetries` conversions are used; further stalls stop for manual resubmission. `maxStallRetries` defaults to the layered `retry.maxRetries` (Pi default 3); consecutive stall conversions consume Pi retry attempts without a success reset in between, so keep `maxStallRetries <= retry.maxRetries`. A successful assistant turn resets the stall counter (mirroring Pi's own retry counter). The silence warning and all watchdog notices render as main-window notifications, not the bottom status line. Automatic continuation needs enabled Pi retry with remaining capacity. Disabled, exhausted, or incompatible retry degrades to manual resubmission. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed.
 
 ## Development
 

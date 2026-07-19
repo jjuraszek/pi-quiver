@@ -30,8 +30,8 @@ test("coerce preserves recognized values without type filtering", () => {
 			expected: { blockIsObject: true, enabled: true, warningMs: "bad" },
 		},
 		{
-			raw: { enabled: "yes", warningMs: null, recoveryMs: Infinity },
-			expected: { blockIsObject: true, enabled: "yes", warningMs: null, recoveryMs: Infinity },
+			raw: { enabled: "yes", warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
+			expected: { blockIsObject: true, enabled: "yes", warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
 		},
 	];
 
@@ -40,13 +40,13 @@ test("coerce preserves recognized values without type filtering", () => {
 
 test("validateConfig accepts a complete valid candidate", () => {
 	assert.deepEqual(
-		validateConfig({ blockIsObject: true, enabled: true, warningMs: 120_000, recoveryMs: 240_000 }),
-		{ ok: true, config: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } },
+		validateConfig({ blockIsObject: true, enabled: true, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 }),
+		{ ok: true, config: { enabled: true, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 } },
 	);
 });
 
 test("validateConfig fails closed for invalid values", () => {
-	const valid = { blockIsObject: true, enabled: true, warningMs: 120_000, recoveryMs: 240_000 };
+	const valid = { blockIsObject: true, enabled: true, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 };
 	const cases: Array<{ name: string; candidate: ConfigCandidate }> = [
 		{ name: "non-object block", candidate: { ...valid, blockIsObject: false } },
 		{ name: "enabled wrong type", candidate: { ...valid, enabled: "true" } },
@@ -61,6 +61,11 @@ test("validateConfig fails closed for invalid values", () => {
 		{ name: "equal delays", candidate: { ...valid, recoveryMs: 120_000 } },
 		{ name: "warning after recovery", candidate: { ...valid, warningMs: 240_000 } },
 		{ name: "delay above node maximum", candidate: { ...valid, recoveryMs: MAX_TIMER_MS + 1 } },
+		{ name: "missing maxStallRetries", candidate: { ...valid, maxStallRetries: undefined } },
+		{ name: "zero maxStallRetries", candidate: { ...valid, maxStallRetries: 0 } },
+		{ name: "negative maxStallRetries", candidate: { ...valid, maxStallRetries: -1 } },
+		{ name: "fractional maxStallRetries", candidate: { ...valid, maxStallRetries: 1.5 } },
+		{ name: "maxStallRetries wrong type", candidate: { ...valid, maxStallRetries: "3" } },
 	];
 
 	for (const { name, candidate } of cases) {
@@ -71,8 +76,8 @@ test("validateConfig fails closed for invalid values", () => {
 
 test("validateConfig accepts Node's maximum timer delay", () => {
 	assert.deepEqual(
-		validateConfig({ blockIsObject: true, enabled: true, warningMs: 1, recoveryMs: MAX_TIMER_MS }),
-		{ ok: true, config: { enabled: true, warningMs: 1, recoveryMs: MAX_TIMER_MS } },
+		validateConfig({ blockIsObject: true, enabled: true, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 1 }),
+		{ ok: true, config: { enabled: true, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 1 } },
 	);
 });
 
@@ -106,7 +111,7 @@ test("settings layers let valid project values repair invalid global shape and f
 		(cwd) => {
 			assert.deepEqual(resolveWatchdogConfig(cwd), {
 				ok: true,
-				config: { enabled: true, warningMs: 10, recoveryMs: 20 },
+				config: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 3 },
 			});
 		},
 	);
@@ -116,6 +121,47 @@ test("settings layers let valid project values repair invalid global shape and f
 		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
 		(cwd) => {
 			assert.equal(resolveWatchdogConfig(cwd).ok, true);
+		},
+	);
+});
+
+test("maxStallRetries defaults to layered retry.maxRetries and explicit config wins", () => {
+	withSettings(
+		{ retry: { maxRetries: 5 }, providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		{},
+		(cwd) => {
+			assert.deepEqual(resolveWatchdogConfig(cwd), {
+				ok: true,
+				config: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 5 },
+			});
+		},
+	);
+
+	withSettings(
+		{ retry: { maxRetries: 5 } },
+		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 }, retry: { maxRetries: 7 } },
+		(cwd) => {
+			const result = resolveWatchdogConfig(cwd);
+			assert.equal(result.ok, true);
+			assert.equal((result as { ok: true; config: { maxStallRetries: number } }).config.maxStallRetries, 2);
+		},
+	);
+
+	withSettings(
+		{ retry: { maxRetries: 0 } },
+		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		(cwd) => {
+			const result = resolveWatchdogConfig(cwd);
+			assert.equal(result.ok, true);
+			assert.equal((result as { ok: true; config: { maxStallRetries: number } }).config.maxStallRetries, 3, "non-positive retry.maxRetries falls back to Pi's default");
+		},
+	);
+
+	withSettings(
+		{},
+		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } },
+		(cwd) => {
+			assert.equal(resolveWatchdogConfig(cwd).ok, false, "explicit non-positive maxStallRetries fails closed");
 		},
 	);
 });
@@ -190,7 +236,8 @@ test("human TUI runs arm only after before_agent_start and semantic deltas reset
 		h.advance(119_999);
 		h.emit("message_update", semantic("text_delta", " "));
 		h.advance(120_000);
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", "No model progress for 2m; aborting and asking Pi to retry once in 2m (Esc aborts now)"]);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 2m; aborting and asking Pi to retry in 2m (Esc aborts now)", "warning"]);
+		assert.equal(h.statuses.length, 0, "the warning is a main-window notification, not a status line entry");
 	});
 });
 
@@ -201,7 +248,7 @@ test("warning status formats configured warning and remaining recovery threshold
 		h.emit("before_agent_start");
 		h.emit("before_provider_request");
 		h.advance(30_000);
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", "No model progress for 30s; aborting and asking Pi to retry once in 1m (Esc aborts now)"]);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 30s; aborting and asking Pi to retry in 1m (Esc aborts now)", "warning"]);
 	});
 });
 
@@ -250,7 +297,7 @@ test("every request gets a generation and only non-empty semantic deltas reset d
 		assert.equal(first.some((handle) => h.timers.has(handle)), false, "new generation clears old deadlines");
 		for (const update of [semantic("text_delta", ""), { message: { role: "assistant" }, assistantMessageEvent: { type: "text_start" } }]) h.emit("message_update", update);
 		h.advance(10);
-		assert.equal(h.statuses.filter(([, text]) => text !== undefined).length, 1, "empty and non-semantic updates do not reset");
+		assert.equal(h.notifications.filter(([, type]) => type === "warning").length, 1, "empty and non-semantic updates do not reset");
 		for (const update of [semantic("text_delta", "\t"), semantic("thinking_delta", "\u00a0"), semantic("toolcall_delta", "\u200b")]) {
 			h.emit("message_update", update); h.advance(9); assert.equal(h.timers.size, 2);
 		}
@@ -268,7 +315,7 @@ test("early current warning callback reschedules for the positive remaining sile
 		h.timers.delete(warningHandle);
 		warning.callback();
 		const replacement = [...h.timers.values()].find((timer) => timer.at === h.now + 9);
-		assert.equal(h.statuses.length, 0, "early warning does not set status");
+		assert.equal(h.notifications.length, 0, "early warning does not notify");
 		assert.equal(h.aborts, 0, "early warning does not abort");
 		assert.equal(h.timers.size, 2, "warning replacement and recovery remain armed");
 		assert.equal(replacement?.delayMs, 9, "replacement uses the positive remaining delay");
@@ -282,24 +329,23 @@ test("agent_end clears an armed warning and disarms its captured callbacks", () 
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request");
 		const callbacks = [...h.timers.values()].map((timer) => timer.callback);
 		h.advance(10);
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", "No model progress for 10ms; aborting and asking Pi to retry once in 10ms (Esc aborts now)"]);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 10ms; aborting and asking Pi to retry in 10ms (Esc aborts now)", "warning"]);
 		h.emit("agent_end");
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined]);
 		assert.equal(h.timers.size, 0, "agent_end clears watchdog timers");
-		const statuses = [...h.statuses];
+		const notifications = [...h.notifications];
 		for (const callback of callbacks) callback();
-		assert.deepEqual(h.statuses, statuses, "captured callbacks cannot restore the keyed status");
+		assert.deepEqual(h.notifications, notifications, "captured callbacks cannot notify again");
 		assert.equal(h.aborts, 0, "captured callbacks cannot abort after agent_end");
 		assert.equal(h.timers.size, 0, "captured callbacks cannot reschedule after agent_end");
 	});
 });
 
-test("semantic progress clears status, permits a later warning, and terminal events clean only assistant requests", () => {
+test("semantic progress permits a later warning, and terminal events clean only assistant requests", () => {
 	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 100 } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request"); h.advance(10);
 		h.emit("message_update", semantic("text_delta", "x"));
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined]);
+		assert.equal(h.notifications.filter(([, type]) => type === "warning").length, 1);
 		h.advance(10);
 		assert.equal(h.timers.size, 1, "semantic progress permits a later warning while recovery remains armed");
 		h.emit("message_end", { message: { role: "user" } });
@@ -319,7 +365,7 @@ test("removed old signal listeners cannot affect a new generation", () => {
 		const oldController = h.newController();
 		h.emit("before_provider_request");
 		warning(); recovery(); oldController.abort();
-		assert.equal(h.statuses.filter(([, text]) => text !== undefined).length, 0);
+		assert.equal(h.notifications.length, 0);
 		assert.equal(h.timers.size, 2, "stale timer callbacks and removed old listeners leave the new generation armed");
 	});
 });
@@ -332,11 +378,10 @@ test("aborting the active signal during recovery clears the warning and disarms 
 		h.advance(10);
 		assert.equal(h.timers.size, 1, "recovery remains armed after the warning");
 		h.abortCurrentSignal();
-		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined]);
 		assert.equal(h.timers.size, 0, "active signal abort clears both watchdog deadlines");
-		const statuses = [...h.statuses];
+		const notifications = [...h.notifications];
 		warning(); recovery();
-		assert.deepEqual(h.statuses, statuses, "captured callbacks cannot restore status after active abort");
+		assert.deepEqual(h.notifications, notifications, "captured callbacks cannot notify after active abort");
 		assert.equal(h.timers.size, 0, "captured callbacks cannot rearm after active abort");
 	});
 });
@@ -348,7 +393,7 @@ test("shutdown invalidates captured timer callbacks", () => {
 		const [warning, recovery] = [...h.timers.values()].map((timer) => timer.callback);
 		h.emit("session_shutdown");
 		warning(); recovery();
-		assert.equal(h.statuses.filter(([, text]) => text !== undefined).length, 0);
+		assert.equal(h.notifications.length, 0);
 		assert.equal(h.timers.size, 0, "stale callbacks cannot reschedule after shutdown");
 	});
 });
@@ -376,7 +421,10 @@ test("first recovery marks ownership, consumes retry, notifies, then synchronous
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request");
 		h.advance(20);
 		assert.equal(h.aborts, 1);
-		assert.deepEqual(h.notifications, [["No model progress for 20ms; aborting now. Pi will retry once if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.", undefined]]);
+		assert.deepEqual(h.notifications, [
+			["No model progress for 10ms; aborting and asking Pi to retry in 10ms (Esc aborts now)", "warning"],
+			["No model progress for 20ms; aborting now. Pi will retry (1/3) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.", undefined],
+		]);
 		const message = { role: "assistant", stopReason: "aborted", preserved: { value: true } };
 		assert.deepEqual(h.emit("message_end", { message }), { message: { ...message, stopReason: "error", errorMessage: "Provider semantic timeout after 20 ms without progress" } });
 	});
@@ -386,7 +434,10 @@ test("default recovery notice formats elapsed consistently", () => {
 	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request"); h.advance(240_000);
-		assert.deepEqual(h.notifications, [["No model progress for 4m; aborting now. Pi will retry once if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.", undefined]]);
+		assert.deepEqual(h.notifications, [
+			["No model progress for 2m; aborting and asking Pi to retry in 2m (Esc aborts now)", "warning"],
+			["No model progress for 4m; aborting now. Pi will retry (1/3) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.", undefined],
+		]);
 	});
 });
 
@@ -401,15 +452,45 @@ test("only watchdog-owned first abort is rewritten; external abort disarms delay
 	});
 });
 
-test("watchdog-first ownership survives a later Esc and a continuation cannot restore retry", () => {
-	withEnabledWatchdog((cwd) => {
+test("watchdog-first ownership survives a later Esc and an exhausted budget stops converting", () => {
+	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 1 } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request"); h.advance(20); h.abortCurrentSignal();
 		assert.equal((h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }) as any)?.message.stopReason, "error");
 		h.newController(); h.emit("before_provider_request"); h.advance(20);
 		assert.equal(h.aborts, 2);
-		assert.deepEqual(h.notifications.at(-1), ["The retry also stopped making progress; aborting without another automatic retry. Submit the message again manually.", undefined]);
+		assert.deepEqual(h.notifications.at(-1), ["Stall retry budget (1) exhausted; aborting without another automatic retry. Submit the message again manually.", undefined]);
 		assert.equal(h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }), undefined);
+	});
+});
+
+test("consecutive stalls convert until maxStallRetries is exhausted", () => {
+	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("input", { source: "interactive" }); h.emit("before_agent_start");
+		for (const expected of ["(1/2)", "(2/2)"]) {
+			h.emit("before_provider_request"); h.advance(20);
+			assert.ok(h.notifications.at(-1)![0].includes(expected), `recovery notice reports ${expected}`);
+			assert.equal((h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }) as any)?.message.stopReason, "error");
+			h.newController();
+		}
+		h.emit("before_provider_request"); h.advance(20);
+		assert.deepEqual(h.notifications.at(-1), ["Stall retry budget (2) exhausted; aborting without another automatic retry. Submit the message again manually.", undefined]);
+		assert.equal(h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }), undefined);
+		assert.equal(h.aborts, 3);
+	});
+});
+
+test("a successful assistant turn resets the stall retry counter", () => {
+	withEnabledWatchdog((cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request"); h.advance(20);
+		h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } });
+		h.newController(); h.emit("before_provider_request");
+		h.emit("message_update", semantic("text_delta", "x"));
+		h.emit("message_end", { message: { role: "assistant", stopReason: "toolUse" } });
+		h.newController(); h.emit("before_provider_request"); h.advance(20);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 20ms; aborting now. Pi will retry (1/3) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.", undefined]);
 	});
 });
 
@@ -424,12 +505,12 @@ test("settlement only resets retry and reports an unavailable continuation", () 
 	});
 });
 
-test("interactive steering during an active run does not reset consumed retry", () => {
+test("interactive steering during an active run does not reset the stall retry counter", () => {
 	withEnabledWatchdog((cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("input", { source: "interactive" }); h.emit("before_agent_start"); h.emit("before_provider_request"); h.advance(20);
 		h.emit("input", { source: "interactive" }); h.newController(); h.emit("before_provider_request"); h.advance(20);
-		assert.deepEqual(h.notifications.at(-1), ["The retry also stopped making progress; aborting without another automatic retry. Submit the message again manually.", undefined]);
+		assert.ok(h.notifications.at(-1)![0].includes("(2/3)"), "steering does not reset the counter");
 	});
 });
 
@@ -463,14 +544,14 @@ async function waitBounded<T>(promise: Promise<T>, label: string): Promise<T> {
 	finally { if (timeout) clearTimeout(timeout); }
 }
 
-async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = true) {
+async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = true, opts: { maxStallRetries?: number; maxRetries?: number } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "provider-stall-watchdog-runtime-"));
 	const agentDir = join(root, "agent");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const contexts: any[] = []; const starts = scripts.map(() => deferred<void>()); const editor: string[] = []; const notifications: string[] = []; let toolCalls = 0;
 	try {
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } }));
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, ...(opts.maxStallRetries === undefined ? {} : { maxStallRetries: opts.maxStallRetries }) } }));
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const runtime = await ModelRuntime.create({ modelsPath: null });
 		runtime.registerProvider("watchdog-test", { apiKey: "test-key", baseUrl: "https://watchdog.test", api: "watchdog-test", models: [{ id: "watchdog-test-model", name: "Watchdog test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 1_024 }], streamSimple(model, context, options) {
@@ -486,7 +567,7 @@ async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = t
 			return stream;
 		} });
 		const model = runtime.getModel("watchdog-test", "watchdog-test-model")!;
-		const settingsManager = SettingsManager.inMemory({ retry: { enabled: retryEnabled, maxRetries: 1, baseDelayMs: 1 } });
+		const settingsManager = SettingsManager.inMemory({ retry: { enabled: retryEnabled, maxRetries: opts.maxRetries ?? 1, baseDelayMs: 1 } });
 		const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [providerStallWatchdog] });
 		await loader.reload();
 		const { session } = await createAgentSession({ cwd: root, modelRuntime: runtime, model, settingsManager, resourceLoader: loader, sessionManager: SessionManager.inMemory(root), customTools: [defineTool({ name: "watchdog_tool", label: "watchdog tool", description: "test", parameters: Type.Object({}), execute: async () => { toolCalls += 1; return { content: [{ type: "text", text: "tool complete" }], details: undefined }; } })] });
@@ -511,10 +592,20 @@ test("installed runtime watchdog uses ExtensionContext.abort to clear queued fol
 	} finally { h.dispose(); }
 });
 
-test("installed runtime aborts a second stalled request without recursive retry", async () => {
-	const h = await runtimeWatchdogHarness(["stall", "stall"]);
-	try { await waitBounded(h.session.prompt("start"), "second stalled run"); assert.equal(h.contexts.length, 2); assert.equal((h.session.messages.at(-1) as any).stopReason, "aborted"); assert.equal(h.notifications.at(-1), "The retry also stopped making progress; aborting without another automatic retry. Submit the message again manually."); }
+test("installed runtime aborts a stalled request past the stall budget without recursive retry", async () => {
+	const h = await runtimeWatchdogHarness(["stall", "stall"], true, { maxStallRetries: 1 });
+	try { await waitBounded(h.session.prompt("start"), "second stalled run"); assert.equal(h.contexts.length, 2); assert.equal((h.session.messages.at(-1) as any).stopReason, "aborted"); assert.equal(h.notifications.at(-1), "Stall retry budget (1) exhausted; aborting without another automatic retry. Submit the message again manually."); }
 	finally { h.dispose(); }
+});
+
+test("installed runtime retries multiple consecutive stalls within the stall budget", async () => {
+	const h = await runtimeWatchdogHarness(["stall", "stall", "success"], true, { maxStallRetries: 2, maxRetries: 2 });
+	try {
+		await waitBounded(h.session.prompt("start"), "multi-stall run");
+		assert.equal(h.contexts.length, 3);
+		assert.equal(h.session.messages.at(-1)?.role, "assistant");
+		assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+	} finally { h.dispose(); }
 });
 
 test("installed runtime degrades without a continuation when retry is disabled", async () => {

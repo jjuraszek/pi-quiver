@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveConfig } from "./extension-config.ts";
+import { readSettings, resolveConfig, settingsPaths } from "./extension-config.ts";
 
 export const MAX_TIMER_MS = 2_147_483_647;
 export const DEFAULT_CONFIG = {
@@ -12,6 +12,7 @@ export type WatchdogConfig = {
 	enabled: boolean;
 	warningMs: number;
 	recoveryMs: number;
+	maxStallRetries: number;
 };
 
 export type WatchdogRuntime = {
@@ -25,6 +26,7 @@ export type ConfigCandidate = {
 	enabled?: unknown;
 	warningMs?: unknown;
 	recoveryMs?: unknown;
+	maxStallRetries?: unknown;
 };
 
 export type ConfigValidation =
@@ -39,7 +41,7 @@ export function coerce(raw: unknown): ConfigCandidate | undefined {
 
 	const source = raw as Record<string, unknown>;
 	const candidate: ConfigCandidate = { blockIsObject: true };
-	for (const key of ["enabled", "warningMs", "recoveryMs"] as const) {
+	for (const key of ["enabled", "warningMs", "recoveryMs", "maxStallRetries"] as const) {
 		if (Object.hasOwn(source, key)) candidate[key] = source[key];
 	}
 	return candidate;
@@ -51,12 +53,14 @@ export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 	if (!isTimerDelay(candidate.warningMs)) return { ok: false, error: "warningMs must be a positive timer delay" };
 	if (!isTimerDelay(candidate.recoveryMs)) return { ok: false, error: "recoveryMs must be a positive timer delay" };
 	if (candidate.warningMs >= candidate.recoveryMs) return { ok: false, error: "warningMs must be less than recoveryMs" };
+	if (!isPositiveInteger(candidate.maxStallRetries)) return { ok: false, error: "maxStallRetries must be a positive integer" };
 	return {
 		ok: true,
 		config: {
 			enabled: candidate.enabled,
 			warningMs: candidate.warningMs,
 			recoveryMs: candidate.recoveryMs,
+			maxStallRetries: candidate.maxStallRetries,
 		},
 	};
 }
@@ -65,8 +69,28 @@ function isTimerDelay(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0 && value <= MAX_TIMER_MS;
 }
 
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/** Pi's own resolution is `settings.retry?.maxRetries ?? 3` over the same layered settings.json files. */
+export function resolveRetryMaxRetries(cwd: string): number {
+	let maxRetries = 3;
+	for (const path of settingsPaths(cwd)) {
+		const retry = readSettings(path)?.retry;
+		if (retry === null || typeof retry !== "object" || Array.isArray(retry)) continue;
+		const value = (retry as Record<string, unknown>).maxRetries;
+		if (isPositiveInteger(value)) maxRetries = value;
+	}
+	return maxRetries;
+}
+
 export function resolveWatchdogConfig(cwd: string): ConfigValidation {
-	return validateConfig(resolveConfig(cwd, "providerStallWatchdog", DEFAULT_CANDIDATE, coerce));
+	const candidate = resolveConfig(cwd, "providerStallWatchdog", DEFAULT_CANDIDATE, coerce);
+	if (candidate.blockIsObject === true && candidate.maxStallRetries === undefined) {
+		candidate.maxStallRetries = resolveRetryMaxRetries(cwd);
+	}
+	return validateConfig(candidate);
 }
 
 const defaultRuntime: WatchdogRuntime = {
@@ -75,8 +99,6 @@ const defaultRuntime: WatchdogRuntime = {
 	clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-const STATUS_KEY = "providerStallWatchdog";
-const SECOND_STALL_NOTICE = "The retry also stopped making progress; aborting without another automatic retry. Submit the message again manually.";
 const DEGRADATION_NOTICE = "The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually.";
 
 type Timer = { warning?: unknown; recovery?: unknown };
@@ -87,8 +109,12 @@ function formatElapsed(ms: number): string {
 	return `${ms}ms`;
 }
 
-function warningStatus(config: WatchdogConfig): string {
-	return `No model progress for ${formatElapsed(config.warningMs)}; aborting and asking Pi to retry once in ${formatElapsed(config.recoveryMs - config.warningMs)} (Esc aborts now)`;
+function warningNotice(config: WatchdogConfig): string {
+	return `No model progress for ${formatElapsed(config.warningMs)}; aborting and asking Pi to retry in ${formatElapsed(config.recoveryMs - config.warningMs)} (Esc aborts now)`;
+}
+
+function exhaustedNotice(config: WatchdogConfig): string {
+	return `Stall retry budget (${config.maxStallRetries}) exhausted; aborting without another automatic retry. Submit the message again manually.`;
 }
 
 export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRuntime): (pi: ExtensionAPI) => void {
@@ -105,10 +131,10 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		let deadlineEpoch = 0;
 		let timers: Timer = {};
 		let removeSignalListener: (() => void) | undefined;
-		let ui: { setStatus(key: string, text: string | undefined): void; notify(text: string, type?: string): void } | undefined;
+		let ui: { notify(text: string, type?: string): void } | undefined;
 		let watchdogAbortedGeneration: number | undefined;
 		let timeoutConversionPending = false;
-		let stallRetryConsumed = false;
+		let stallRetriesUsed = 0;
 		let continuationStarted = false;
 		let convertedTimeout = false;
 
@@ -117,12 +143,8 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			if (timers.recovery !== undefined) runtime.clearTimeout(timers.recovery);
 			timers = {};
 		};
-		const clearDeadlines = () => {
-			clearTimers();
-			ui?.setStatus(STATUS_KEY, undefined);
-		};
 		const clear = () => {
-			clearDeadlines();
+			clearTimers();
 			removeSignalListener?.();
 			removeSignalListener = undefined;
 			activeGeneration = undefined;
@@ -132,7 +154,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			disarm();
 			activeRun = false;
 			pendingInteractive = false;
-			stallRetryConsumed = false;
+			stallRetriesUsed = 0;
 			continuationStarted = false;
 			convertedTimeout = false;
 			watchdogAbortedGeneration = undefined;
@@ -152,20 +174,20 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 				}
 				if (kind === "warning" && !warned) {
 					warned = true;
-					ctx.ui?.setStatus(STATUS_KEY, warningStatus(config));
+					ctx.ui?.notify(warningNotice(config), "warning");
 				}
 				if (kind === "recovery") {
-					clearDeadlines();
+					clearTimers();
 					warned = false;
-					if (stallRetryConsumed) {
-						ui?.notify(SECOND_STALL_NOTICE);
+					if (stallRetriesUsed >= config.maxStallRetries) {
+						ui?.notify(exhaustedNotice(config));
 						ctx.abort();
 						return;
 					}
 					watchdogAbortedGeneration = capturedGeneration;
 					timeoutConversionPending = true;
-					stallRetryConsumed = true;
-					ui?.notify(`No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry once if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`);
+					stallRetriesUsed += 1;
+					ui?.notify(`No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry (${stallRetriesUsed}/${config.maxStallRetries}) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`);
 					ctx.abort();
 				}
 			};
@@ -212,7 +234,6 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			if (activeGeneration === undefined || !(update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") || update.delta.length === 0) return;
 			lastSemanticAt = runtime.now();
 			warned = false;
-			ctx.ui.setStatus(STATUS_KEY, undefined);
 			clearTimers();
 			schedule(ctx);
 		});
@@ -220,12 +241,14 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			if (event.message.role !== "assistant") return;
 			const matchesWatchdogAbort = event.message.stopReason === "aborted"
 				&& activeGeneration === watchdogAbortedGeneration
-				&& timeoutConversionPending
-				&& stallRetryConsumed;
+				&& timeoutConversionPending;
 			disarm();
+			// Mirror Pi's retry loop, which resets its attempt counter on any successful assistant turn.
+			if (event.message.stopReason !== "aborted" && event.message.stopReason !== "error") stallRetriesUsed = 0;
 			if (!matchesWatchdogAbort || !config) return;
 			timeoutConversionPending = false;
 			convertedTimeout = true;
+			continuationStarted = false;
 			return { message: { ...event.message, stopReason: "error", errorMessage: `Provider semantic timeout after ${config.recoveryMs} ms without progress` } };
 		});
 		pi.on("agent_end", () => disarm());
