@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v3.3.0 - 2026-07-17
 
 - **`provider-stall-watchdog`: opt-in semantic-silence recovery.** Policy D warns after configured silence, aborts the first semantic stall, and offers it once to Pi's existing retry loop; a second stall stops without another watchdog retry. OFF by default.
 - **Human-TUI boundary.** Arms only for confirmed human interactive TUI runs; JSON, RPC, print, and subagent runs are excluded by activation rather than environment or session lineage.
