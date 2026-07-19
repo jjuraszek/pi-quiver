@@ -1,7 +1,7 @@
 {
   "name": "pi-quiver",
   "version": "3.2.0",
-  "description": "Personal pack of Pi coding-agent extensions: context-safe fetch, doc_to_md PDF/DOCX/PPTX-to-Markdown conversion, session naming, and a themed ASCII startup header.",
+  "description": "Personal pack of Pi coding-agent extensions: context-safe fetch, doc_to_md PDF/DOCX/PPTX-to-Markdown conversion, session naming, a themed ASCII startup header, Opus 4.8 fast mode, and a provider-stall watchdog.",
   "author": "Jacek Juraszek",
   "license": "MIT",
   "type": "module",
@@ -33,6 +33,7 @@
     "session-name.ts",
     "sword-header.ts",
     "fast-mode.ts",
+    "provider-stall-watchdog.ts",
     "extension-config.ts",
     "scripts/pdf_to_md.py",
     "types/**/*.d.ts",
@@ -42,7 +43,7 @@
   "scripts": {
     "check:agents-core": "node scripts/check-agents-core.mjs",
     "test": "node --test \"*.test.ts\"",
-    "typecheck": "npx -y tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts fast-mode.ts fast-mode.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts",
+    "typecheck": "npx -y tsc --noEmit --allowImportingTsExtensions --target es2022 --module nodenext --moduleResolution nodenext --strict --skipLibCheck --esModuleInterop --resolveJsonModule --lib es2022 --types node fetch.ts fetch.test.ts doc_to_md.ts doc_to_md.test.ts session-name.ts session-name.test.ts sword-header.ts sword-header.test.ts fast-mode.ts fast-mode.test.ts provider-stall-watchdog.ts provider-stall-watchdog.test.ts extension-config.ts types/turndown-plugin-gfm.d.ts",
     "test:all": "npm run check:agents-core && npm run test && npm run typecheck"
   },
   "pi": {
@@ -51,7 +52,8 @@
       "./doc_to_md.ts",
       "./session-name.ts",
       "./sword-header.ts",
-      "./fast-mode.ts"
+      "./fast-mode.ts",
+      "./provider-stall-watchdog.ts"
     ],
     "image": "https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png"
   },

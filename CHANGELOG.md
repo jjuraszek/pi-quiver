@@ -8,6 +8,12 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- **`provider-stall-watchdog`: opt-in semantic-silence recovery.** Policy D warns after configured silence, aborts the first semantic stall, and offers it once to Pi's existing retry loop; a second stall stops without another watchdog retry. OFF by default.
+- **Human-TUI boundary.** Arms only for confirmed human interactive TUI runs; JSON, RPC, print, and subagent runs are excluded by activation rather than environment or session lineage.
+- **Compatibility and fallback.** Verified against Pi 0.80.10. Automatic continuation requires enabled Pi retry with remaining capacity; disabled, exhausted, or incompatible retry leaves the request stopped for manual resubmission. Pending steering and follow-ups return to the editor and are excluded from automatic continuation; invalid merged watchdog configuration fails closed.
+
 ## v3.2.0 - 2026-07-12
 
 - Add `fast-mode` extension: opt-in Anthropic fast mode for Claude Opus 4.8 (`speed: "fast"` payload + `fast-mode-2026-02-01` beta header), controlled via `fastMode` settings key, `--fast` flag, and `/fast [on|off|status]`. OFF by default. Preserves OAuth identity betas. Requires pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5 (the `before_provider_headers` hook).

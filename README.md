@@ -18,7 +18,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 `fetch` and `doc_to_md` bring real web pages, GitHub issues/PRs, and local PDF/DOCX/PPTX files into context - and every result is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint, so a single call can never flood the window. Ingestion is what makes data-driven work possible; the gate is what keeps it safe.
 
-`session-name` and `sword-header` are smaller, opt-in ergonomics on top - session labeling and a themed startup header.
+`session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` are opt-in ergonomics and recovery controls: session labeling, a themed startup header, Anthropic fast mode, and semantic-stall recovery.
 
 ## Part of the pi agent toolkit
 
@@ -33,7 +33,7 @@ No code dependency between them. pi-quiver is call-level: it gates the size of w
 
 ## Mental model
 
-Every extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. Two tools bring real sources in (`fetch`, `doc_to_md`); two are opt-in ergonomics (`session-name`, `sword-header`).
+Every ingestion extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. `fetch` and `doc_to_md` bring real sources in; `session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` are opt-in.
 
 ```mermaid
 flowchart LR
@@ -67,6 +67,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
 | `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
+| `provider-stall-watchdog.ts` | - | Opt-in semantic-silence watchdog for human interactive TUI runs. Warns after 2 minutes and recovers after 4 minutes; policy D offers the first stall once to Pi's retry loop, then stops a second stall. OFF by default. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
@@ -77,18 +78,21 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 | Size gate | Text/Markdown/JSON output over 32 KB or 1000 lines spills to a temp file with a 60-line preview instead of inlining. |
 | Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI, everything else -> the size gate. |
 | Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
-| Opt-in ergonomics | `session-name` and `sword-header` do nothing until explicitly enabled in `settings.json`. |
+| Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` do nothing until explicitly enabled in `settings.json`. |
+| Provider stall recovery | The watchdog detects missing parsed semantic progress, not network liveness. It is limited to confirmed human interactive TUI runs. |
 
 ## When to use
 
 - An agent needs to reason from a real web page, GitHub issue/PR, or local PDF/DOCX/PPTX instead of memory.
 - You want that ingestion to be safe by default, with no risk of a single call blowing the context budget.
+- A human interactive Pi session needs an opt-in guard against providers that stop making semantic progress.
 
 ## When NOT to use
 
 - You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
 - You need spreadsheet conversion - `doc_to_md` explicitly excludes spreadsheets (they paginate badly via PDF).
-- You want automatic session naming or a custom header without opting in - both stay off until you flip the config.
+- You want automatic session naming, a custom header, fast mode, or stall recovery without opting in - all stay off until you flip the config.
+- You need watchdog behavior in JSON, RPC, print, or subagent runs - activation excludes them by input origin and mode, not environment or session lineage.
 
 ## Install
 
@@ -133,17 +137,37 @@ None is a hard install-time dependency of the package; they are tools you provid
 
 ### Opt-in extension config
 
-Both are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer):
+These extensions are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer):
 
 ```jsonc
 {
   "sessionAutoName": { "enabled": false, "ghosttyTab": true }, // or boolean shorthand
   "swordHeader": false,                                        // or { "enabled": true }
-  "fastMode": false                                            // or { "enabled": true }
+  "fastMode": false,                                           // or { "enabled": true }
+  "providerStallWatchdog": false                               // or { "enabled": true }
 }
 ```
 
 `sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `fastMode` only affects `claude-opus-4-8` requests on Anthropic's `anthropic-messages` API; enabling it opts into premium fast-mode pricing. `--fast` forces it on for one launch; `/fast on|off` toggles live. Proxy providers (opencode, cloudflare-ai-gateway) are excluded. `fastMode`'s header injection needs the `before_provider_headers` hook (pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5); on older pi the beta header is silently not sent. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
+
+Recommended explicit retry and watchdog settings:
+
+```json
+{
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  },
+  "providerStallWatchdog": {
+    "enabled": true,
+    "warningMs": 120000,
+    "recoveryMs": 240000
+  }
+}
+```
+
+`providerStallWatchdog` is OFF by default and runs only for confirmed human interactive TUI runs. JSON, RPC, print, and subagent runs are excluded by activation, not environment or session lineage. Verified with Pi 0.80.10: the first semantic stall is aborted and offered once to Pi retry; a second stall stops. Automatic continuation needs enabled Pi retry with remaining capacity. Disabled, exhausted, or incompatible retry degrades to manual resubmission. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed.
 
 ## Development
 
