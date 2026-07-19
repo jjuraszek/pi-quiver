@@ -1,6 +1,6 @@
 {
   "name": "pi-quiver",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Personal pack of Pi coding-agent extensions: context-safe fetch, doc_to_md PDF/DOCX/PPTX-to-Markdown conversion, session naming, a themed ASCII startup header, Opus 4.8 fast mode, and a provider-stall watchdog.",
   "author": "Jacek Juraszek",
   "license": "MIT",
