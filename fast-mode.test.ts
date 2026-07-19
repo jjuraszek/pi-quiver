@@ -1,5 +1,8 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	coerce,
 	shouldInject,
@@ -90,6 +93,18 @@ test("resolveEnabled: precedence config < flag(force-on) < live", () => {
 });
 
 import fastMode from "./fast-mode.ts";
+
+// Isolate the global settings layer: resolveConfig reads
+// <getAgentDir()>/settings.json, and the host machine's real global settings
+// may enable fastMode, which would break the "disabled by default" cases.
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const isolatedAgentDir = mkdtempSync(join(tmpdir(), "fast-mode-agent-"));
+process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+after(() => {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	rmSync(isolatedAgentDir, { recursive: true, force: true });
+});
 
 type Handler = (event: any, ctx: any) => any;
 
