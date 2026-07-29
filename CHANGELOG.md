@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- **`fast-mode` supports Claude Opus 5.** Added `claude-opus-5` to the model prefix allowlist (fast mode API mechanics are identical to Opus 4.8: `speed: "fast"` + `fast-mode-2026-02-01` beta; compat verified identical in pi-ai 0.82.1, so `buildBetaHeader`'s OAuth-only preservation still holds).
+
 ## v3.3.1 - 2026-07-19
 
 - **`provider-stall-watchdog`: bounded multi-stall retry via `maxStallRetries`.** Each semantic stall converts to a retryable error until the budget is exhausted; previously only the first stall retried, so a longer provider outage forced manual resubmission (observed stuck streams recover in seconds on a fresh request). Default = layered `retry.maxRetries` (Pi default 3); explicit config wins; positive integer, fails closed. A successful assistant turn resets the counter, mirroring Pi's retry loop.

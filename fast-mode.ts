@@ -1,8 +1,8 @@
 /**
- * Fast mode for Claude Opus 4.8.
+ * Fast mode for Claude Opus 4.8 / Opus 5.
  *
  * When enabled, injects Anthropic's fast-mode signals into every qualifying
- * Opus 4.8 request on the anthropic-messages API, regardless of thinking level:
+ * Opus 4.8 / Opus 5 request on the anthropic-messages API, regardless of thinking level:
  *   - payload: { ...payload, speed: "fast" }        (before_provider_request)
  *   - header:  anthropic-beta: ...,fast-mode-2026-02-01  (before_provider_headers)
  *
@@ -13,11 +13,12 @@
  *
  * Header coupling to pi-ai internals: pi assembles `anthropic-beta` AFTER this
  * hook and merges the hook's headers LAST, so setting the header here REPLACES
- * pi's list. For opus-4-8 pi's conditional betas (fine-grained tool streaming,
- * interleaved thinking) are never applied (eager tool streaming defaults on +
- * forceAdaptiveThinking), so the only betas to preserve are the OAuth identity
- * betas. We detect OAuth via the same token marker pi uses and rebuild the
- * exact list. If pi later adds betas for opus-4-8, revisit buildBetaHeader.
+ * pi's list. For opus-4-8 and opus-5 pi's conditional betas (fine-grained tool
+ * streaming, interleaved thinking) are never applied (eager tool streaming
+ * defaults on + forceAdaptiveThinking; verified identical compat in pi-ai
+ * 0.82.1), so the only betas to preserve are the OAuth identity betas. We
+ * detect OAuth via the same token marker pi uses and rebuild the exact list.
+ * If pi later adds betas for these models, revisit buildBetaHeader.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -25,9 +26,9 @@ import { resolveConfig } from "./extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
 export const FAST_SPEED = "fast";
-// Loose prefix: matches dated snapshots (claude-opus-4-8-*). Opus 4.7 is out of
-// scope (D1); a future 4.9 needs a one-line addition here.
-export const FAST_MODE_MODEL_PREFIXES = ["claude-opus-4-8"];
+// Loose prefixes: match dated snapshots (claude-opus-4-8-*, claude-opus-5-*).
+// Opus 4.7 is out of scope (D1); a future model needs a one-line addition here.
+export const FAST_MODE_MODEL_PREFIXES = ["claude-opus-4-8", "claude-opus-5"];
 export const OAUTH_IDENTITY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"];
 const STATUS_KEY = "fast-mode";
 const BETA_HEADER = "anthropic-beta";
@@ -121,7 +122,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerFlag("fast", {
 		type: "boolean",
-		description: "Enable Anthropic fast mode for Opus 4.8 requests this launch",
+		description: "Enable Anthropic fast mode for Opus 4.8/5 requests this launch",
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -147,7 +148,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("fast", {
-		description: "Manage Opus 4.8 fast mode: /fast [on|off|status]",
+		description: "Manage Opus 4.8/5 fast mode: /fast [on|off|status]",
 		getArgumentCompletions: (prefix) => {
 			const p = prefix.trim().toLowerCase();
 			if (p.includes(" ")) return null;

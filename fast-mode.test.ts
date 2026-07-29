@@ -37,6 +37,11 @@ test("shouldInject: opus-4-8 anthropic passes when enabled", () => {
 	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-4-8-20260901" }), true);
 });
 
+test("shouldInject: opus-5 anthropic passes when enabled", () => {
+	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5" }), true);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5-20260315" }), true);
+});
+
 test("shouldInject: gated off cases", () => {
 	assert.equal(shouldInject(false, opus), false);
 	assert.equal(shouldInject(true, undefined), false);
