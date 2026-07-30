@@ -67,7 +67,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
 | `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
-| `provider-stall-watchdog.ts` | - | Opt-in semantic-silence watchdog for human interactive TUI runs. Warns after 2 minutes and recovers after 4 minutes; policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
+| `provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
@@ -79,20 +79,20 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 | Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI, everything else -> the size gate. |
 | Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
 | Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` do nothing until explicitly enabled in `settings.json`. |
-| Provider stall recovery | The watchdog detects missing parsed semantic progress, not network liveness. It is limited to confirmed human interactive TUI runs. |
+| Provider stall recovery | The watchdog detects a missing first stream event and missing parsed semantic progress, not network liveness. The pre-first-event tier covers every mode and origin; the mid-stream tier is TUI-only. |
 
 ## When to use
 
 - An agent needs to reason from a real web page, GitHub issue/PR, or local PDF/DOCX/PPTX instead of memory.
 - You want that ingestion to be safe by default, with no risk of a single call blowing the context budget.
-- A human interactive Pi session needs an opt-in guard against providers that stop making semantic progress.
+- A Pi run needs an opt-in guard against provider requests that never produce a first stream event, plus mid-stream silence recovery in interactive TUI sessions.
 
 ## When NOT to use
 
 - You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
 - You need spreadsheet conversion - `doc_to_md` explicitly excludes spreadsheets (they paginate badly via PDF).
 - You want automatic session naming, a custom header, fast mode, or stall recovery without opting in - all stay off until you flip the config.
-- You need watchdog behavior in JSON, RPC, print, or subagent runs - activation excludes them by input origin and mode, not environment or session lineage.
+- You need *mid-stream* stall recovery in JSON, RPC, or print runs - only the pre-first-event tier arms there; mid-stream silence falls through to pi's transport timeout.
 
 ## Install
 
@@ -161,6 +161,7 @@ Recommended explicit retry and watchdog settings:
   },
   "providerStallWatchdog": {
     "enabled": true,
+    "firstEventMs": 20000,
     "warningMs": 120000,
     "recoveryMs": 240000,
     "maxStallRetries": 3
@@ -168,7 +169,30 @@ Recommended explicit retry and watchdog settings:
 }
 ```
 
-`providerStallWatchdog` is OFF by default and runs only for confirmed human interactive TUI runs. JSON, RPC, print, and subagent runs are excluded by activation, not environment or session lineage. Verified with Pi 0.80.10: each semantic stall is aborted and offered to Pi retry until `maxStallRetries` conversions are used; further stalls stop for manual resubmission. `maxStallRetries` defaults to the layered `retry.maxRetries` (Pi default 3); consecutive stall conversions consume Pi retry attempts without a success reset in between, so keep `maxStallRetries <= retry.maxRetries`. A successful assistant turn resets the stall counter (mirroring Pi's own retry counter). The silence warning and all watchdog notices render as main-window notifications, not the bottom status line. Automatic continuation needs enabled Pi retry with remaining capacity. Disabled, exhausted, or incompatible retry degrades to manual resubmission. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed.
+| Key | Default | Where it arms | What it measures |
+| --- | --- | --- | --- |
+| `enabled` | `false` | - | Master switch. OFF means the extension does nothing. |
+| `firstEventMs` | `20000` | every provider request, every mode (`tui`/`print`/`json`/`rpc`), every origin | Silence between the request and the first assistant `message_start`. |
+| `warningMs` | `120000` | mid-stream, `ctx.mode === "tui"` only | Silence since the last non-empty text/thinking/toolcall delta; notifies. |
+| `recoveryMs` | `240000` | mid-stream, `ctx.mode === "tui"` only | Same clock; aborts and converts. Must be `> warningMs`. |
+| `maxStallRetries` | layered `retry.maxRetries`, else `3` | shared by both tiers | Watchdog aborts that may convert to a retryable error before stopping. |
+
+`providerStallWatchdog` is OFF by default. Once enabled it arms in two tiers per provider request:
+
+- **Pre-first-event (`firstEventMs`).** Armed at every provider request, in every mode and from every origin - including extension-triggered turns that never emit `before_agent_start` - and cleared by the first assistant `message_start`. On expiry the request is aborted and, budget permitting, converted to a retryable error, so an unresponsive request recovers in ~22s (20s detection + Pi's 2s backoff) instead of the ~240s it took when only the mid-stream tier existed.
+- **Mid-stream (`warningMs` / `recoveryMs`).** Armed from the first assistant `message_start` onward, and only when `ctx.mode === "tui"`. Aborting mid-generation discards billed output tokens and an unattended run has nobody to read the warning, so headless mid-stream silence deliberately falls through to the transport timeout instead.
+
+**Raise `firstEventMs` if your provider is legitimately slow to first event.** Queueing gateways, throttled endpoints, and busy single-slot local model servers can hold the connection for well over 20s before their first stream event; every false abort re-uploads the whole context and spends one stall retry.
+
+**Leave pi's own `httpIdleTimeoutMs` (default `300000`) at its default.** It is the transport backstop, and a single value drives undici's `headersTimeout` *and* `bodyTimeout` - lowering it to get fast pre-stream failure also truncates legitimate mid-stream gaps. `firstEventMs` is the knob for pre-stream silence.
+
+Verified with Pi 0.80.10: each stall is aborted and offered to Pi retry until `maxStallRetries` conversions are used; further stalls stop for manual resubmission. Both tiers draw on that one budget. `maxStallRetries` defaults to the layered `retry.maxRetries` (Pi default 3, an explicit `0` honoured); `0` is valid and means "detect and stop, never auto-retry". Consecutive stall conversions consume Pi retry attempts without a success reset in between, so keep `maxStallRetries <= retry.maxRetries`. A successful assistant turn resets the stall counter (mirroring Pi's own retry counter). Automatic continuation needs enabled Pi retry with remaining capacity. Disabled, exhausted, or incompatible retry degrades to manual resubmission. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed.
+
+Operational notes:
+
+- **Settings are read once per session,** on the first provider request. Editing `settings.json` mid-session changes nothing until you restart the session - that includes repairing an invalid block that already disabled the extension.
+- **A watchdog abort that the provider ignores escalates after a fixed 10s.** Any post-abort stream event re-arms that deadline (bytes prove only that the connection was alive at that instant), so a stream that emits a straggler and then wedges still escalates 10s after its last event. This reduces the hang; it cannot force the provider to stop, and undici's timeouts remain the final backstop.
+- **Headless runs report on stderr.** In `print`/`json` mode pi binds a no-op UI, so watchdog notices go out via `console.warn`. Nothing is ever written to stdout, which `json` mode uses for its protocol. In TUI and RPC the notices render as main-window notifications, not the bottom status line.
 
 ## Development
 

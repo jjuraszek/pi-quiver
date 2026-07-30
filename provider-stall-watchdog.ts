@@ -4,12 +4,14 @@ import { readSettings, resolveConfig, settingsPaths } from "./extension-config.t
 export const MAX_TIMER_MS = 2_147_483_647;
 export const DEFAULT_CONFIG = {
 	enabled: false,
+	firstEventMs: 20_000,
 	warningMs: 120_000,
 	recoveryMs: 240_000,
 } as const;
 
 export type WatchdogConfig = {
 	enabled: boolean;
+	firstEventMs: number;
 	warningMs: number;
 	recoveryMs: number;
 	maxStallRetries: number;
@@ -24,6 +26,7 @@ export type WatchdogRuntime = {
 export type ConfigCandidate = {
 	blockIsObject?: unknown;
 	enabled?: unknown;
+	firstEventMs?: unknown;
 	warningMs?: unknown;
 	recoveryMs?: unknown;
 	maxStallRetries?: unknown;
@@ -37,11 +40,12 @@ const DEFAULT_CANDIDATE: ConfigCandidate = { blockIsObject: true, ...DEFAULT_CON
 
 export function coerce(raw: unknown): ConfigCandidate | undefined {
 	if (raw === undefined) return undefined;
+	if (typeof raw === "boolean") return { blockIsObject: true, enabled: raw };
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { blockIsObject: false };
 
 	const source = raw as Record<string, unknown>;
 	const candidate: ConfigCandidate = { blockIsObject: true };
-	for (const key of ["enabled", "warningMs", "recoveryMs", "maxStallRetries"] as const) {
+	for (const key of ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries"] as const) {
 		if (Object.hasOwn(source, key)) candidate[key] = source[key];
 	}
 	return candidate;
@@ -50,14 +54,16 @@ export function coerce(raw: unknown): ConfigCandidate | undefined {
 export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 	if (candidate.blockIsObject !== true) return { ok: false, error: "providerStallWatchdog must be an object" };
 	if (typeof candidate.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
+	if (!isTimerDelay(candidate.firstEventMs)) return { ok: false, error: "firstEventMs must be a positive timer delay" };
 	if (!isTimerDelay(candidate.warningMs)) return { ok: false, error: "warningMs must be a positive timer delay" };
 	if (!isTimerDelay(candidate.recoveryMs)) return { ok: false, error: "recoveryMs must be a positive timer delay" };
 	if (candidate.warningMs >= candidate.recoveryMs) return { ok: false, error: "warningMs must be less than recoveryMs" };
-	if (!isPositiveInteger(candidate.maxStallRetries)) return { ok: false, error: "maxStallRetries must be a positive integer" };
+	if (!isNonNegativeInteger(candidate.maxStallRetries)) return { ok: false, error: "maxStallRetries must be a non-negative integer" };
 	return {
 		ok: true,
 		config: {
 			enabled: candidate.enabled,
+			firstEventMs: candidate.firstEventMs,
 			warningMs: candidate.warningMs,
 			recoveryMs: candidate.recoveryMs,
 			maxStallRetries: candidate.maxStallRetries,
@@ -69,8 +75,8 @@ function isTimerDelay(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0 && value <= MAX_TIMER_MS;
 }
 
-function isPositiveInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value > 0;
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 /** Pi's own resolution is `settings.retry?.maxRetries ?? 3` over the same layered settings.json files. */
@@ -80,7 +86,7 @@ export function resolveRetryMaxRetries(cwd: string): number {
 		const retry = readSettings(path)?.retry;
 		if (retry === null || typeof retry !== "object" || Array.isArray(retry)) continue;
 		const value = (retry as Record<string, unknown>).maxRetries;
-		if (isPositiveInteger(value)) maxRetries = value;
+		if (isNonNegativeInteger(value)) maxRetries = value;
 	}
 	return maxRetries;
 }
@@ -100,14 +106,19 @@ const defaultRuntime: WatchdogRuntime = {
 };
 
 const DEGRADATION_NOTICE = "The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually.";
+// Reduces, but cannot eliminate, the hang when an aborted provider operation never terminates;
+// undici's headersTimeout/bodyTimeout stay the backstop past this point.
+const ABORT_GRACE_MS = 10_000;
 
-type Timer = { warning?: unknown; recovery?: unknown };
+type Timer = { firstEvent?: unknown; warning?: unknown; recovery?: unknown; abortGuard?: unknown };
 
 function formatElapsed(ms: number): string {
 	if (ms % 60_000 === 0) return `${ms / 60_000}m`;
 	if (ms % 1_000 === 0) return `${ms / 1_000}s`;
 	return `${ms}ms`;
 }
+
+const ABORT_STUCK_NOTICE = `The stalled request did not stop within ${formatElapsed(ABORT_GRACE_MS)} of being aborted; the provider connection is unresponsive. No automatic retry will run - the turn will not end until the HTTP idle timeout expires.`;
 
 function warningNotice(config: WatchdogConfig): string {
 	return `No model progress for ${formatElapsed(config.warningMs)}; aborting and asking Pi to retry in ${formatElapsed(config.recoveryMs - config.warningMs)} (Esc aborts now)`;
@@ -117,9 +128,20 @@ function exhaustedNotice(config: WatchdogConfig): string {
 	return `Stall retry budget (${config.maxStallRetries}) exhausted; aborting without another automatic retry. Submit the message again manually.`;
 }
 
+function firstEventRetryNotice(config: WatchdogConfig): string {
+	return `Provider sent no response for ${formatElapsed(config.firstEventMs)}; stopping and retrying the request.`;
+}
+
+function firstEventExhaustedNotice(config: WatchdogConfig): string {
+	return `Provider sent no response for ${formatElapsed(config.firstEventMs)} and the stall-retry budget is spent; the request was stopped.`;
+}
+
 export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRuntime): (pi: ExtensionAPI) => void {
 	return (pi) => {
-		let pendingInteractive = false;
+		let midStreamEnabled = false;
+		let firstEventSeen = false;
+		let hasUI = false;
+		let pendingTimeoutReason: string | undefined;
 		let activeRun = false;
 		let disabled = false;
 		let config: WatchdogConfig | undefined;
@@ -127,21 +149,24 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		let activeGeneration: number | undefined;
 		let lastSemanticAt = 0;
 		let warned = false;
-		let epoch = 0;
 		let deadlineEpoch = 0;
 		let timers: Timer = {};
 		let removeSignalListener: (() => void) | undefined;
 		let ui: { notify(text: string, type?: string): void } | undefined;
 		let watchdogAbortedGeneration: number | undefined;
-		let timeoutConversionPending = false;
 		let stallRetriesUsed = 0;
 		let continuationStarted = false;
 		let convertedTimeout = false;
 
 		const clearTimers = () => {
-			if (timers.warning !== undefined) runtime.clearTimeout(timers.warning);
-			if (timers.recovery !== undefined) runtime.clearTimeout(timers.recovery);
+			for (const key of ["firstEvent", "warning", "recovery", "abortGuard"] as const) {
+				if (timers[key] !== undefined) runtime.clearTimeout(timers[key]);
+			}
 			timers = {};
+		};
+		const announce = (text: string, type?: string) => {
+			ui?.notify(text, type);
+			if (!hasUI) console.warn(text);
 		};
 		const clear = () => {
 			clearTimers();
@@ -153,20 +178,81 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		const resetRunState = () => {
 			disarm();
 			activeRun = false;
-			pendingInteractive = false;
 			stallRetriesUsed = 0;
 			continuationStarted = false;
 			convertedTimeout = false;
 			watchdogAbortedGeneration = undefined;
-			timeoutConversionPending = false;
+			pendingTimeoutReason = undefined;
+			firstEventSeen = false;
 		};
-		const schedule = (ctx: { ui: typeof ui; abort(): void }) => {
+		const armAbortGuard = (capturedGeneration: number) => {
+			if (timers.abortGuard !== undefined) runtime.clearTimeout(timers.abortGuard);
+			timers.abortGuard = runtime.setTimeout(() => {
+				if (capturedGeneration !== activeGeneration || !activeRun) return;
+				announce(ABORT_STUCK_NOTICE, "error");
+				// Only the timers go: the generation stays armed so a message_end arriving after the grace
+				// period still converts the abort the stall retry already paid for.
+				clearTimers();
+			}, ABORT_GRACE_MS);
+		};
+		// A stream event on a generation the watchdog already aborted: the stall cycle is over for this
+		// request, so nothing re-enters it. The bytes only prove the connection was alive at this instant,
+		// so the guard is re-armed rather than cleared - a wedge right after a straggler still escalates.
+		const postAbortStreamEvent = () => {
+			if (activeGeneration === undefined || watchdogAbortedGeneration !== activeGeneration) return false;
+			armAbortGuard(activeGeneration);
+			return true;
+		};
+		const abortStall = (
+			ctx: { abort(): void },
+			capturedGeneration: number,
+			notices: { retry: () => string; exhausted: () => string },
+			reason: string,
+		) => {
+			if (!config) return;
+			clearTimers();
+			warned = false;
+			watchdogAbortedGeneration = capturedGeneration;
+			// Armed before ctx.abort() so a synchronous teardown inside it cannot orphan the timer;
+			// the generation check makes the callback a no-op if that teardown disarmed the watchdog.
+			armAbortGuard(capturedGeneration);
+			if (stallRetriesUsed >= config.maxStallRetries) {
+				announce(notices.exhausted());
+				ctx.abort();
+				return;
+			}
+			pendingTimeoutReason = reason;
+			stallRetriesUsed += 1;
+			announce(notices.retry());
+			ctx.abort();
+		};
+		const armFirstEvent = (ctx: { abort(): void }) => {
 			if (activeGeneration === undefined || !config) return;
+			const cfg = config;
 			const capturedGeneration = activeGeneration;
-			const capturedEpoch = epoch;
+			const capturedDeadlineEpoch = ++deadlineEpoch;
+			const threshold = cfg.firstEventMs;
+			const run = () => {
+				if (capturedGeneration !== activeGeneration || capturedDeadlineEpoch !== deadlineEpoch || !activeRun || firstEventSeen) return;
+				const elapsed = runtime.now() - lastSemanticAt;
+				if (elapsed < threshold) {
+					timers.firstEvent = runtime.setTimeout(run, threshold - elapsed);
+					return;
+				}
+				abortStall(ctx, capturedGeneration, {
+					retry: () => firstEventRetryNotice(cfg),
+					exhausted: () => firstEventExhaustedNotice(cfg),
+				}, `Provider first-event timeout after ${cfg.firstEventMs} ms without a stream event`);
+			};
+			timers.firstEvent = runtime.setTimeout(run, threshold);
+		};
+		const schedule = (ctx: { abort(): void }) => {
+			if (activeGeneration === undefined || !config) return;
+			const cfg = config;
+			const capturedGeneration = activeGeneration;
 			const capturedDeadlineEpoch = ++deadlineEpoch;
 			const run = (kind: "warning" | "recovery", threshold: number) => () => {
-				if (capturedEpoch !== epoch || capturedGeneration !== activeGeneration || capturedDeadlineEpoch !== deadlineEpoch || !activeRun || !config) return;
+				if (capturedGeneration !== activeGeneration || capturedDeadlineEpoch !== deadlineEpoch || !activeRun) return;
 				const elapsed = runtime.now() - lastSemanticAt;
 				if (elapsed < threshold) {
 					timers[kind] = runtime.setTimeout(run(kind, threshold), threshold - elapsed);
@@ -174,51 +260,38 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 				}
 				if (kind === "warning" && !warned) {
 					warned = true;
-					ctx.ui?.notify(warningNotice(config), "warning");
+					announce(warningNotice(cfg), "warning");
 				}
 				if (kind === "recovery") {
-					clearTimers();
-					warned = false;
-					if (stallRetriesUsed >= config.maxStallRetries) {
-						ui?.notify(exhaustedNotice(config));
-						ctx.abort();
-						return;
-					}
-					watchdogAbortedGeneration = capturedGeneration;
-					timeoutConversionPending = true;
-					stallRetriesUsed += 1;
-					ui?.notify(`No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry (${stallRetriesUsed}/${config.maxStallRetries}) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`);
-					ctx.abort();
+					abortStall(ctx, capturedGeneration, {
+						retry: () => `No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry (${stallRetriesUsed}/${cfg.maxStallRetries}) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`,
+						exhausted: () => exhaustedNotice(cfg),
+					}, `Provider semantic timeout after ${cfg.recoveryMs} ms without progress`);
 				}
 			};
-			timers.warning = runtime.setTimeout(run("warning", config.warningMs), config.warningMs);
-			timers.recovery = runtime.setTimeout(run("recovery", config.recoveryMs), config.recoveryMs);
+			timers.warning = runtime.setTimeout(run("warning", cfg.warningMs), cfg.warningMs);
+			timers.recovery = runtime.setTimeout(run("recovery", cfg.recoveryMs), cfg.recoveryMs);
 		};
 
-		pi.on("input", (event) => {
-			if (!activeRun) pendingInteractive = event.source === "interactive";
-		});
-		pi.on("before_agent_start", (_event, ctx) => {
-			if (!pendingInteractive) return;
-			pendingInteractive = false;
-			if (ctx.mode !== "tui" || disabled) return;
-			const resolved = resolveWatchdogConfig(ctx.cwd);
-			if (!resolved.ok) {
-				disabled = true;
-				console.warn(`providerStallWatchdog disabled: ${resolved.error}`);
-				ctx.ui.notify(`providerStallWatchdog disabled: ${resolved.error}`, "warning");
-				return;
-			}
-			config = resolved.config;
-			activeRun = config.enabled;
-		});
 		pi.on("before_provider_request", (_event, ctx) => {
-			if (!activeRun || ctx.mode !== "tui" || !config) return;
+			if (disabled) return;
+			ui = ctx.ui;
+			hasUI = ctx.hasUI;
+			if (!config) {
+				const resolved = resolveWatchdogConfig(ctx.cwd);
+				if (!resolved.ok) {
+					disabled = true;
+					announce(`providerStallWatchdog disabled: ${resolved.error}`, "warning");
+					return;
+				}
+				config = resolved.config;
+			}
+			activeRun = config.enabled;
+			if (!activeRun) return;
 			disarm();
 			if (convertedTimeout) continuationStarted = true;
 			activeGeneration = ++generation;
 			lastSemanticAt = runtime.now();
-			ui = ctx.ui;
 			const target = ctx.signal;
 			if (target) {
 				const listener = () => {
@@ -227,11 +300,30 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 				target.addEventListener("abort", listener, { once: true });
 				removeSignalListener = () => target.removeEventListener("abort", listener);
 			}
+			midStreamEnabled = ctx.mode === "tui";
+			firstEventSeen = false;
+			armFirstEvent(ctx);
+		});
+		pi.on("message_start", (event, ctx) => {
+			// Pi fires message_start for user and toolResult messages too; only an assistant one is
+			// provider traffic, so the role check must stay ahead of the liveness re-arm below.
+			if (event.message.role !== "assistant") return;
+			if (postAbortStreamEvent()) return;
+			if (!activeRun || activeGeneration === undefined || firstEventSeen) return;
+			firstEventSeen = true;
+			if (timers.firstEvent !== undefined) {
+				runtime.clearTimeout(timers.firstEvent);
+				timers.firstEvent = undefined;
+			}
+			if (!midStreamEnabled || !config) return;
+			lastSemanticAt = runtime.now();
+			warned = false;
 			schedule(ctx);
 		});
 		pi.on("message_update", (event, ctx) => {
+			if (postAbortStreamEvent()) return;
 			const update = event.assistantMessageEvent;
-			if (activeGeneration === undefined || !(update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") || update.delta.length === 0) return;
+			if (!midStreamEnabled || !firstEventSeen || activeGeneration === undefined || !(update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") || update.delta.length === 0) return;
 			lastSemanticAt = runtime.now();
 			warned = false;
 			clearTimers();
@@ -239,25 +331,25 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		});
 		pi.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
-			const matchesWatchdogAbort = event.message.stopReason === "aborted"
-				&& activeGeneration === watchdogAbortedGeneration
-				&& timeoutConversionPending;
+			const errorMessage = pendingTimeoutReason;
+			pendingTimeoutReason = undefined;
+			const matchesWatchdogAbort = errorMessage !== undefined
+				&& event.message.stopReason === "aborted"
+				&& activeGeneration === watchdogAbortedGeneration;
 			disarm();
 			// Mirror Pi's retry loop, which resets its attempt counter on any successful assistant turn.
 			if (event.message.stopReason !== "aborted" && event.message.stopReason !== "error") stallRetriesUsed = 0;
-			if (!matchesWatchdogAbort || !config) return;
-			timeoutConversionPending = false;
+			if (!matchesWatchdogAbort) return;
 			convertedTimeout = true;
 			continuationStarted = false;
-			return { message: { ...event.message, stopReason: "error", errorMessage: `Provider semantic timeout after ${config.recoveryMs} ms without progress` } };
+			return { message: { ...event.message, stopReason: "error", errorMessage } };
 		});
 		pi.on("agent_end", () => disarm());
 		pi.on("agent_settled", () => {
-			if (convertedTimeout && !continuationStarted) ui?.notify(DEGRADATION_NOTICE);
+			if (convertedTimeout && !continuationStarted) announce(DEGRADATION_NOTICE);
 			resetRunState();
 		});
 		pi.on("session_shutdown", () => {
-			epoch += 1;
 			resetRunState();
 			config = undefined;
 			disabled = false;

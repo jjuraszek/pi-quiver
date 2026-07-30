@@ -8,6 +8,15 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- **`provider-stall-watchdog`: new `firstEventMs` tier (default 20s) fast-fails a request that never streams.** A pre-first-event deadline is armed at every provider request and cleared by the first assistant `message_start`; on expiry the request is aborted and converted to a retryable error, cutting recovery for an unresponsive request from ~240s to ~22s (detection + Pi's 2s backoff). Previously only the 240s mid-stream `recoveryMs` timer caught this case.
+- **Widened activation.** The `firstEventMs` tier arms in every mode (`tui`, `print`, `json`, `rpc`) and from every origin, including extension-triggered turns that never emit `before_agent_start`; activation is now lazy inside `before_provider_request`, so the `input` and `before_agent_start` handlers are gone. The mid-stream `warningMs`/`recoveryMs` tier stays TUI-only - an unattended abort discards billed output tokens with nobody reading the warning. Headless runs report on stderr via `console.warn` (never stdout, which `json` mode uses for its protocol).
+- **Behaviour change: `maxStallRetries: 0` is now valid** and means "detect and stop, never auto-retry" - it previously failed validation and disabled the extension. When unset, `maxStallRetries` inherits the layered `retry.maxRetries` including an explicit `0`, matching Pi's own `?? 3` instead of silently resolving 0 to 3. Both tiers share the one budget.
+- **Abort-hang escalation.** After any watchdog abort a fixed 10s deadline announces that the provider connection is unresponsive if the request never terminates; any post-abort stream event re-arms it, so a straggler followed by a wedge still escalates. It reduces the hang, it cannot force the provider to stop - undici's `headersTimeout`/`bodyTimeout` (pi's `httpIdleTimeoutMs`, default 300s) stay the backstop.
+- **Config is read once per session,** on the first provider request, instead of per prompt. Editing `settings.json` mid-session - including repairing an invalid block that disabled the extension - now requires a session restart.
+- **`"providerStallWatchdog": false` now works.** The boolean shorthand the README already documented was rejected as "must be an object"; it is now accepted as `{ "enabled": <bool> }`, matching `swordHeader`, `fastMode`, and `sessionAutoName`. Previously harmless (the warning was TUI-only), the widened activation above would otherwise have printed a config error to stderr on every headless run.
+
 ## v3.3.2 - 2026-07-30
 
 - **`fast-mode` supports Claude Opus 5.** Added `claude-opus-5` to the model prefix allowlist (fast mode API mechanics are identical to Opus 4.8: `speed: "fast"` + `fast-mode-2026-02-01` beta; compat verified identical in pi-ai 0.82.1, so `buildBetaHeader`'s OAuth-only preservation still holds).
