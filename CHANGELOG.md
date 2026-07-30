@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v3.4.1 - 2026-07-30
+
+- **Documented Anthropic stall-retry activation.** A session trace confirmed Pi's existing 2/4/8-second exponential backoff was active and that the watchdog retained the retry budget resolved when its extension instance started. Local `retry.maxRetries: 5` now takes effect after a fresh session or explicit reload, with no watchdog cooldown, resubmission path, or runtime code change.
+
 ## v3.4.0 - 2026-07-30
 
 - **`provider-stall-watchdog`: new `firstEventMs` tier (default 20s) fast-fails a request that never streams.** A pre-first-event deadline is armed at every provider request and cleared by the first assistant `message_start`; on expiry the request is aborted and converted to a retryable error, cutting recovery for an unresponsive request from ~240s to ~22s (detection + Pi's 2s backoff). Previously only the 240s mid-stream `recoveryMs` timer caught this case.
