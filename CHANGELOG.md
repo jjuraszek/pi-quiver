@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v3.4.0 - 2026-07-30
 
 - **`provider-stall-watchdog`: new `firstEventMs` tier (default 20s) fast-fails a request that never streams.** A pre-first-event deadline is armed at every provider request and cleared by the first assistant `message_start`; on expiry the request is aborted and converted to a retryable error, cutting recovery for an unresponsive request from ~240s to ~22s (detection + Pi's 2s backoff). Previously only the 240s mid-stream `recoveryMs` timer caught this case.
 - **Widened activation.** The `firstEventMs` tier arms in every mode (`tui`, `print`, `json`, `rpc`) and from every origin, including extension-triggered turns that never emit `before_agent_start`; activation is now lazy inside `before_provider_request`, so the `input` and `before_agent_start` handlers are gone. The mid-stream `warningMs`/`recoveryMs` tier stays TUI-only - an unattended abort discards billed output tokens with nobody reading the warning. Headless runs report on stderr via `console.warn` (never stdout, which `json` mode uses for its protocol).
