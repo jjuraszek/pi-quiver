@@ -1,6 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coerce, toTabLabel, stripSkillBodies, isGhosttyActive, parseGeneratedName } from "../extensions/session-name.ts";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	coerce,
+	toTabLabel,
+	stripSkillBodies,
+	buildConversationText,
+	isGhosttyActive,
+	parseGeneratedName,
+	applyDenyList,
+	shouldRevisit,
+	countRoundTrips,
+	buildNamingPrompt,
+	parseRevisitReply,
+	installSessionName,
+	KEEP,
+} from "../extensions/session-name.ts";
 
 test("stripSkillBodies: collapses skill body to [skill: name], preserves trailing args", () => {
 	const body = "x".repeat(16_000);
@@ -19,6 +36,24 @@ test("stripSkillBodies: text without skill tags is untouched", () => {
 	assert.equal(stripSkillBodies("plain user text"), "plain user text");
 });
 
+test("buildConversationText: initial naming uses the opening context", () => {
+	const entries = [
+		{ type: "message", message: { role: "user", content: "opening task" } },
+		{ type: "message", message: { role: "assistant", content: "later discovery" } },
+	];
+	const ctx = { sessionManager: { getEntries: () => entries } };
+	assert.equal(buildConversationText(ctx as never, 18), "User: opening task");
+});
+
+test("buildConversationText: revisiting uses the most recent context", () => {
+	const entries = [
+		{ type: "message", message: { role: "user", content: "opening task" } },
+		{ type: "message", message: { role: "assistant", content: "later discovery" } },
+	];
+	const ctx = { sessionManager: { getEntries: () => entries } };
+	assert.equal(buildConversationText(ctx as never, 26, true), "Assistant: later discovery");
+});
+
 test("toTabLabel: caps to maxWords (default 4)", () => {
 	assert.equal(toTabLabel("one two three four five six"), "one two three four");
 	assert.equal(toTabLabel("alpha beta", 1), "alpha");
@@ -33,6 +68,273 @@ test("toTabLabel: strips control chars and collapses whitespace", () => {
 test("coerce: boolean shorthand enables/disables everything", () => {
 	assert.deepEqual(coerce(true), { enabled: true, ghosttyTab: true });
 	assert.deepEqual(coerce(false), { enabled: false, ghosttyTab: false });
+});
+
+test("coerce: rules/deny accept string arrays, trimmed and de-blanked", () => {
+	assert.deepEqual(coerce({ deny: ["acme corp", "  spaced  ", ""] }), {
+		deny: ["acme corp", "spaced"],
+	});
+	assert.deepEqual(coerce({ rules: ["Lead with the ticket id"] }), {
+		rules: ["Lead with the ticket id"],
+	});
+});
+
+test("coerce: rules/deny reject non-string members wholesale", () => {
+	assert.deepEqual(coerce({ deny: ["ok", 42] }), {});
+	assert.deepEqual(coerce({ rules: "not an array" }), {});
+});
+
+test("coerce: revisit knobs accept non-negative integers only", () => {
+	assert.deepEqual(coerce({ revisitFirstTurn: 10, revisitEveryTurns: 100 }), {
+		revisitFirstTurn: 10,
+		revisitEveryTurns: 100,
+	});
+	assert.deepEqual(coerce({ revisitFirstTurn: 0 }), { revisitFirstTurn: 0 });
+	assert.deepEqual(coerce({ revisitFirstTurn: -1, revisitEveryTurns: 1.5 }), {});
+	assert.deepEqual(coerce({ revisitEveryTurns: "100" }), {});
+});
+
+test("applyDenyList: no patterns is a passthrough", () => {
+	assert.equal(applyDenyList("Fix AcmeCorp login bug", []), "Fix AcmeCorp login bug");
+});
+
+test("applyDenyList: one phrase catches spaced, jammed, and cased spellings", () => {
+	const deny = ["acme corp"];
+	assert.equal(applyDenyList("Fix AcmeCorp login bug", deny), "Fix login bug");
+	assert.equal(applyDenyList("Fix Acme Corp login bug", deny), "Fix login bug");
+	assert.equal(applyDenyList("Fix ACME  CORP login bug", deny), "Fix login bug");
+});
+
+test("applyDenyList: respects word boundaries", () => {
+	assert.equal(applyDenyList("Fix acmecorporate parser", ["acme corp"]), "Fix acmecorporate parser");
+	assert.equal(applyDenyList("Fix supracme corp parser", ["acme corp"]), "Fix supracme corp parser");
+});
+
+test("applyDenyList: tidies the seam left behind", () => {
+	assert.equal(applyDenyList("Acme Corp - login bug", ["acme corp"]), "login bug");
+	assert.equal(applyDenyList("Fix - Acme Corp - login", ["acme corp"]), "Fix - login");
+	assert.equal(applyDenyList("login bug (Acme Corp)", ["acme corp"]), "login bug");
+});
+
+test("applyDenyList: regex metacharacters are literal, not patterns", () => {
+	assert.equal(applyDenyList("Fix a.b.c parser", ["a.b.c"]), "Fix parser");
+	assert.equal(applyDenyList("Fix axbxc parser", ["a.b.c"]), "Fix axbxc parser");
+	assert.equal(applyDenyList("Fix parser", ["(unclosed"]), "Fix parser");
+});
+
+test("applyDenyList: uses a safe fallback when stripping would empty it", () => {
+	assert.equal(applyDenyList("Acme Corp", ["acme corp"]), "Session");
+	assert.equal(applyDenyList("  Acme Corp  ", ["acme corp"]), "Session");
+});
+
+test("applyDenyList: Unicode letters get real word boundaries", () => {
+	assert.equal(applyDenyList("Fix café parser", ["café"]), "Fix parser");
+	assert.equal(applyDenyList("Fix cafés parser", ["café"]), "Fix cafés parser");
+});
+
+test("applyDenyList: applies every phrase", () => {
+	assert.equal(applyDenyList("Fix Acme Foo login", ["acme", "foo"]), "Fix login");
+});
+
+test("shouldRevisit: fires at the first turn, then on each multiple", () => {
+	const cfg = { revisitFirstTurn: 10, revisitEveryTurns: 100 };
+	assert.deepEqual(
+		[1, 9, 10, 11, 99, 100, 101, 200, 300].map((n) => shouldRevisit(n, cfg)),
+		[false, false, true, false, false, true, false, true, true],
+	);
+});
+
+test("shouldRevisit: either knob at 0 disables only its own trigger", () => {
+	assert.equal(shouldRevisit(10, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), false);
+	assert.equal(shouldRevisit(100, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), true);
+	assert.equal(shouldRevisit(10, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), true);
+	assert.equal(shouldRevisit(100, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), false);
+});
+
+test("shouldRevisit: never fires at or below zero round trips", () => {
+	const cfg = { revisitFirstTurn: 10, revisitEveryTurns: 100 };
+	assert.equal(shouldRevisit(0, cfg), false);
+	assert.equal(shouldRevisit(-5, cfg), false);
+});
+
+test("countRoundTrips: counts assistant messages only", () => {
+	const entries = [
+		{ type: "message", message: { role: "user" } },
+		{ type: "message", message: { role: "assistant" } },
+		{ type: "message", message: { role: "toolResult" } },
+		{ type: "message", message: { role: "assistant" } },
+		{ type: "summary", message: { role: "assistant" } },
+	];
+	const ctx = { sessionManager: { getEntries: () => entries } };
+	assert.equal(countRoundTrips(ctx as never), 2);
+});
+
+test("countRoundTrips: empty transcript is zero", () => {
+	const ctx = { sessionManager: { getEntries: () => [] } };
+	assert.equal(countRoundTrips(ctx as never), 0);
+});
+
+test("buildNamingPrompt: user rules land after the built-ins so they win", () => {
+	const prompt = buildNamingPrompt("User: hi", { rules: ["Never lead with a verb"] });
+	const builtIn = prompt.indexOf("- Lead with an action verb");
+	const custom = prompt.indexOf("- Never lead with a verb");
+	assert.ok(builtIn > -1 && custom > builtIn, "custom rule must follow the built-in it overrides");
+});
+
+test("buildNamingPrompt: no current name means no KEEP option offered", () => {
+	const prompt = buildNamingPrompt("User: hi");
+	assert.ok(!prompt.includes("KEEP"));
+	assert.ok(prompt.includes("<conversation>\nUser: hi\n</conversation>"));
+});
+
+test("buildNamingPrompt: a current name turns it into a revisit", () => {
+	const prompt = buildNamingPrompt("User: hi", { currentName: "Refine ABC-123" });
+	assert.ok(prompt.includes("This session is already named: Refine ABC-123"));
+	assert.ok(prompt.includes("KEEP"));
+});
+
+test("parseRevisitReply: KEEP verdict, tolerant of casing and punctuation", () => {
+	assert.equal(parseRevisitReply("KEEP"), KEEP);
+	assert.equal(parseRevisitReply("  keep  "), KEEP);
+	assert.equal(parseRevisitReply("*KEEP*"), KEEP);
+});
+
+test("parseRevisitReply: KEEP on one line does not swallow a proposed name", () => {
+	assert.deepEqual(
+		parseRevisitReply("I considered KEEP.\nSESSION: Rename stale session\nTAB: Rename Session"),
+		{ sessionName: "Rename stale session", tabLabel: "Rename Session" },
+	);
+});
+
+test("parseRevisitReply: a real name still parses", () => {
+	assert.deepEqual(parseRevisitReply("SESSION: Add fetch retry\nTAB: Fetch Retry"), {
+		sessionName: "Add fetch retry",
+		tabLabel: "Fetch Retry",
+	});
+});
+
+test("parseRevisitReply: unparseable reply is undefined, not a rename", () => {
+	assert.equal(parseRevisitReply("I am not sure what to do here"), undefined);
+});
+
+test("parseRevisitReply: a name merely mentioning keep is not a KEEP verdict", () => {
+	assert.deepEqual(parseRevisitReply("SESSION: Keep alive probe fix\nTAB: Keepalive"), {
+		sessionName: "Keep alive probe fix",
+		tabLabel: "Keepalive",
+	});
+});
+
+type Hook = (event: any, ctx: any) => Promise<void>;
+
+function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; tabLabel: string }>) {
+	const cwd = mkdtempSync(join(tmpdir(), "session-name-test-"));
+	mkdirSync(join(cwd, ".pi"));
+	writeFileSync(
+		join(cwd, ".pi", "settings.json"),
+		JSON.stringify({
+			sessionAutoName: {
+				enabled: true,
+				ghosttyTab: false,
+				rules: ["Lead with the ticket id"],
+				deny: ["grid strong"],
+				revisitFirstTurn: 10,
+				revisitEveryTurns: 100,
+			},
+		}),
+	);
+	const hooks = new Map<string, Hook>();
+	const entries: any[] = [];
+	const notifications: string[] = [];
+	let name: string | undefined;
+	const pi: any = {
+		on: (event: string, hook: Hook) => hooks.set(event, hook),
+		registerCommand: () => {},
+		setSessionName: (next: string) => { name = next; },
+		getSessionName: () => name,
+		appendEntry: (customType: string, data: unknown) => {
+			entries.push({ type: "custom", customType, data });
+		},
+	};
+	const ctx: any = {
+		cwd,
+		hasUI: true,
+		ui: { notify: (message: string) => notifications.push(message) },
+		sessionManager: { getEntries: () => entries },
+	};
+	const generate = async () => generated.shift();
+	installSessionName(pi, generate);
+	return {
+		ctx,
+		entries,
+		hooks,
+		notifications,
+		getName: () => name,
+		setExternalName: (next: string) => { name = next; },
+		destroy: () => rmSync(cwd, { recursive: true, force: true }),
+	};
+}
+
+function addRoundTrips(entries: any[], count: number): void {
+	const current = entries.filter((entry) => entry.type === "message" && entry.message.role === "assistant").length;
+	for (let n = current; n < count; n++) {
+		entries.push({ type: "message", message: { role: "assistant", content: `turn ${n + 1}` } });
+	}
+}
+
+test("installed extension: auto names revisit silently and retain provenance across resume", async () => {
+	const h = extensionHarness([
+		{ sessionName: "GridStrong setup", tabLabel: "GridStrong" },
+		{ sessionName: "E-42 naming rules", tabLabel: "E-42 names" },
+		{ sessionName: "E-42 mature context", tabLabel: "E-42 context" },
+	]);
+	try {
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("agent_end")!({}, h.ctx);
+		assert.equal(h.getName(), "setup", "deny list cleans the initial auto name");
+
+		addRoundTrips(h.entries, 10);
+		await h.hooks.get("turn_end")!({}, h.ctx);
+		assert.equal(h.getName(), "E-42 naming rules");
+
+		// A new extension instance models process/session resume. Persisted
+		// provenance keeps this machine-authored, so round trip 100 may replace it.
+		installSessionName(
+			{
+				on: (event: string, hook: Hook) => h.hooks.set(event, hook),
+				registerCommand: () => {},
+				setSessionName: (next: string) => h.setExternalName(next),
+				getSessionName: h.getName,
+				appendEntry: (customType: string, data: unknown) => {
+					h.entries.push({ type: "custom", customType, data });
+				},
+			} as never,
+			async () => ({ sessionName: "E-42 mature context", tabLabel: "E-42 context" }),
+		);
+		await h.hooks.get("session_start")!({}, h.ctx);
+		addRoundTrips(h.entries, 100);
+		await h.hooks.get("turn_end")!({}, h.ctx);
+		assert.equal(h.getName(), "E-42 mature context");
+	} finally {
+		h.destroy();
+	}
+});
+
+test("installed extension: external human names are cleaned but only get stale suggestions", async () => {
+	const h = extensionHarness([{ sessionName: "E-42 mature context", tabLabel: "E-42 context" }]);
+	try {
+		h.setExternalName("Human GridStrong Work");
+		await h.hooks.get("session_info_changed")!({}, h.ctx);
+		assert.equal(h.getName(), "Human Work");
+
+		addRoundTrips(h.entries, 10);
+		await h.hooks.get("turn_end")!({}, h.ctx);
+		assert.equal(h.getName(), "Human Work", "human wording is never overwritten");
+		assert.deepEqual(h.notifications, [
+			"Session name looks stale. Suggested: E-42 mature context - /session-name to apply",
+		]);
+	} finally {
+		h.destroy();
+	}
 });
 
 test("coerce: partial object only carries the keys present", () => {
