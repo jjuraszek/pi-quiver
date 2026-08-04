@@ -13,7 +13,7 @@ import {
 	FAST_SPEED,
 	scaleCost,
 	FAST_MODE_COST_MULTIPLIER,
-} from "./fast-mode.ts";
+} from "../extensions/fast-mode.ts";
 
 test("coerce: boolean shorthand", () => {
 	assert.deepEqual(coerce(true), { enabled: true });
@@ -127,7 +127,7 @@ test("resolveEnabled: precedence config < flag(force-on) < live", () => {
 	assert.equal(resolveEnabled({ config: false, flag: false, live: true }), true);
 });
 
-import fastMode from "./fast-mode.ts";
+import fastMode from "../extensions/fast-mode.ts";
 
 // Isolate the global settings layer: resolveConfig reads
 // <getAgentDir()>/settings.json, and the host machine's real global settings

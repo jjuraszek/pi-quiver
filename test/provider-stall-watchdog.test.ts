@@ -19,7 +19,7 @@ import providerStallWatchdog, {
 	resolveWatchdogConfig,
 	validateConfig,
 	type ConfigCandidate,
-} from "./provider-stall-watchdog.ts";
+} from "../extensions/provider-stall-watchdog.ts";
 
 test("coerce: boolean shorthand toggles enabled", () => {
 	assert.deepEqual(coerce(true), { blockIsObject: true, enabled: true });

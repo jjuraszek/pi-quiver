@@ -18,7 +18,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveConfig } from "./extension-config.ts";
+import { resolveConfig } from "../lib/extension-config.ts";
 
 // `complete` moved between pi-ai layouts: older builds re-export it from the
 // package index, newer ones expose it only via the `/compat` subpath. A static

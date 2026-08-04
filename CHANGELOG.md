@@ -8,6 +8,12 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v4.0.0 - 2026-08-04
+
+- **BREAKING: extension sources moved out of the package root** into `extensions/`; the shared config helper moved to `lib/extension-config.ts` (#4). If you disabled an extension through `pi config`, the stored filter (e.g. `-fast-mode.ts`) no longer matches any path and the extension will load again - re-disable it, or update the entry to `extensions/fast-mode.ts`. Hand-written `!fast-mode.ts` entries in `settings.json` are unaffected.
+- **Local-checkout invocation changed:** `pi -e <path>/fetch.ts` is now `pi -e <path>/extensions/fetch.ts`.
+- No behaviour change in any extension; `pi.extensions` is now a single directory entry and typecheck flags moved into `tsconfig.json`.
+
 ## v3.4.1 - 2026-08-04
 
 - **`fast-mode` now corrects reported `usage.cost` to true 2x fast pricing for Opus 4.8/5** (statusline, persisted cost, and pi-cohort `Σ$` per load order) (#6).

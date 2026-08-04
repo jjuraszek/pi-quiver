@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readSettings, resolveConfig, settingsPaths } from "./extension-config.ts";
+import { readSettings, resolveConfig, settingsPaths } from "../lib/extension-config.ts";
 
 export const MAX_TIMER_MS = 2_147_483_647;
 export const DEFAULT_CONFIG = {

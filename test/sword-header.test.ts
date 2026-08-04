@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coerce, swordLines } from "./sword-header.ts";
+import { coerce, swordLines } from "../extensions/sword-header.ts";
 
 test("coerce: boolean shorthand toggles enabled", () => {
 	assert.deepEqual(coerce(true), { enabled: true });

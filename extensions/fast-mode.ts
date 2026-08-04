@@ -23,7 +23,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
-import { resolveConfig } from "./extension-config.ts";
+import { resolveConfig } from "../lib/extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
 export const FAST_SPEED = "fast";

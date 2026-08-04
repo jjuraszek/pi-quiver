@@ -14,7 +14,7 @@
  */
 
 import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { resolveConfig } from "./extension-config.ts";
+import { resolveConfig } from "../lib/extension-config.ts";
 
 type Config = { enabled: boolean };
 const DEFAULT_CONFIG: Config = { enabled: false };

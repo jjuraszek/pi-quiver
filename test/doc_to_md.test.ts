@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig, classifyInput, applyGate, withMarker, pagesToMarkdown, DEGRADED_MARKER, soffArgs, warmArgs, convertArgs, runCapped } from "./doc_to_md.ts";
+import { parseConfig, classifyInput, applyGate, withMarker, pagesToMarkdown, DEGRADED_MARKER, soffArgs, warmArgs, convertArgs, runCapped } from "../extensions/doc_to_md.ts";
 
 test("parseConfig: defaults when env unset", () => {
 	const c = parseConfig({});

@@ -1,6 +1,6 @@
 # pi-quiver
 
-Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function listed in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval; GitHub issue/PR/repo URLs auto-routed through the `gh` CLI with HTTP fallback), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), `sword-header` (themed ASCII startup header, OFF by default), `fast-mode` (opt-in Anthropic fast mode for Opus 4.8, OFF by default), and `provider-stall-watchdog` (opt-in provider-stall recovery: a pre-first-event tier in every mode, a mid-stream tier in TUI only). Opt-in extensions resolve their `settings.json` config via the shared `extension-config.ts` (`getAgentDir()`-based global + project layering).
+Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function living in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval; GitHub issue/PR/repo URLs auto-routed through the `gh` CLI with HTTP fallback), `doc_to_md` (local PDF/DOCX/PPTX -> Markdown via pymupdf4llm with a pure-JS unpdf fallback), `session-name` (manual + opt-in automatic session naming with Ghostty tab rename, OFF by default), `sword-header` (themed ASCII startup header, OFF by default), `fast-mode` (opt-in Anthropic fast mode for Opus 4.8, OFF by default), and `provider-stall-watchdog` (opt-in provider-stall recovery: a pre-first-event tier in every mode, a mid-stream tier in TUI only). Opt-in extensions resolve their `settings.json` config via the shared `lib/extension-config.ts` (`getAgentDir()`-based global + project layering).
 
 <!-- agents-core:begin v1 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Communication Style
@@ -62,17 +62,17 @@ docs in the same logical change and note it in both CHANGELOGs.
 ## Layout
 
 ```
-fetch.ts                                  # fetch extension (entry in pi.extensions)
-doc_to_md.ts                              # doc_to_md extension (entry in pi.extensions)
-session-name.ts                           # session-name extension (entry in pi.extensions; OFF by default)
-sword-header.ts                           # sword-header extension (entry in pi.extensions; OFF by default)
-fast-mode.ts                              # fast-mode extension (entry in pi.extensions; OFF by default)
-provider-stall-watchdog.ts                 # watchdog extension (entry in pi.extensions; OFF by default; first-event tier all modes, mid-stream tier TUI only)
-extension-config.ts                       # shared getAgentDir()-based settings.json resolution (resolveConfig)
-AGENTS.core.md                            # shared-core block, byte-identical across pi-quiver/pi-cohort/pi-gauntlet/pi-condense
-scripts/check-agents-core.mjs             # asserts AGENTS.md embeds AGENTS.core.md verbatim (--fix rewrites); runs in test:all
-scripts/pdf_to_md.py                      # doc_to_md Python conversion entry point
-package.json                              # pi.extensions = ["./fetch.ts", "./doc_to_md.ts", "./session-name.ts", "./sword-header.ts", "./fast-mode.ts", "./provider-stall-watchdog.ts"]; files allowlist; bundled deps + @earendil-works peerDeps
+extensions/                               # one top-level file = one pi extension entry point
+                                          # (fetch, doc_to_md, session-name, sword-header,
+                                          #  fast-mode, provider-stall-watchdog)
+lib/extension-config.ts                   # shared getAgentDir()-based settings.json resolution
+test/                                     # node --test suites, one per extension, + layout.test.ts
+test/fixtures/                            # sample.pdf/.docx/.pptx for manual doc_to_md checks
+tsconfig.json                             # single source of typecheck flags + include list
+AGENTS.core.md                            # shared-core block, byte-identical across the sibling repos
+scripts/check-agents-core.mjs             # asserts AGENTS.md embeds AGENTS.core.md verbatim (--fix rewrites)
+scripts/pdf_to_md.py                      # doc_to_md Python entry point, loaded via import.meta.url
+package.json                              # pi.extensions = ["./extensions"]; files allowlist; bundled deps + @earendil-works peerDeps
 .github/workflows/test.yml                # unit + typecheck on ubuntu + windows, every push/PR
 .github/workflows/release.yml             # tag-triggered npm publish (OIDC + provenance)
 .agents/skills/release/SKILL.md           # release flow (tag-triggered npm model)
@@ -82,8 +82,8 @@ prompts/release.md                        # /release prompt template
 
 ## Workflow
 
-- **Adding an extension:** drop `<name>.ts` exporting `default function (pi: ExtensionAPI)`, add `"./<name>.ts"` to `pi.extensions`, document it in `README.md`, add a `CHANGELOG.md` entry.
-- **Test + typecheck before committing.** `npm run test:all` runs the unit tests (`node --test *.test.ts`) then the typecheck (`tsc --noEmit`). The peer deps (`@earendil-works/*`, `@sinclair/typebox`) and type packages are in `devDependencies`, so a plain install wires everything up:
+- **Adding an extension:** drop `extensions/<name>.ts` exporting `default function (pi: ExtensionAPI)` - no manifest edit needed, the `./extensions` directory entry discovers it. Document it in `README.md`, add a `CHANGELOG.md` entry. Only extension entry points belong at the top level of `extensions/`: pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have already run. `test/layout.test.ts` enforces this.
+- **Test + typecheck before committing.** `npm run test:all` runs the unit tests (`node --test "test/*.test.ts"`) then the typecheck (`npx -y tsc --noEmit`, flags live in `tsconfig.json`). The peer deps (`@earendil-works/*`, `@sinclair/typebox`) and type packages are in `devDependencies`, so a plain install wires everything up:
 
   ```bash
   npm install
@@ -91,11 +91,11 @@ prompts/release.md                        # /release prompt template
   ```
 
   This is the same command the CI test + release workflows run.
-- **Publishability:** `package.json` `files` is an allowlist. The bundled runtime deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`, `unpdf`) stay in `dependencies` so they ship in the tarball; the `@earendil-works/*` + `@sinclair/typebox` peers are provided by the host pi runtime. `scripts/pdf_to_md.py` is in `files` because `doc_to_md.ts` loads it at runtime via `import.meta.url`. Check the tarball with `npm pack --dry-run`.
-- **`doc_to_md` engines.** `scripts/pdf_to_md.py` is the Python conversion entry point, invoked via `uv run --with pymupdf4llm==<pin> --python 3.14` (not under `tsc`/`node --test`; verify by direct uv invocation). DOCX/PPTX route through `soffice` to PDF first. `uv` and `soffice` are optional runtime system binaries; absence degrades to the `unpdf` fallback (PDF) or hard-errors (office).
+- **Publishability:** `package.json` `files` ships the `extensions` and `lib` directories (`test/` and `tsconfig.json` are intentionally excluded). The bundled runtime deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`, `unpdf`) stay in `dependencies` so they ship in the tarball; the `@earendil-works/*` + `@sinclair/typebox` peers are provided by the host pi runtime. `scripts/pdf_to_md.py` is in `files` because `extensions/doc_to_md.ts` loads it at runtime via `import.meta.url`. Check the tarball with `npm pack --dry-run`.
+- **`doc_to_md` engines.** `scripts/pdf_to_md.py` is the Python conversion entry point, loaded from `extensions/doc_to_md.ts` via the relative path `../scripts/pdf_to_md.py`, invoked via `uv run --with pymupdf4llm==<pin> --python 3.14` (not under `tsc`/`node --test`; verify by direct uv invocation). DOCX/PPTX route through `soffice` to PDF first. `uv` and `soffice` are optional runtime system binaries; absence degrades to the `unpdf` fallback (PDF) or hard-errors (office).
 - **`provider-stall-watchdog` runtime boundary.** OFF by default; once enabled the boundary is two-phase. The `firstEventMs` tier (default 20s, cleared by the first assistant `message_start`) arms for **every** provider request - every mode (`tui`/`print`/`json`/`rpc`) and every origin, including extension-triggered turns - because activation is lazy inside `before_provider_request`; config is therefore resolved once per session. The mid-stream `warningMs`/`recoveryMs` tier arms only when `ctx.mode === "tui"`, so unattended runs never abort mid-generation. Policy D offers each stall to Pi's retry loop up to `maxStallRetries` times (default = layered `retry.maxRetries`, else 3), verified with Pi 0.80.10; unavailable retry falls back to manual resubmission. See `README.md` for settings and operational behavior.
 - **Releases use the `release` skill.** See [Release model](#release-model). Tag-triggered and CI-executed; the script bumps + tags + pushes, CI publishes to npm. Never `npm publish` by hand.
-- **Smoke-test** with `pi -e ./fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-quiver -p "..."` against the published package).
+- **Smoke-test** with `pi -e ./extensions/fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-quiver -p "..."` against the published package).
 
 ## Release model
 

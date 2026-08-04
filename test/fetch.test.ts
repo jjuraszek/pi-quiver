@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "./fetch.ts";
+import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "../extensions/fetch.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"

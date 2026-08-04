@@ -62,12 +62,12 @@ A 300 KB changelog page never touches your context window - you get a preview an
 
 | Extension | Tool | What it does |
 | --- | --- | --- |
-| `fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
-| `doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
-| `session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
-| `sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
-| `fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
-| `provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
+| `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
+| `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
+| `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
+| `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
+| `extensions/provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
 
@@ -120,7 +120,7 @@ pi -e npm:pi-quiver
 
 ```bash
 git clone git@github.com:jjuraszek/pi-quiver.git ~/repos/pi-quiver
-pi -e ~/repos/pi-quiver/fetch.ts
+pi -e ~/repos/pi-quiver/extensions/fetch.ts
 ```
 
 ## Prerequisites
@@ -203,7 +203,7 @@ runtime deps; install them transiently and run the full check:
 
 ```bash
 npm install
-npm run test:all      # node --test *.test.ts  +  tsc --noEmit typecheck
+npm run test:all      # node --test test/*.test.ts  +  tsc --noEmit typecheck
 ```
 
 `npm test` runs the unit tests alone; `npm run typecheck` runs the type pass.

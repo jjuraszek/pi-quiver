@@ -250,7 +250,7 @@ let warmPromise: Promise<"warm" | "unavailable"> | null = null;
 let uvAvailable: boolean | null = null;
 
 function scriptPath(): string {
-	return fileURLToPath(new URL("./scripts/pdf_to_md.py", import.meta.url));
+	return fileURLToPath(new URL("../scripts/pdf_to_md.py", import.meta.url));
 }
 
 async function onPath(cmd: string): Promise<boolean> {

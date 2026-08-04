@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coerce, toTabLabel, stripSkillBodies, isGhosttyActive, parseGeneratedName } from "./session-name.ts";
+import { coerce, toTabLabel, stripSkillBodies, isGhosttyActive, parseGeneratedName } from "../extensions/session-name.ts";
 
 test("stripSkillBodies: collapses skill body to [skill: name], preserves trailing args", () => {
 	const body = "x".repeat(16_000);
