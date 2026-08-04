@@ -150,6 +150,8 @@ These extensions are opt-in via `settings.json` (project `.pi/settings.json` ove
 
 `sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `fastMode` only affects `claude-opus-4-8` and `claude-opus-5` requests on Anthropic's `anthropic-messages` API; enabling it opts into premium fast-mode pricing. `--fast` forces it on for one launch; `/fast on|off` toggles live. Proxy providers (opencode, cloudflare-ai-gateway) are excluded. `fastMode`'s header injection needs the `before_provider_headers` hook (pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5); on older pi the beta header is silently not sent. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
 
+`pi-ai` prices every fast request at standard rates - it has no `usage.speed` support and no request-level pricing modifier - so `fastMode` corrects the reported cost itself: a `message_end` handler scales all four `usage.cost` components by `FAST_MODE_COST_MULTIPLIER` (2x) and returns the corrected message. Persisted session JSONL and pi's own native cost display are always exact, since they're written from this corrected message. pi-cohort's live `Σ$` reflects the correction only when pi-quiver's `message_end` handler runs before pi-cohort's - best-effort, depending on extension load order - and is reconciled on pi-cohort's next `session_start` regardless. The upstream fix (teaching `pi-ai`'s `Usage`/`calculateCost` about `usage.speed`) is the better long-term path and is tracked separately.
+
 Recommended explicit retry and watchdog settings:
 
 ```json

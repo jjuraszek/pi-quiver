@@ -11,6 +11,8 @@ import {
 	resolveEnabled,
 	FAST_MODE_BETA,
 	FAST_SPEED,
+	scaleCost,
+	FAST_MODE_COST_MULTIPLIER,
 } from "./fast-mode.ts";
 
 test("coerce: boolean shorthand", () => {
@@ -63,6 +65,34 @@ test("injectSpeed: skips non-plain-object payloads", () => {
 	assert.equal(injectSpeed(null), null);
 	assert.equal(injectSpeed(undefined), undefined);
 	assert.deepEqual(injectSpeed([1]), [1]);
+});
+
+test("FAST_MODE_COST_MULTIPLIER: is 2", () => {
+	assert.equal(FAST_MODE_COST_MULTIPLIER, 2);
+});
+
+test("scaleCost: scales all four components and recomputes total as their sum", () => {
+	const cost = { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 4, total: 7.5 };
+	assert.deepEqual(scaleCost(cost, 2), {
+		input: 2,
+		output: 4,
+		cacheRead: 1,
+		cacheWrite: 8,
+		total: 15,
+	});
+});
+
+test("scaleCost: zero-cost object stays zero with no NaN", () => {
+	assert.deepEqual(
+		scaleCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, 2),
+		{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	);
+});
+
+test("scaleCost: preserves fractional cents", () => {
+	const r = scaleCost({ input: 0.0125, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0125 }, 2);
+	assert.equal(r.input, 0.025);
+	assert.equal(r.total, 0.025);
 });
 
 test("buildBetaHeader: API-key path is fast-mode only", () => {
@@ -251,4 +281,97 @@ test("integration: header hook skips mutation when OAuth detection fails", async
 	const headers: Record<string, string> = {};
 	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
 	assert.deepEqual(headers, {});
+});
+
+const fastCost = { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 4, total: 7.5 };
+const doubledCost = { input: 2, output: 4, cacheRead: 1, cacheWrite: 8, total: 15 };
+
+function assistantMsg(cost: unknown, extraUsage: Record<string, unknown> = {}): any {
+	const usage: Record<string, unknown> = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 30, ...extraUsage };
+	if (cost !== undefined) usage.cost = cost;
+	return { role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "claude-opus-4-8", usage, stopReason: "stop" };
+}
+
+async function driveFast(h: ReturnType<typeof harness>) {
+	await h.hooks.get("session_start")!({}, h.ctx);
+	const headers: Record<string, string> = {};
+	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+	await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+}
+
+test("cost: fast request doubles usage.cost and preserves other fields", async () => {
+	const h = harness({ flag: true });
+	await driveFast(h);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+	assert.equal(res.message.role, "assistant");
+	assert.equal(res.message.usage.input, 10);
+	assert.equal(res.message.usage.totalTokens, 30);
+});
+
+test("cost: disabled request is not corrected", async () => {
+	const h = harness();
+	await driveFast(h);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: speed injected but header bailed (auth unresolvable) is not corrected", async () => {
+	const h = harness({ flag: true, authFails: true });
+	await driveFast(h);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: non-object payload leaves speed flag false, no correction", async () => {
+	const h = harness({ flag: true });
+	await h.hooks.get("session_start")!({}, h.ctx);
+	const headers: Record<string, string> = {};
+	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+	await h.hooks.get("before_provider_request")!({ payload: 42 }, h.ctx);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: /fast toggled off between hooks (on->off) is not corrected", async () => {
+	const h = harness({ flag: true });
+	await h.hooks.get("session_start")!({}, h.ctx);
+	const headers: Record<string, string> = {};
+	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+	await h.commands.get("fast").handler("off", h.ctx);
+	await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: /fast toggled on between hooks (off->on) is not corrected", async () => {
+	const h = harness();
+	await h.hooks.get("session_start")!({}, h.ctx);
+	const headers: Record<string, string> = {};
+	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+	await h.commands.get("fast").handler("on", h.ctx);
+	await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: non-assistant message and missing usage.cost are untouched", async () => {
+	const h = harness({ flag: true });
+	await driveFast(h);
+	const userRes = await h.hooks.get("message_end")!({ message: { role: "user", content: "hi", timestamp: 0 } }, h.ctx);
+	assert.equal(userRes, undefined);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+	await driveFast(h);
+	const noCost = await h.hooks.get("message_end")!({ message: assistantMsg(undefined) }, h.ctx);
+	assert.equal(noCost, undefined);
+});
+
+test("cost: second message_end on the replacement does not double-correct", async () => {
+	const h = harness({ flag: true });
+	await driveFast(h);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+	const again = await h.hooks.get("message_end")!({ message: res.message }, h.ctx);
+	assert.equal(again, undefined);
 });

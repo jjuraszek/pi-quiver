@@ -10,6 +10,7 @@ via OIDC trusted publishing. The release helper at
 
 ## v3.4.1 - 2026-07-30
 
+- **`fast-mode` now corrects reported `usage.cost` to true 2x fast pricing for Opus 4.8/5** (statusline, persisted cost, and pi-cohort `Σ$` per load order) (#6).
 - **Documented Anthropic stall-retry activation.** A session trace confirmed Pi's existing 2/4/8-second exponential backoff was active and that the watchdog retained the retry budget resolved when its extension instance started. Local `retry.maxRetries: 5` now takes effect after a fresh session or explicit reload, with no watchdog cooldown, resubmission path, or runtime code change.
 
 ## v3.4.0 - 2026-07-30

@@ -22,6 +22,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
 import { resolveConfig } from "./extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
@@ -29,6 +30,21 @@ export const FAST_SPEED = "fast";
 // Loose prefixes: match dated snapshots (claude-opus-4-8-*, claude-opus-5-*).
 // Opus 4.7 is out of scope (D1); a future model needs a one-line addition here.
 export const FAST_MODE_MODEL_PREFIXES = ["claude-opus-4-8", "claude-opus-5"];
+
+// Anthropic bills Opus 4.8/5 fast mode at exactly 2x standard rates; input,
+// output, and cache read/write all scale by the same factor because caching
+// multipliers "apply on top of fast mode pricing". Rate card:
+// https://docs.claude.com/en/docs/build-with-claude/fast-mode (retrieved 2026-08-04).
+export const FAST_MODE_COST_MULTIPLIER = 2;
+
+export function scaleCost(cost: Usage["cost"], multiplier: number): Usage["cost"] {
+	const input = cost.input * multiplier;
+	const output = cost.output * multiplier;
+	const cacheRead = cost.cacheRead * multiplier;
+	const cacheWrite = cost.cacheWrite * multiplier;
+	return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
+}
+
 export const OAUTH_IDENTITY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"];
 const STATUS_KEY = "fast-mode";
 const BETA_HEADER = "anthropic-beta";
@@ -92,6 +108,10 @@ export function resolveEnabled(s: State): boolean {
 export default function (pi: ExtensionAPI) {
 	let liveOverride: boolean | null = null;
 	let enabled = false;
+	// Per-request snapshot. Safe as plain booleans because pi serializes provider
+	// requests per session (headers -> request -> message_end, awaited in order).
+	let pendingFastSpeed = false;
+	let pendingFastHeader = false;
 
 	const readFlag = (): boolean => pi.getFlag("fast") === true;
 
@@ -135,16 +155,43 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_provider_request", (event, ctx) => {
-		if (!shouldInject(enabled, ctx.model)) return;
-		return injectSpeed(event.payload);
+		if (!shouldInject(enabled, ctx.model)) {
+			pendingFastSpeed = false;
+			return;
+		}
+		const next = injectSpeed(event.payload);
+		pendingFastSpeed =
+			typeof next === "object" && next !== null && (next as Record<string, unknown>).speed === FAST_SPEED;
+		return next;
 	});
 
 	pi.on("before_provider_headers", async (event, ctx) => {
-		if (!shouldInject(enabled, ctx.model)) return;
-		if (!event.headers) return;
+		if (!shouldInject(enabled, ctx.model) || !event.headers) {
+			pendingFastHeader = false;
+			return;
+		}
 		const isOAuth = await detectOAuth(ctx);
-		if (isOAuth === null) return;
+		if (isOAuth === null) {
+			pendingFastHeader = false;
+			return;
+		}
 		event.headers[BETA_HEADER] = buildBetaHeader(event.headers[BETA_HEADER], isOAuth);
+		pendingFastHeader = true;
+	});
+
+	pi.on("message_end", (event) => {
+		const msg = event.message;
+		if (msg.role !== "assistant") return;
+		const corrected = pendingFastSpeed && pendingFastHeader && !!msg.usage?.cost;
+		pendingFastSpeed = false;
+		pendingFastHeader = false;
+		if (!corrected) return;
+		return {
+			message: {
+				...msg,
+				usage: { ...msg.usage, cost: scaleCost(msg.usage.cost, FAST_MODE_COST_MULTIPLIER) },
+			},
+		};
 	});
 
 	pi.registerCommand("fast", {
