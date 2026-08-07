@@ -357,15 +357,8 @@ export default function docToMdExtension(pi: ExtensionAPI) {
 		name: "doc_to_md",
 		label: "Convert doc to Markdown",
 		description:
-			"Convert a local PDF/DOCX/PPTX file to Markdown. High-fidelity conversion via pymupdf4llm (run through uv, fetched on first use); falls back to a degraded pure-JS text extractor (unpdf) when uv/Python is unavailable or conversion times out. DOCX/PPTX require LibreOffice (soffice) for the office->PDF step. Output over 32KB or 1000 lines is written to a temp .md file with a preview instead of inlined. Input must be a local file path (use fetch first for URLs).",
+			"Convert a local PDF/DOCX/PPTX file to Markdown. High-fidelity conversion via pymupdf4llm (run through uv, fetched on first use); falls back to a degraded pure-JS text extractor (unpdf) when uv/Python is unavailable or conversion times out. DOCX/PPTX require LibreOffice (soffice) for the office->PDF step. Output over 32KB or 1000 lines is written to a temp .md file with a preview instead of inlined - grep it or read with offset/limit. A degraded result (marked in the output) means the fallback ran: tables and headings are NOT faithfully preserved, treat structure with suspicion. Input must be a local file path (use fetch first for URLs).",
 		promptSnippet: "Convert a local PDF/DOCX/PPTX to Markdown",
-		promptGuidelines: [
-			"Input is a LOCAL file path, not a URL — use the fetch tool first to download remote documents, then pass the saved path here.",
-			"Supported types: .pdf, .docx, .pptx. Spreadsheets and other formats are not supported.",
-			"DOCX/PPTX conversion requires LibreOffice (soffice) on PATH; without it those inputs error.",
-			"A degraded result (marked in the output) means the pure-JS fallback ran — tables and headings are NOT faithfully preserved; treat structure with suspicion.",
-			"When output is written to a file, grep it or read with offset/limit; Markdown is grep-able by heading (^#).",
-		],
 		parameters: Type.Object({
 			path: Type.String({ description: "Local path to a .pdf, .docx, or .pptx file" }),
 		}),

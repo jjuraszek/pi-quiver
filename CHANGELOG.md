@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v4.0.1 - 2026-08-04
+
+- **Trimmed `fetch`/`doc_to_md` system-prompt guidelines that duplicated the tool descriptions** (~200 tokens). The two additive bits (degraded-result fidelity warning, grep-the-spilled-file guidance) moved into the tool descriptions; `promptGuidelines` dropped from both tools.
+
 ## v4.0.0 - 2026-08-04
 
 - **BREAKING: extension sources moved out of the package root** into `extensions/`; the shared config helper moved to `lib/extension-config.ts` (#4). If you disabled an extension through `pi config`, the stored filter (e.g. `-fast-mode.ts`) no longer matches any path and the extension will load again - re-disable it, or update the entry to `extensions/fast-mode.ts`. Hand-written `!fast-mode.ts` entries in `settings.json` are unaffected.

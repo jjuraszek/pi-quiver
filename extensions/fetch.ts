@@ -458,15 +458,8 @@ export default function fetchExtension(pi: ExtensionAPI) {
 		name: "fetch",
 		label: "Fetch URL",
 		description:
-			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. GitHub issue/PR/repo/actions-run URLs are served via the gh CLI when available (falls back to HTTP otherwise).",
+			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. When the body is written to a file, grep it or read with offset/limit; converted Markdown is grep-able by heading (^#). GitHub issue/PR/repo/actions-run URLs are served via the gh CLI when available (falls back to HTTP otherwise; raw=true forces the rendered HTML page).",
 		promptSnippet: "Fetch the contents of a URL",
-		promptGuidelines: [
-			"Use fetch when the user provides a URL or asks to read web content.",
-			"Binary responses return a file path only — pass that path to a tool that can process the bytes; do not expect inline content.",
-			"When the body is written to a file, grep it or read with offset/limit. Converted Markdown is grep-able by heading (^#).",
-			"Pass raw=true to skip Markdown/JSON conversion and get the decoded body as-is (still subject to the size gate).",
-			"GitHub issue/PR/repo/actions-run links are fetched through the gh CLI automatically; pass raw=true to force the rendered HTML page.",
-		],
 		parameters: Type.Object({
 			url: Type.String({ description: "Absolute http(s) URL" }),
 			method: Type.Optional(
