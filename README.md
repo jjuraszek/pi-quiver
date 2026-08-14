@@ -64,7 +64,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
 | `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
-| `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, with Ghostty tab rename. OFF by default. |
+| `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
 | `extensions/provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
@@ -141,14 +141,23 @@ These extensions are opt-in via `settings.json` (project `.pi/settings.json` ove
 
 ```jsonc
 {
-  "sessionAutoName": { "enabled": false, "ghosttyTab": true }, // or boolean shorthand
-  "swordHeader": false,                                        // or { "enabled": true }
+  "sessionAutoName": {
+    "enabled": false,
+    "ghosttyTab": true,
+    "rules": [],
+    "deny": [],
+    "revisitFirstTurn": 0,
+    "revisitEveryTurns": 0
+  }, // or boolean shorthand
+  "swordHeader": false, // or { "enabled": true }
   "fastMode": false,                                           // or { "enabled": true }
   "providerStallWatchdog": false                               // or { "enabled": true }
 }
 ```
 
-`sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `fastMode` only affects `claude-opus-4-8` and `claude-opus-5` requests on Anthropic's `anthropic-messages` API; enabling it opts into premium fast-mode pricing. `--fast` forces it on for one launch; `/fast on|off` toggles live. Proxy providers (opencode, cloudflare-ai-gateway) are excluded. `fastMode`'s header injection needs the `before_provider_headers` hook (pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5); on older pi the beta header is silently not sent. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
+`sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `rules` appends house conventions to the naming prompt (later rules win when they conflict with the built-ins). Literal, case-insensitive `deny` phrases are stripped from every name; whitespace inside a phrase is loose, so `"acme corp"` also catches `AcmeCorp`. `revisitFirstTurn` re-evaluates the name once that many model round trips have completed, while `revisitEveryTurns` does so at every multiple; both default to `0` (off) because each revisit costs another short LLM call. For example, `10` and `100` mark round trips 10, 100, 200, 300. Revisits only run when the agent has fully settled (idle, nothing queued) - an automated multi-turn run such as a subagent chain is never renamed or delayed mid-flight; cadence points it crossed fire once, at the settle. A machine-generated name is replaced when stale. A name set by a human is never overwritten: the extension strongly prefers it, and announces a suggestion only when the work has clearly moved on. Counts come from the persisted transcript, so they survive resume.
+
+`fastMode` only affects `claude-opus-4-8` and `claude-opus-5` requests on Anthropic's `anthropic-messages` API; enabling it opts into premium fast-mode pricing. `--fast` forces it on for one launch; `/fast on|off` toggles live. Proxy providers (opencode, cloudflare-ai-gateway) are excluded. `fastMode`'s header injection needs the `before_provider_headers` hook (pi bundling `@earendil-works/pi-coding-agent` >= 0.80.5); on older pi the beta header is silently not sent. See [doc/fetch.md](doc/fetch.md) and [doc/doc-to-md.md](doc/doc-to-md.md) for the ingestion tools' full reference; session-name/sword-header behavior above is complete.
 
 `pi-ai` prices every fast request at standard rates - it has no `usage.speed` support and no request-level pricing modifier - so `fastMode` corrects the reported cost itself: a `message_end` handler scales all four `usage.cost` components by `FAST_MODE_COST_MULTIPLIER` (2x) and returns the corrected message. Persisted session JSONL and pi's own native cost display are always exact, since they're written from this corrected message. pi-cohort's live `Σ$` reflects the correction only when pi-quiver's `message_end` handler runs before pi-cohort's - best-effort, depending on extension load order - and is reconciled on pi-cohort's next `session_start` regardless. The upstream fix (teaching `pi-ai`'s `Usage`/`calculateCost` about `usage.speed`) is the better long-term path and is tracked separately.
 
