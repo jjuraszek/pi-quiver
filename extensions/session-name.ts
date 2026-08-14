@@ -390,6 +390,9 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// though turn_end can repeat a count across retries.
 	let lastRevisitAt = 0;
 	let revisitInFlight = false;
+	// Last detached revisit, exposed so tests (and a curious host) can await
+	// completion of work that deliberately outlives the turn_end handler.
+	let revisitDone: Promise<void> = Promise.resolve();
 	// The next name-change event expected from our own write. Tracking the value
 	// rather than a synchronous flag also covers hosts that emit the event later.
 	let expectedInternalName: string | null = null;
@@ -540,7 +543,13 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// which is frequently not what the session turns out to be about - the work
 	// only reveals itself after the agent has been at it a while. Re-deriving at
 	// a couple of points catches that drift.
-	pi.on("turn_end", async (_event, ctx) => {
+	//
+	// turn_end handlers are awaited inside the agent loop, so the LLM call runs
+	// detached: a revisit must never stall a long-running workflow between
+	// turns. The rename/suggestion lands whenever the call completes; the
+	// name-still-current guard below keeps a late result from clobbering a
+	// rename that happened mid-call.
+	pi.on("turn_end", (_event, ctx) => {
 		if (revisitInFlight) return;
 		const cfg = loadConfig(ctx);
 		if (!cfg.enabled) return;
@@ -553,27 +562,31 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		if (n <= lastRevisitAt || !shouldRevisit(n, cfg)) return;
 		lastRevisitAt = n;
 		revisitInFlight = true;
-		try {
-			const result = await generate(ctx, { rules: cfg.rules, currentName: current });
-			if (!result || result === KEEP) return;
-			if (pi.getSessionName() !== current) return; // renamed under us mid-call
-			if (nameAuthor === "auto") {
-				setName(cfg, result.sessionName, result.tabLabel, "auto");
-				if (ctx.hasUI) ctx.ui.notify(`Renamed session: ${pi.getSessionName()}`, "info");
-			} else if (ctx.hasUI) {
-				// Human wording is theirs to change; surface the drift and stop.
-				const suggestion = applyDenyList(result.sessionName, cfg.deny);
-				ctx.ui.notify(
-					`Session name looks stale. Suggested: ${suggestion} - /session-name to apply`,
-					"info",
-				);
+		revisitDone = (async () => {
+			try {
+				const result = await generate(ctx, { rules: cfg.rules, currentName: current });
+				if (!result || result === KEEP) return;
+				if (pi.getSessionName() !== current) return; // renamed under us mid-call
+				if (nameAuthor === "auto") {
+					setName(cfg, result.sessionName, result.tabLabel, "auto");
+					if (ctx.hasUI) ctx.ui.notify(`Renamed session: ${pi.getSessionName()}`, "info");
+				} else if (ctx.hasUI) {
+					// Human wording is theirs to change; surface the drift and stop.
+					const suggestion = applyDenyList(result.sessionName, cfg.deny);
+					ctx.ui.notify(
+						`Session name looks stale. Suggested: ${suggestion} - /session-name to apply`,
+						"info",
+					);
+				}
+			} catch {
+				// best-effort; ignore failures
+			} finally {
+				revisitInFlight = false;
 			}
-		} catch {
-			// best-effort; ignore failures
-		} finally {
-			revisitInFlight = false;
-		}
+		})();
 	});
+
+	return { revisitSettled: () => revisitDone };
 }
 
 export default function (pi: ExtensionAPI) {

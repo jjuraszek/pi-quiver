@@ -262,12 +262,19 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 		sessionManager: { getEntries: () => entries },
 	};
 	const generate = async () => generated.shift();
-	installSessionName(pi, generate);
+	const installed = installSessionName(pi, generate);
+	// turn_end fires the revisit detached so it never stalls the agent loop;
+	// tests drive the hook then await settlement explicitly.
+	const runTurnEnd = async (currentInstalled = installed) => {
+		await hooks.get("turn_end")!({}, ctx);
+		await currentInstalled.revisitSettled();
+	};
 	return {
 		ctx,
 		entries,
 		hooks,
 		notifications,
+		runTurnEnd,
 		getName: () => name,
 		setExternalName: (next: string) => { name = next; },
 		destroy: () => rmSync(cwd, { recursive: true, force: true }),
@@ -293,12 +300,12 @@ test("installed extension: auto names revisit silently and retain provenance acr
 		assert.equal(h.getName(), "setup", "deny list cleans the initial auto name");
 
 		addRoundTrips(h.entries, 10);
-		await h.hooks.get("turn_end")!({}, h.ctx);
+		await h.runTurnEnd();
 		assert.equal(h.getName(), "E-42 naming rules");
 
 		// A new extension instance models process/session resume. Persisted
 		// provenance keeps this machine-authored, so round trip 100 may replace it.
-		installSessionName(
+		const resumed = installSessionName(
 			{
 				on: (event: string, hook: Hook) => h.hooks.set(event, hook),
 				registerCommand: () => {},
@@ -312,8 +319,25 @@ test("installed extension: auto names revisit silently and retain provenance acr
 		);
 		await h.hooks.get("session_start")!({}, h.ctx);
 		addRoundTrips(h.entries, 100);
-		await h.hooks.get("turn_end")!({}, h.ctx);
+		await h.runTurnEnd(resumed);
 		assert.equal(h.getName(), "E-42 mature context");
+	} finally {
+		h.destroy();
+	}
+});
+
+test("installed extension: turn_end returns before the revisit LLM call resolves", async () => {
+	const h = extensionHarness([]);
+	try {
+		await h.hooks.get("session_start")!({}, h.ctx);
+		h.setExternalName("E-42 naming rules");
+		addRoundTrips(h.entries, 10);
+		// The empty harness queue makes generate resolve undefined, but the
+		// property under test is the handler itself: it must complete without
+		// waiting on the generate promise, so a slow provider call can never
+		// stall the agent loop between turns of a long-running workflow.
+		const settled = h.hooks.get("turn_end")!({}, h.ctx);
+		assert.equal(settled, undefined, "handler is synchronous; revisit runs detached");
 	} finally {
 		h.destroy();
 	}
@@ -327,7 +351,7 @@ test("installed extension: external human names are cleaned but only get stale s
 		assert.equal(h.getName(), "Human Work");
 
 		addRoundTrips(h.entries, 10);
-		await h.hooks.get("turn_end")!({}, h.ctx);
+		await h.runTurnEnd();
 		assert.equal(h.getName(), "Human Work", "human wording is never overwritten");
 		assert.deepEqual(h.notifications, [
 			"Session name looks stale. Suggested: E-42 mature context - /session-name to apply",
