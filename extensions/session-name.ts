@@ -220,17 +220,27 @@ export function applyDenyList(name: string, deny: string[]): string {
 }
 
 /**
- * Whether round trip `n` is a revisit point. Fires once at `revisitFirstTurn`,
- * then at every multiple of `revisitEveryTurns` - so 10/100 gives 10, 100, 200.
- * Either knob at 0 disables its own trigger.
+ * Whether a revisit point lies in `(prev, n]`. Points are `revisitFirstTurn`
+ * once, then every multiple of `revisitEveryTurns` - so 10/100 gives 10, 100,
+ * 200. Interval semantics rather than exact-hit because the check only runs
+ * when the agent settles: a 30-round-trip automated run never stops exactly on
+ * round trip 10, but it does cross it. Either knob at 0 disables its own
+ * trigger.
  */
 export function shouldRevisit(
+	prev: number,
 	n: number,
 	cfg: { revisitFirstTurn: number; revisitEveryTurns: number },
 ): boolean {
-	if (n <= 0) return false;
-	if (cfg.revisitFirstTurn > 0 && n === cfg.revisitFirstTurn) return true;
-	return cfg.revisitEveryTurns > 0 && n % cfg.revisitEveryTurns === 0;
+	if (n <= 0 || n <= prev) return false;
+	const from = Math.max(prev, 0);
+	if (cfg.revisitFirstTurn > 0 && from < cfg.revisitFirstTurn && n >= cfg.revisitFirstTurn) {
+		return true;
+	}
+	return (
+		cfg.revisitEveryTurns > 0 &&
+		Math.floor(n / cfg.revisitEveryTurns) > Math.floor(from / cfg.revisitEveryTurns)
+	);
 }
 
 /**
@@ -386,12 +396,11 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// revisit - at most we suggest - so unknown provenance (a resumed session, a
 	// rename from outside this extension) is treated as human.
 	let nameAuthor: NameAuthor = "human";
-	// Round trip counts already acted on, so a revisit fires once per point even
-	// though turn_end can repeat a count across retries.
+	// Round trips already acted on; the next check covers (lastRevisitAt, n].
 	let lastRevisitAt = 0;
 	let revisitInFlight = false;
 	// Last detached revisit, exposed so tests (and a curious host) can await
-	// completion of work that deliberately outlives the turn_end handler.
+	// completion of work that deliberately outlives the agent_settled handler.
 	let revisitDone: Promise<void> = Promise.resolve();
 	// The next name-change event expected from our own write. Tracking the value
 	// rather than a synchronous flag also covers hosts that emit the event later.
@@ -544,22 +553,21 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// only reveals itself after the agent has been at it a while. Re-deriving at
 	// a couple of points catches that drift.
 	//
-	// turn_end handlers are awaited inside the agent loop, so the LLM call runs
-	// detached: a revisit must never stall a long-running workflow between
-	// turns. The rename/suggestion lands whenever the call completes; the
-	// name-still-current guard below keeps a late result from clobbering a
-	// rename that happened mid-call.
-	pi.on("turn_end", (_event, ctx) => {
+	// agent_settled, not turn_end: it fires only once the run is fully idle (no
+	// retry, compaction, or queued continuation pending), so an automated
+	// multi-turn workflow - a subagent chain, a gauntlet phase - is never
+	// renamed mid-flight and never waits on a naming call. Cadence points the
+	// run crossed fire once, at the settle. The LLM call still runs detached so
+	// the freed-up UI is not held hostage by a slow provider.
+	pi.on("agent_settled", (_event, ctx) => {
 		if (revisitInFlight) return;
 		const cfg = loadConfig(ctx);
 		if (!cfg.enabled) return;
 		if (cfg.revisitFirstTurn === 0 && cfg.revisitEveryTurns === 0) return;
 		const current = pi.getSessionName();
 		if (!current) return; // unnamed; auto-naming owns that case
-		// Pi persists the assistant message before emitting turn_end, so this
-		// includes the round trip that just completed.
 		const n = countRoundTrips(ctx);
-		if (n <= lastRevisitAt || !shouldRevisit(n, cfg)) return;
+		if (!shouldRevisit(lastRevisitAt, n, cfg)) return;
 		lastRevisitAt = n;
 		revisitInFlight = true;
 		revisitDone = (async () => {

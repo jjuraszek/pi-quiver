@@ -136,25 +136,36 @@ test("applyDenyList: applies every phrase", () => {
 	assert.equal(applyDenyList("Fix Acme Foo login", ["acme", "foo"]), "Fix login");
 });
 
-test("shouldRevisit: fires at the first turn, then on each multiple", () => {
+test("shouldRevisit: fires when the first turn, then each multiple, is crossed", () => {
 	const cfg = { revisitFirstTurn: 10, revisitEveryTurns: 100 };
 	assert.deepEqual(
-		[1, 9, 10, 11, 99, 100, 101, 200, 300].map((n) => shouldRevisit(n, cfg)),
+		[1, 9, 10, 11, 99, 100, 101, 200, 300].map((n) => shouldRevisit(n - 1, n, cfg)),
 		[false, false, true, false, false, true, false, true, true],
 	);
 });
 
-test("shouldRevisit: either knob at 0 disables only its own trigger", () => {
-	assert.equal(shouldRevisit(10, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), false);
-	assert.equal(shouldRevisit(100, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), true);
-	assert.equal(shouldRevisit(10, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), true);
-	assert.equal(shouldRevisit(100, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), false);
+test("shouldRevisit: a multi-turn run that jumps past a cadence point still fires", () => {
+	const cfg = { revisitFirstTurn: 10, revisitEveryTurns: 100 };
+	assert.equal(shouldRevisit(3, 37, cfg), true, "crossed firstTurn=10 inside one run");
+	assert.equal(shouldRevisit(37, 143, cfg), true, "crossed every=100 inside one run");
+	assert.equal(shouldRevisit(11, 99, cfg), false, "no point inside (11, 99]");
+	assert.equal(shouldRevisit(100, 199, cfg), false, "no point inside (100, 199]");
+	assert.equal(shouldRevisit(99, 300, cfg), true, "multiple points collapse to one fire");
 });
 
-test("shouldRevisit: never fires at or below zero round trips", () => {
+test("shouldRevisit: either knob at 0 disables only its own trigger", () => {
+	assert.equal(shouldRevisit(9, 10, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), false);
+	assert.equal(shouldRevisit(99, 100, { revisitFirstTurn: 0, revisitEveryTurns: 100 }), true);
+	assert.equal(shouldRevisit(9, 10, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), true);
+	assert.equal(shouldRevisit(99, 100, { revisitFirstTurn: 10, revisitEveryTurns: 0 }), false);
+});
+
+test("shouldRevisit: never fires at or below zero round trips, nor going backwards", () => {
 	const cfg = { revisitFirstTurn: 10, revisitEveryTurns: 100 };
-	assert.equal(shouldRevisit(0, cfg), false);
-	assert.equal(shouldRevisit(-5, cfg), false);
+	assert.equal(shouldRevisit(-1, 0, cfg), false);
+	assert.equal(shouldRevisit(-6, -5, cfg), false);
+	assert.equal(shouldRevisit(100, 100, cfg), false);
+	assert.equal(shouldRevisit(200, 100, cfg), false);
 });
 
 test("countRoundTrips: counts assistant messages only", () => {
@@ -263,10 +274,10 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 	};
 	const generate = async () => generated.shift();
 	const installed = installSessionName(pi, generate);
-	// turn_end fires the revisit detached so it never stalls the agent loop;
+	// agent_settled fires the revisit detached so it never holds anything up;
 	// tests drive the hook then await settlement explicitly.
-	const runTurnEnd = async (currentInstalled = installed) => {
-		await hooks.get("turn_end")!({}, ctx);
+	const runAgentSettled = async (currentInstalled = installed) => {
+		await hooks.get("agent_settled")!({}, ctx);
 		await currentInstalled.revisitSettled();
 	};
 	return {
@@ -274,7 +285,7 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 		entries,
 		hooks,
 		notifications,
-		runTurnEnd,
+		runAgentSettled,
 		getName: () => name,
 		setExternalName: (next: string) => { name = next; },
 		destroy: () => rmSync(cwd, { recursive: true, force: true }),
@@ -300,7 +311,7 @@ test("installed extension: auto names revisit silently and retain provenance acr
 		assert.equal(h.getName(), "setup", "deny list cleans the initial auto name");
 
 		addRoundTrips(h.entries, 10);
-		await h.runTurnEnd();
+		await h.runAgentSettled();
 		assert.equal(h.getName(), "E-42 naming rules");
 
 		// A new extension instance models process/session resume. Persisted
@@ -319,14 +330,14 @@ test("installed extension: auto names revisit silently and retain provenance acr
 		);
 		await h.hooks.get("session_start")!({}, h.ctx);
 		addRoundTrips(h.entries, 100);
-		await h.runTurnEnd(resumed);
+		await h.runAgentSettled(resumed);
 		assert.equal(h.getName(), "E-42 mature context");
 	} finally {
 		h.destroy();
 	}
 });
 
-test("installed extension: turn_end returns before the revisit LLM call resolves", async () => {
+test("installed extension: agent_settled returns before the revisit LLM call resolves", async () => {
 	const h = extensionHarness([]);
 	try {
 		await h.hooks.get("session_start")!({}, h.ctx);
@@ -334,9 +345,9 @@ test("installed extension: turn_end returns before the revisit LLM call resolves
 		addRoundTrips(h.entries, 10);
 		// The empty harness queue makes generate resolve undefined, but the
 		// property under test is the handler itself: it must complete without
-		// waiting on the generate promise, so a slow provider call can never
-		// stall the agent loop between turns of a long-running workflow.
-		const settled = h.hooks.get("turn_end")!({}, h.ctx);
+		// waiting on the generate promise, so a slow provider call never holds
+		// up whatever the host does after the agent settles.
+		const settled = h.hooks.get("agent_settled")!({}, h.ctx);
 		assert.equal(settled, undefined, "handler is synchronous; revisit runs detached");
 	} finally {
 		h.destroy();
@@ -351,7 +362,7 @@ test("installed extension: external human names are cleaned but only get stale s
 		assert.equal(h.getName(), "Human Work");
 
 		addRoundTrips(h.entries, 10);
-		await h.runTurnEnd();
+		await h.runAgentSettled();
 		assert.equal(h.getName(), "Human Work", "human wording is never overwritten");
 		assert.deepEqual(h.notifications, [
 			"Session name looks stale. Suggested: E-42 mature context - /session-name to apply",
