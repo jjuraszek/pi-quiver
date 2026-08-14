@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## [Unreleased]
+
+- **`session-name`: configurable naming policy** (#5). New `sessionAutoName` keys: `rules` (house conventions appended to the naming prompt, later rules win), `deny` (literal case-insensitive phrases stripped from every name, loose interior whitespace so `"acme corp"` also catches `AcmeCorp`), and `revisitFirstTurn`/`revisitEveryTurns` (re-derive the name at those completed round trips; default `0` = off, each revisit is one short LLM call). Machine-generated names are replaced when stale; human-set names only get a non-blocking suggestion notification. Name provenance and cadence persist across resume. Revisits run detached from `turn_end` so they never stall the agent loop.
+
 ## v4.0.1 - 2026-08-04
 
 - **Trimmed `fetch`/`doc_to_md` system-prompt guidelines that duplicated the tool descriptions** (~200 tokens). The two additive bits (degraded-result fidelity warning, grep-the-spilled-file guidance) moved into the tool descriptions; `promptGuidelines` dropped from both tools.
