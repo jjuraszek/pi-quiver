@@ -347,6 +347,18 @@ export function buildNamingPrompt(conversation: string, opts: PromptOptions = {}
 	return lines.join("\n");
 }
 
+// Copilot business/enterprise credentials pin requests to an account-specific
+// endpoint reported by getApiKeyAndHeaders as auth.baseUrl; the catalog model
+// still carries the individual endpoint, and hitting it with such a token
+// fails with 421 Misdirected Request. Mirror pi's own request path: prefer the
+// credential's endpoint when present.
+export function withAuthBaseUrl<M extends { baseUrl: string }>(
+	model: M,
+	auth: { baseUrl?: string },
+): M {
+	return auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+}
+
 async function generateName(
 	ctx: ExtensionContext,
 	opts: PromptOptions = {},
@@ -368,7 +380,7 @@ async function generateName(
 
 	const complete = await loadComplete();
 	const response = await complete(
-		model,
+		withAuthBaseUrl(model, auth),
 		{
 			messages: [
 				{ role: "user" as const, content: [{ type: "text" as const, text: prompt }], timestamp: Date.now() },

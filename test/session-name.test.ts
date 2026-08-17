@@ -17,6 +17,7 @@ import {
 	parseRevisitReply,
 	installSessionName,
 	KEEP,
+	withAuthBaseUrl,
 } from "../extensions/session-name.ts";
 
 test("stripSkillBodies: collapses skill body to [skill: name], preserves trailing args", () => {
@@ -426,4 +427,21 @@ test("parseGeneratedName: tab label is capped to 4 words", () => {
 test("parseGeneratedName: no SESSION line → undefined", () => {
 	assert.equal(parseGeneratedName("TAB: only a tab"), undefined);
 	assert.equal(parseGeneratedName("no markers at all"), undefined);
+});
+
+// Copilot business/enterprise tokens pin requests to a credential-specific
+// endpoint (auth.baseUrl); ignoring it yields 421 Misdirected Request.
+test("withAuthBaseUrl: overrides model.baseUrl when auth carries one", () => {
+	const model = { id: "kimi-k3", baseUrl: "https://api.individual.githubcopilot.com" };
+	const got = withAuthBaseUrl(model, { baseUrl: "https://api.business.githubcopilot.com" });
+	assert.equal(got.baseUrl, "https://api.business.githubcopilot.com");
+	assert.equal(got.id, "kimi-k3");
+	assert.notEqual(got, model); // copy, never mutate the registry's model
+	assert.equal(model.baseUrl, "https://api.individual.githubcopilot.com");
+});
+
+test("withAuthBaseUrl: returns model unchanged when auth has no baseUrl", () => {
+	const model = { id: "kimi-k3", baseUrl: "https://api.individual.githubcopilot.com" };
+	assert.equal(withAuthBaseUrl(model, {}), model);
+	assert.equal(withAuthBaseUrl(model, { baseUrl: undefined }), model);
 });
