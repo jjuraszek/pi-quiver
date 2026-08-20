@@ -1,0 +1,13 @@
+{
+	"name": "pi-quiver",
+	"owner": { "name": "jjuraszek" },
+	"plugins": [
+		{
+			"name": "quiver",
+			"source": "./",
+			"description": "Claude Code skills backed by the pi-quiver toolbox",
+			"strict": false,
+			"skills": ["./skills/fetch"]
+		}
+	]
+}

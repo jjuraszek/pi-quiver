@@ -62,7 +62,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 
 | Extension | Tool | What it does |
 | --- | --- | --- |
-| `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. |
+| `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run URLs auto-route through `gh` (falls back to HTTP). Same size gate as `doc_to_md`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
 | `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
@@ -204,6 +204,29 @@ Operational notes:
 - **Settings are read once per session,** on the first provider request. Editing `settings.json` mid-session changes nothing until you restart the session - that includes repairing an invalid block that already disabled the extension.
 - **A watchdog abort that the provider ignores escalates after a fixed 10s.** Any post-abort stream event re-arms that deadline (bytes prove only that the connection was alive at that instant), so a stream that emits a straggler and then wedges still escalates 10s after its last event. This reduces the hang; it cannot force the provider to stop, and undici's timeouts remain the final backstop.
 - **Headless runs report on stderr.** In `print`/`json` mode pi binds a no-op UI, so watchdog notices go out via `console.warn`. Nothing is ever written to stdout, which `json` mode uses for its protocol. In TUI and RPC the notices render as main-window notifications, not the bottom status line.
+
+## Claude Code support
+
+`fetch`'s core (`lib/fetch-core.ts`) is also published as a CLI, so Claude Code can use the same routing, size gate, and spill behavior as pi's native tool - without pi ever seeing Claude-only files.
+
+**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with one skill: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`). The skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing, same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags.
+
+**Not exposed:** pi extensions, `doc_to_md`, and everything else in this package - the marketplace allowlists only `./skills/fetch`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
+
+Add the marketplace and enable the plugin in `.claude/settings.json`:
+
+```json
+{
+	"extraKnownMarketplaces": {
+		"pi-quiver": { "source": { "source": "github", "repo": "jjuraszek/pi-quiver" } }
+	},
+	"enabledPlugins": { "quiver@pi-quiver": true }
+}
+```
+
+Activates on folder trust.
+
+**Release sequencing:** the skill goes live only with (or after) the npm release that ships the `pi-quiver` bin - until that tag is on npm, `npx -y pi-quiver@latest fetch` resolves a bin-less package and fails.
 
 ## Development
 

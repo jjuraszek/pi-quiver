@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "../extensions/fetch.ts";
+import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -235,7 +235,7 @@ test("executeGhRouting: success renders gh result; failure falls through (null)"
 	assert.equal(okResult!.details.ghCommand, "issue view --comments");
 	assert.equal(okResult!.details.category, "markdown");
 	assert.equal(okResult!.details.status, undefined);
-	assert.ok(okResult!.content[0].text.startsWith("Source: gh issue view https://github.com/o/r/issues/1 --comments"));
+	assert.ok(okResult!.output.startsWith("Source: gh issue view https://github.com/o/r/issues/1 --comments"));
 
 	const failRunner = async () => ({ ok: false as const });
 	const failResult = await executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), undefined, failRunner);
@@ -253,6 +253,6 @@ test("executeGhRouting: large gh output spills to a file", async () => {
 	assert.equal(result!.details.spilled, true);
 	assert.ok(result!.details.file, "expected a spill file path");
 	assert.ok(existsSync(result!.details.file!));
-	assert.ok(result!.content[0].text.includes("Saved-To:"));
+	assert.ok(result!.output.includes("Saved-To:"));
 	rmSync(result!.details.file!);
 });

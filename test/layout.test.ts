@@ -24,3 +24,30 @@ test("files allowlist ships extensions/ and lib/", () => {
 	assert.ok(pkg.files.includes("extensions"), "package.json files must include extensions");
 	assert.ok(pkg.files.includes("lib"), "package.json files must include lib");
 });
+
+// packaging + isolation contract (spec 2026-08-20-fetch-claude-code-portability)
+test("packaging isolates Claude artifacts from pi and npm", () => {
+	assert.deepStrictEqual(pkg.pi.extensions, ["./extensions"]);
+	assert.ok(pkg.files.includes("dist"));
+	for (const banned of ["skills", ".claude-plugin", "bin"]) {
+		for (const entry of pkg.files as string[]) {
+			const firstSegment = entry.replace(/^\.\//, "").split("/")[0];
+			assert.notStrictEqual(firstSegment, banned, `files entry "${entry}" would ship ${banned} in the tarball`);
+		}
+	}
+	assert.deepStrictEqual(pkg.bin, { "pi-quiver": "dist/bin/pi-quiver.js" });
+});
+
+test("fetch core imports no @earendil-works packages", () => {
+	const src = readFileSync(new URL("../lib/fetch-core.ts", import.meta.url), "utf8");
+	assert.ok(!src.includes("@earendil-works"));
+});
+
+test("marketplace allowlist entries exist and contain SKILL.md", () => {
+	const mp = JSON.parse(readFileSync(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
+	assert.strictEqual(mp.plugins.length, 1);
+	for (const rel of mp.plugins[0].skills) {
+		const skill = readFileSync(new URL(`../${rel}/SKILL.md`, import.meta.url), "utf8");
+		assert.match(skill, /^---\nname: /);
+	}
+});

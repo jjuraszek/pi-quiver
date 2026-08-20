@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- fetch: data plane extracted to `lib/fetch-core.ts`; new `pi-quiver fetch` CLI (esbuild-built `dist/` bin) with full parameter parity; Claude Code skill + plugin marketplace (`quiver:fetch` via `npx -y pi-quiver@latest`). pi tool behavior unchanged.
+
 ## v4.1.1 - 2026-08-17
 
 - **`session-name`: fix silent auto-naming failure on GitHub Copilot business/enterprise accounts.** Those credentials pin requests to an account-specific endpoint (`auth.baseUrl` from `getApiKeyAndHeaders`); the naming call ignored it and hit the catalog's individual endpoint, failing with `421 Misdirected Request` and leaving sessions unnamed. The naming request now mirrors pi's own request path and prefers the credential's endpoint.

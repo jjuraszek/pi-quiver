@@ -2,6 +2,10 @@
 
 `fetch` is the main way an agent pulls external bytes into context. This extension routes responses by type to keep context tight.
 
+## Core/adapter split
+
+`lib/fetch-core.ts` owns all behavior - GitHub routing, streaming caps, HTML->Markdown, the spill policy - and exports `fetchUrl(opts): Promise<{ output, details }>`. `extensions/fetch.ts` is a thin pi adapter (TypeBox schema, `registerTool`, envelope mapping, TUI renderers); `bin/pi-quiver.ts` is a thin CLI adapter over the same core, giving Claude Code (via `npx -y pi-quiver@latest fetch <url>`) the identical routing, caps, and spill behavior as the pi tool. The CLI ships as an esbuild-built `dist/bin/pi-quiver.js` (built at `prepack`, tarball-only, gitignored in the source tree); the pi path still loads `extensions/fetch.ts` straight from TypeScript source, unchanged.
+
 ## HTML -> Markdown
 
 - Mozilla Readability extracts main content, strips navigation/chrome/boilerplate
@@ -29,7 +33,7 @@ JSON: pretty-printed with 2-space indent before the gate.
 
 ## GitHub URLs -> `gh`
 
-`github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), and repo-root (`/{owner}/{repo}`) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate.
+`github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), repo-root (`/{owner}/{repo}`), and Actions-run (`/{owner}/{repo}/actions/runs/{n}`) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`, `gh run view --repo <owner/repo>`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate.
 
 Requires `gh` (see the README's [Prerequisites](../README.md#prerequisites)); if `gh` is missing or the call fails, `fetch` silently falls back to the normal HTTP path. Pass `raw=true` to force the rendered HTML page. All other GitHub paths (`tree`, `blob`, `raw`, `releases`, gists, ...) use the HTTP path unchanged. Routing is also skipped (plain HTTP used) when the request is non-GET, carries a body, or sets custom headers.
 
@@ -46,3 +50,15 @@ Parsable content over 1 MB is truncated with a `(truncated to 1MB)` note; binary
 ## Runtime dependencies
 
 `jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`. Shipped in the npm package and installed automatically on `pi install` - no manual setup needed.
+
+## Claude Code CLI (`pi-quiver fetch`)
+
+`npx -y pi-quiver@latest fetch <url> [--method GET|HEAD|POST] [--header "K: V"]... [--body <str>] [--raw] [--timeout-ms <n>]` runs the same `fetchUrl` core as the pi tool and prints `output` to stdout. See [README - Claude Code support](../README.md#claude-code-support) for what's exposed.
+
+Exit codes:
+
+| code | meaning |
+|---|---|
+| `0` | response received - includes HTTP 4xx/5xx and truncated/capped bodies; check the `HTTP <status>` line |
+| `1` | fetch failed: unsupported protocol/bad URL, DNS failure, timeout/abort, binary write failure |
+| `2` | usage error: unknown flag, missing `<url>`, bad `--method`, malformed `--header`, non-positive/non-numeric `--timeout-ms` |

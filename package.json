@@ -27,9 +27,13 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "pi-quiver": "dist/bin/pi-quiver.js"
+  },
   "files": [
     "extensions",
     "lib",
+    "dist",
     "scripts/pdf_to_md.py",
     "types/**/*.d.ts",
     "README.md",
@@ -39,7 +43,9 @@
     "check:agents-core": "node scripts/check-agents-core.mjs",
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "npx -y tsc --noEmit",
-    "test:all": "npm run check:agents-core && npm run test && npm run typecheck"
+    "test:all": "npm run check:agents-core && npm run test && npm run typecheck",
+    "build": "esbuild bin/pi-quiver.ts --bundle --packages=external --format=esm --platform=node --outfile=dist/bin/pi-quiver.js",
+    "prepack": "npm run build"
   },
   "pi": {
     "extensions": [
@@ -86,6 +92,7 @@
     "@types/jsdom": "^28.0.3",
     "@types/node": "^26.1.0",
     "@types/turndown": "^5.0.6",
+    "esbuild": "^0.28.2",
     "typescript": "^6.0.3"
   }
 }
