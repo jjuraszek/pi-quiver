@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v4.2.0 - 2026-08-20
 
 - fetch: data plane extracted to `lib/fetch-core.ts`; new `pi-quiver fetch` CLI (esbuild-built `dist/` bin) with full parameter parity; Claude Code skill + plugin marketplace (`quiver:fetch` via `npx -y pi-quiver@latest`). pi tool behavior unchanged.
 
