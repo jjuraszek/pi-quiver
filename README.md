@@ -245,6 +245,10 @@ Both run in CI on ubuntu + windows (`.github/workflows/test.yml`).
 
 pi-quiver is how ground truth gets into an agent's context - real pages, PDFs, docs, cleanly and safely. The other three then coordinate work over it ([pi-cohort](https://github.com/jjuraszek/pi-cohort)), prune it once it's stale ([pi-condense](https://github.com/jjuraszek/pi-condense)), and govern the process end to end ([pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet)).
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the pi-gauntlet workflow (one-liners exempt from ceremony, never from keeping docs truthful).
+
 ## Support
 
 If this saves you time, consider [buying me a coffee](https://buymeacoffee.com/jjurasszek).
