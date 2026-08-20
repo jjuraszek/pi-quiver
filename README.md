@@ -247,7 +247,7 @@ pi-quiver is how ground truth gets into an agent's context - real pages, PDFs, d
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the pi-gauntlet workflow (one-liners exempt from ceremony, never from keeping docs truthful).
+See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the [pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet) workflow (one-liners exempt from ceremony, never from keeping docs truthful).
 
 ## Support
 
