@@ -1,6 +1,6 @@
 ---
 name: fetch
-description: Fetch any URL via the quiver fetch CLI - use instead of WebFetch for GitHub issue/PR/repo URLs (routed through authenticated gh), binary downloads (PDFs, images, archives - saved to a temp path, never dumped to output), large pages (size-capped, spilled to a file with a preview), and clean readability-extracted Markdown. Invoke via Bash.
+description: Fetch any URL via the quiver fetch CLI - use instead of WebFetch for GitHub issue/PR/repo/Actions-run/Actions-job URLs (routed through authenticated gh, with failed-step logs appended for failed runs/jobs), binary downloads (PDFs, images, archives - saved to a temp path, never dumped to output), large pages (size-capped, spilled to a file with a preview), and clean readability-extracted Markdown. Invoke via Bash.
 ---
 
 # Fetch a URL
@@ -23,7 +23,7 @@ Flags (all optional):
 
 Behavior:
 
-- GitHub issue/PR/repo/Actions-run URLs are served via the `gh` CLI when installed and authenticated (comments included); otherwise plain HTTP.
+- GitHub issue/PR/repo/Actions-run/Actions-job URLs are served via the `gh` CLI when installed and authenticated (comments included); otherwise plain HTTP. Failed runs/jobs append a `## Failed step logs` section (best-effort; summary-only when nothing failed, the run is still in progress, or logs have expired).
 - HTML pages come back as readability-extracted Markdown. JSON is pretty-printed.
 - Output over 32KB or 1000 lines is written to a temp file; stdout then carries `Saved-To: <path>` plus a 60-line preview. Read slices of that file (offset/limit) or grep it - do not re-read the whole file.
 - Binary content (PDF, images, archives) is never printed: stdout carries the HTTP status/headers plus a `Saved-To: <path>` line and a note that the content is not decoded, but never the binary bytes. Hand that path to the Read tool or another command.

@@ -33,7 +33,9 @@ JSON: pretty-printed with 2-space indent before the gate.
 
 ## GitHub URLs -> `gh`
 
-`github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), repo-root (`/{owner}/{repo}`), and Actions-run (`/{owner}/{repo}/actions/runs/{n}`) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`, `gh run view --repo <owner/repo>`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate.
+`github.com` issue (`/issues/{n}`), PR (`/pull/{n}`), repo-root (`/{owner}/{repo}`), Actions-run (`/{owner}/{repo}/actions/runs/{n}`), and Actions-job (`/{owner}/{repo}/actions/runs/{runId}/job/{jobId}`, singular `/job/` as GitHub's UI produces) URLs are served by running the `gh` CLI (`gh issue|pr view --comments`, `gh repo view`, `gh run view --repo <owner/repo>`, `gh run view --job <jobId> --repo <owner/repo>`) and returning its output, tagged with a `Source: gh ...` header and run through the same size gate. Plural `/jobs/{id}` paths are not recognized and fall back to plain HTTP.
+
+Run and job fetches also make a best-effort second call, `gh run view ... --log-failed`, and append its output under a `## Failed step logs` heading with its own `Source: gh ... --log-failed ...` line; the combined body still goes through the normal size gate. When nothing failed, the run is still in progress, or the logs have expired, that second call yields no section - output is summary-only, exactly the prior behavior.
 
 Requires `gh` (see the README's [Prerequisites](../README.md#prerequisites)); if `gh` is missing or the call fails, `fetch` silently falls back to the normal HTTP path. Pass `raw=true` to force the rendered HTML page. All other GitHub paths (`tree`, `blob`, `raw`, `releases`, gists, ...) use the HTTP path unchanged. Routing is also skipped (plain HTTP used) when the request is non-GET, carries a body, or sets custom headers.
 

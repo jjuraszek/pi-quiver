@@ -29,7 +29,8 @@ export type GhTarget =
 	| { kind: "issue"; url: string }
 	| { kind: "pr"; url: string }
 	| { kind: "repo"; slug: string }
-	| { kind: "run"; slug: string; runId: string; url: string };
+	| { kind: "run"; slug: string; runId: string; url: string }
+	| { kind: "job"; slug: string; jobId: string; url: string };
 
 export function formatSize(bytes: number): string {
 	if (bytes < 1024) {
@@ -80,6 +81,9 @@ export function classifyGitHubTarget(url: URL): GhTarget | null {
 	if (segs.length === 5 && segs[2] === "actions" && segs[3] === "runs" && /^\d+$/.test(segs[4])) {
 		return { kind: "run", slug: `${owner}/${repo}`, runId: segs[4], url: `https://github.com/${owner}/${repo}/actions/runs/${segs[4]}` };
 	}
+	if (segs.length === 7 && segs[2] === "actions" && segs[3] === "runs" && /^\d+$/.test(segs[4]) && segs[5] === "job" && /^\d+$/.test(segs[6])) {
+		return { kind: "job", slug: `${owner}/${repo}`, jobId: segs[6], url: `https://github.com/${owner}/${repo}/actions/runs/${segs[4]}/job/${segs[6]}` };
+	}
 	if (segs.length === 2) {
 		return { kind: "repo", slug: `${owner}/${repo}` };
 	}
@@ -90,7 +94,14 @@ export function buildGhArgs(target: GhTarget): string[] {
 	if (target.kind === "issue") return ["issue", "view", target.url, "--comments"];
 	if (target.kind === "pr") return ["pr", "view", target.url, "--comments"];
 	if (target.kind === "run") return ["run", "view", target.runId, "--repo", target.slug];
+	if (target.kind === "job") return ["run", "view", "--job", target.jobId, "--repo", target.slug];
 	return ["repo", "view", target.slug];
+}
+
+export function buildGhLogArgs(target: GhTarget): string[] | null {
+	if (target.kind === "run") return ["run", "view", target.runId, "--log-failed", "--repo", target.slug];
+	if (target.kind === "job") return ["run", "view", "--job", target.jobId, "--log-failed", "--repo", target.slug];
+	return null;
 }
 
 const GH_MAX_BUFFER = 10_000_000; // 10 MB — an order above PARSABLE_MAX_BYTES
@@ -135,6 +146,7 @@ function ghCommandLabel(target: GhTarget): string {
 	if (target.kind === "issue") return "issue view --comments";
 	if (target.kind === "pr") return "pr view --comments";
 	if (target.kind === "run") return "run view";
+	if (target.kind === "job") return "run view --job";
 	return "repo view";
 }
 
@@ -142,11 +154,14 @@ function ghSourceLine(target: GhTarget, ref: string): string {
 	if (target.kind === "issue") return `gh issue view ${ref} --comments`;
 	if (target.kind === "pr") return `gh pr view ${ref} --comments`;
 	if (target.kind === "run") return `gh run view ${target.runId} --repo ${target.slug}`;
+	if (target.kind === "job") return `gh run view --job ${target.jobId} --repo ${target.slug}`;
 	return `gh repo view ${ref}`;
 }
 
-function renderGhResult(target: GhTarget, stdout: string): FetchResult {
-	const body = stdout.trimEnd();
+function renderGhResult(target: GhTarget, stdout: string, failedLogs?: string): FetchResult {
+	const body = failedLogs !== undefined
+		? `${stdout.trimEnd()}\n\n## Failed step logs\n\n${failedLogs.trimEnd()}`
+		: stdout.trimEnd();
 	const ref = target.kind === "repo" ? target.slug : target.url;
 	const { spill, bytes, lines } = applyGate(body);
 	const baseDetails: FetchToolDetails = {
@@ -157,7 +172,9 @@ function renderGhResult(target: GhTarget, stdout: string): FetchResult {
 		via: "gh",
 		ghCommand: ghCommandLabel(target),
 	};
-	const source = `Source: ${ghSourceLine(target, ref)}`;
+	const source = failedLogs !== undefined
+		? `Source: ${ghSourceLine(target, ref)}\nSource: gh ${buildGhLogArgs(target)!.join(" ")}`
+		: `Source: ${ghSourceLine(target, ref)}`;
 	if (!spill) {
 		return {
 			output: [source, "", body].join("\n"),
@@ -189,9 +206,19 @@ export async function executeGhRouting(
 ): Promise<FetchResult | null> {
 	const target = planGhRouting(params, url);
 	if (!target) return null;
-	const gh = await runner(buildGhArgs(target), params.timeoutMs ?? DEFAULT_TIMEOUT_MS, signal);
+	const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	signal?.throwIfAborted();
+	const gh = await runner(buildGhArgs(target), timeoutMs, signal);
+	signal?.throwIfAborted();
 	if (!gh.ok) return null;
-	return renderGhResult(target, gh.stdout);
+	const logArgs = buildGhLogArgs(target);
+	let failedLogs: string | undefined;
+	if (logArgs) {
+		const logs = await runner(logArgs, timeoutMs, signal);
+		signal?.throwIfAborted();
+		if (logs.ok && logs.stdout !== "") failedLogs = logs.stdout;
+	}
+	return renderGhResult(target, gh.stdout, failedLogs);
 }
 
 const PARSABLE_MAX_BYTES = 1_000_000; // text/markdown/json download ceiling

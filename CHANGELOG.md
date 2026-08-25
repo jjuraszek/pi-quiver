@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## [Unreleased]
+
+- fetch: GitHub Actions job URLs (`.../actions/runs/<runId>/job/<jobId>`, singular `/job/` as GitHub's UI produces) now route through `gh run view --job <jobId> --repo <slug>`; plural `/jobs/<id>` paths still fall back to plain HTTP. Both run and job fetches now make a best-effort second `gh run view ... --log-failed` call and append its output under a `## Failed step logs` heading; when nothing failed, the run is still in progress, or logs have expired, the call yields no section and behavior is unchanged (summary-only).
+
 ## v4.2.0 - 2026-08-20
 
 - fetch: data plane extracted to `lib/fetch-core.ts`; new `pi-quiver fetch` CLI (esbuild-built `dist/` bin) with full parameter parity; Claude Code skill + plugin marketplace (`quiver:fetch` via `npx -y pi-quiver@latest`). pi tool behavior unchanged.

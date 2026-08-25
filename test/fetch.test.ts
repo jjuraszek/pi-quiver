@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
+import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, buildGhLogArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -167,6 +167,40 @@ test("classifyGitHubTarget: issue / pr / repo shapes", () => {
 	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/jjuraszek/pi-condense/actions/runs/28867698934")), { kind: "run", slug: "jjuraszek/pi-condense", runId: "28867698934", url: "https://github.com/jjuraszek/pi-condense/actions/runs/28867698934" });
 });
 
+test("classifyGitHubTarget: job URL (singular /job/<id>)", () => {
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/gridstrong/gridstrong/actions/runs/32817046112/job/97707339063")), {
+		kind: "job", slug: "gridstrong/gridstrong", jobId: "97707339063",
+		url: "https://github.com/gridstrong/gridstrong/actions/runs/32817046112/job/97707339063",
+	});
+	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/o/r/actions/runs/1/job/2?pr=3#step:5:10")), {
+		kind: "job", slug: "o/r", jobId: "2", url: "https://github.com/o/r/actions/runs/1/job/2",
+	});
+});
+
+test("classifyGitHubTarget: job-adjacent non-matches → null", () => {
+	for (const u of [
+		"https://github.com/o/r/actions/runs/1/job/notanumber",
+		"https://github.com/o/r/actions/runs/notanumber/job/2",
+		"https://github.com/o/r/actions/runs/1/job",
+		"https://github.com/o/r/actions/runs/1/attempts/2/job/3",
+		"https://github.com/o/r/actions/runs/1/job/2/extra",
+	]) {
+		assert.equal(classifyGitHubTarget(new URL(u)), null, u);
+	}
+});
+
+test("buildGhArgs: job maps to run view --job", () => {
+	assert.deepEqual(buildGhArgs({ kind: "job", slug: "o/r", jobId: "7", url: "https://github.com/o/r/actions/runs/1/job/7" }), ["run", "view", "--job", "7", "--repo", "o/r"]);
+});
+
+test("buildGhLogArgs: run/job get --log-failed argv, others null", () => {
+	assert.deepEqual(buildGhLogArgs({ kind: "run", slug: "o/r", runId: "99", url: "https://github.com/o/r/actions/runs/99" }), ["run", "view", "99", "--log-failed", "--repo", "o/r"]);
+	assert.deepEqual(buildGhLogArgs({ kind: "job", slug: "o/r", jobId: "7", url: "https://github.com/o/r/actions/runs/1/job/7" }), ["run", "view", "--job", "7", "--log-failed", "--repo", "o/r"]);
+	assert.equal(buildGhLogArgs({ kind: "issue", url: "https://github.com/o/r/issues/1" }), null);
+	assert.equal(buildGhLogArgs({ kind: "pr", url: "https://github.com/o/r/pull/2" }), null);
+	assert.equal(buildGhLogArgs({ kind: "repo", slug: "o/r" }), null);
+});
+
 test("classifyGitHubTarget: strips query + fragment, accepts www host", () => {
 	assert.deepEqual(classifyGitHubTarget(new URL("https://github.com/o/r/issues/7?foo=bar#issuecomment-99")), { kind: "issue", url: "https://github.com/o/r/issues/7" });
 	assert.deepEqual(classifyGitHubTarget(new URL("https://www.github.com/o/r/pull/8#discussion")), { kind: "pr", url: "https://github.com/o/r/pull/8" });
@@ -255,4 +289,152 @@ test("executeGhRouting: large gh output spills to a file", async () => {
 	assert.ok(existsSync(result!.details.file!));
 	assert.ok(result!.output.includes("Saved-To:"));
 	rmSync(result!.details.file!);
+});
+
+test("executeGhRouting: job URL makes summary + --log-failed calls, appends logs", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		if (args.includes("--log-failed")) return { ok: true as const, stdout: "##[error]assertion failed\n" };
+		return { ok: true as const, stdout: "X Run tests\n" };
+	};
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/1/job/7"), undefined, runner);
+	assert.ok(result);
+	assert.deepEqual(calls, [
+		["run", "view", "--job", "7", "--repo", "o/r"],
+		["run", "view", "--job", "7", "--log-failed", "--repo", "o/r"],
+	]);
+	assert.ok(result!.output.includes("Source: gh run view --job 7 --repo o/r"));
+	assert.ok(result!.output.includes("Source: gh run view --job 7 --log-failed --repo o/r"));
+	assert.ok(result!.output.includes("## Failed step logs"));
+	assert.ok(result!.output.includes("##[error]assertion failed"));
+	assert.equal(result!.details.ghCommand, "run view --job");
+	assert.equal(result!.details.url, "https://github.com/o/r/actions/runs/1/job/7");
+});
+
+test("executeGhRouting: run URL also gets the --log-failed call", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		if (args.includes("--log-failed")) return { ok: true as const, stdout: "log line\n" };
+		return { ok: true as const, stdout: "summary\n" };
+	};
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/99"), undefined, runner);
+	assert.ok(result);
+	assert.equal(calls.length, 2);
+	assert.deepEqual(calls[1], ["run", "view", "99", "--log-failed", "--repo", "o/r"]);
+	assert.ok(result!.output.includes("## Failed step logs"));
+});
+
+test("executeGhRouting: failed/empty log call degrades to summary-only", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		if (args.includes("--log-failed")) return { ok: false as const };
+		return { ok: true as const, stdout: "summary\n" };
+	};
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/1/job/7"), undefined, runner);
+	assert.ok(result);
+	assert.equal(calls.length, 2);
+	assert.ok(!result!.output.includes("## Failed step logs"));
+	assert.equal(result!.output.match(/^Source: /gm)!.length, 1);
+});
+
+test("executeGhRouting: ok-but-empty log call degrades to summary-only", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		if (args.includes("--log-failed")) return { ok: true as const, stdout: "" };
+		return { ok: true as const, stdout: "summary\n" };
+	};
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/1/job/7"), undefined, runner);
+	assert.ok(result);
+	assert.equal(calls.length, 2);
+	assert.ok(!result!.output.includes("## Failed step logs"));
+	assert.equal(result!.output.match(/^Source: /gm)!.length, 1);
+});
+
+test("executeGhRouting: issue target stays single-call", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		return { ok: true as const, stdout: "body\n" };
+	};
+	await executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), undefined, runner);
+	assert.equal(calls.length, 1);
+});
+
+test("executeGhRouting: PR target stays single-call", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		return { ok: true as const, stdout: "body\n" };
+	};
+	await executeGhRouting({}, new URL("https://github.com/o/r/pull/2"), undefined, runner);
+	assert.equal(calls.length, 1);
+});
+
+test("executeGhRouting: repo target stays single-call", async () => {
+	const calls: string[][] = [];
+	const runner = async (args: string[]) => {
+		calls.push(args);
+		return { ok: true as const, stdout: "repo info\n" };
+	};
+	await executeGhRouting({}, new URL("https://github.com/o/r"), undefined, runner);
+	assert.equal(calls.length, 1);
+});
+
+test("executeGhRouting: large summary+logs body spills as one gated body", async () => {
+	const runner = async (args: string[]) => {
+		if (args.includes("--log-failed")) return { ok: true as const, stdout: "LOGPAYLOAD\n".repeat(600) };
+		return { ok: true as const, stdout: "SUMMARYMARK\n".repeat(600) };
+	};
+	const result = await executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/1/job/7"), undefined, runner);
+	assert.ok(result);
+	assert.equal(result!.details.spilled, true);
+	assert.ok(result!.output.includes("Source: gh run view --job 7 --repo o/r"));
+	assert.ok(result!.output.includes("Source: gh run view --job 7 --log-failed --repo o/r"));
+	const spilled = readFileSync(result!.details.file!, "utf8");
+	assert.ok(spilled.includes("SUMMARYMARK"));
+	assert.ok(spilled.includes("LOGPAYLOAD"));
+	assert.equal(spilled.match(/^## Failed step logs$/gm)!.length, 1);
+	rmSync(result!.details.file!);
+});
+
+test("executeGhRouting: abort during the log call rejects, never summary-only", async () => {
+	const ac = new AbortController();
+	const reason = new Error("user aborted");
+	const runner = async (args: string[]) => {
+		if (args.includes("--log-failed")) {
+			ac.abort(reason);
+			return { ok: false as const };
+		}
+		return { ok: true as const, stdout: "summary\n" };
+	};
+	await assert.rejects(
+		executeGhRouting({}, new URL("https://github.com/o/r/actions/runs/1/job/7"), ac.signal, runner),
+		/user aborted/,
+	);
+});
+
+test("executeGhRouting: abort during the summary call rejects, never HTTP fallback", async () => {
+	const ac = new AbortController();
+	const reason = new Error("user aborted");
+	const runner = async () => {
+		ac.abort(reason);
+		return { ok: false as const };
+	};
+	await assert.rejects(
+		executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), ac.signal, runner),
+		/user aborted/,
+	);
+});
+
+test("planGhRouting: job URLs inherit bypass semantics", () => {
+	const u = new URL("https://github.com/o/r/actions/runs/1/job/7");
+	assert.equal(planGhRouting({ raw: true }, u), null);
+	assert.equal(planGhRouting({ method: "POST" }, u), null);
+	assert.equal(planGhRouting({ body: "x" }, u), null);
+	assert.equal(planGhRouting({ headers: { "x-foo": "1" } }, u), null);
+	assert.equal(planGhRouting({}, u)!.kind, "job");
 });
