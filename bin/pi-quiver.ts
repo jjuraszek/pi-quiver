@@ -5,18 +5,34 @@
  * Exit codes: 0 = response received (incl. non-2xx / truncated),
  * 1 = fetch failed (bad URL/protocol, DNS, timeout, write failure),
  * 2 = usage error.
+ * `pi-quiver doc-to-md <path>` runs the same doc-to-md core as the pi
+ * extension and prints its output to stdout.
+ * Exit codes: 0 = converted (incl. degraded fallback), 1 = conversion
+ * failed, 2 = usage error.
  */
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { fetchUrl, type FetchOptions } from "../lib/fetch-core.ts";
+import { convertDocument, parseConfig } from "../lib/doc-to-md-core.ts";
 
 const USAGE =
-	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]";
+	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]\n" +
+	"       pi-quiver doc-to-md <path>";
 
-export type ParsedArgs = { ok: true; opts: FetchOptions } | { ok: false; error: string };
+export type ParsedArgs =
+	| { ok: true; cmd: "fetch"; opts: FetchOptions }
+	| { ok: true; cmd: "doc-to-md"; path: string }
+	| { ok: false; error: string };
 
 export function parseCliArgs(argv: string[]): ParsedArgs {
+	if (argv[0] === "doc-to-md") {
+		const rest = argv.slice(1);
+		if (rest.length === 0) return { ok: false, error: "missing <path>" };
+		if (rest[0].startsWith("--")) return { ok: false, error: `unknown flag: ${rest[0]}` };
+		if (rest.length > 1) return { ok: false, error: `unexpected argument: ${rest[1]}` };
+		return { ok: true, cmd: "doc-to-md", path: rest[0] };
+	}
 	if (argv[0] !== "fetch") return { ok: false, error: `unknown command: ${argv[0] ?? "(none)"}` };
 	const rest = argv.slice(1);
 	let url: string | undefined;
@@ -61,7 +77,7 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
 	if (body !== undefined) opts.body = body;
 	if (raw !== undefined) opts.raw = raw;
 	if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
-	return { ok: true, opts };
+	return { ok: true, cmd: "fetch", opts };
 }
 
 async function main(): Promise<number> {
@@ -69,6 +85,16 @@ async function main(): Promise<number> {
 	if (!parsed.ok) {
 		process.stderr.write(`${parsed.error}\n${USAGE}\n`);
 		return 2;
+	}
+	if (parsed.cmd === "doc-to-md") {
+		try {
+			const result = await convertDocument(parsed.path, parseConfig(process.env));
+			process.stdout.write(`${result.output}\n`);
+			return 0;
+		} catch (err) {
+			process.stderr.write(`doc-to-md failed: ${err instanceof Error ? err.message : String(err)}\n`);
+			return 1;
+		}
 	}
 	try {
 		const result = await fetchUrl(parsed.opts);

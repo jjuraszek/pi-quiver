@@ -43,6 +43,11 @@ test("fetch core imports no @earendil-works packages", () => {
 	assert.ok(!src.includes("@earendil-works"));
 });
 
+test("doc-to-md core imports no @earendil-works packages", () => {
+	const src = readFileSync(new URL("../lib/doc-to-md-core.ts", import.meta.url), "utf8");
+	assert.ok(!src.includes("@earendil-works"));
+});
+
 test("marketplace allowlist entries exist and contain SKILL.md", () => {
 	const mp = JSON.parse(readFileSync(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
 	assert.strictEqual(mp.plugins.length, 1);

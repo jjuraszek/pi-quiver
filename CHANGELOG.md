@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- doc_to_md: backend ladder now tries a system Python >= 3.12 with `pymupdf4llm` importable, then a one-time managed venv (bootstrapped at the version pin into a per-OS cache dir) between the existing `uv` and `unpdf` rungs. Data plane extracted to pi-free `lib/doc-to-md-core.ts`; new `pi-quiver doc-to-md <path>` CLI subcommand and `doc-to-md` Claude Code skill. `uv`/`soffice` detection is now spawn-based (Windows-correct). The bundled Python conversion script is now resolved from the package root, fixing a path bug that broke it under the bundled CLI.
+
 ## v4.3.0 - 2026-08-25
 
 - fetch: GitHub Actions job URLs (`.../actions/runs/<runId>/job/<jobId>`, singular `/job/` as GitHub's UI produces) now route through `gh run view --job <jobId> --repo <slug>`; plural `/jobs/<id>` paths still fall back to plain HTTP. Both run and job fetches now make a best-effort second `gh run view ... --log-failed` call and append its output under a `## Failed step logs` heading; when nothing failed, the run is still in progress, or logs have expired, the call yields no section and behavior is unchanged (summary-only).

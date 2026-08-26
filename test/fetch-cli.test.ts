@@ -4,7 +4,7 @@ import { parseCliArgs } from "../bin/pi-quiver.ts";
 
 test("parseCliArgs: minimal fetch", () => {
 	const r = parseCliArgs(["fetch", "https://example.com"]);
-	assert.deepStrictEqual(r, { ok: true, opts: { url: "https://example.com" } });
+	assert.deepStrictEqual(r, { ok: true, cmd: "fetch", opts: { url: "https://example.com" } });
 });
 
 test("parseCliArgs: full flags", () => {
@@ -15,6 +15,7 @@ test("parseCliArgs: full flags", () => {
 	]);
 	assert.deepStrictEqual(r, {
 		ok: true,
+		cmd: "fetch",
 		opts: {
 			url: "https://example.com", method: "POST",
 			headers: { "X-A": "1", "Authorization": "Bearer a:b" },
@@ -25,7 +26,7 @@ test("parseCliArgs: full flags", () => {
 
 test("parseCliArgs: duplicate header keys - last wins", () => {
 	const r = parseCliArgs(["fetch", "https://x.dev", "--header", "K: a", "--header", "K: b"]);
-	assert.ok(r.ok);
+	assert.ok(r.ok && r.cmd === "fetch");
 	assert.deepStrictEqual(r.opts.headers, { K: "b" });
 });
 
@@ -46,7 +47,7 @@ test("parseCliArgs: usage errors exit-2 shape", () => {
 
 test("parseCliArgs: no headers leaves headers undefined (gh routing stays live)", () => {
 	const r = parseCliArgs(["fetch", "https://github.com/o/r/issues/1"]);
-	assert.ok(r.ok);
+	assert.ok(r.ok && r.cmd === "fetch");
 	assert.strictEqual(r.opts.headers, undefined);
 });
 

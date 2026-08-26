@@ -7,7 +7,7 @@
 			"source": "./",
 			"description": "Claude Code skills backed by the pi-quiver toolbox",
 			"strict": false,
-			"skills": ["./skills/fetch"]
+			"skills": ["./skills/fetch", "./skills/doc-to-md"]
 		}
 	]
 }

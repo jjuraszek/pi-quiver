@@ -63,7 +63,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | Extension | Tool | What it does |
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `doc_to_md`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
-| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm` (run through `uv`); degraded pure-JS fallback (`unpdf`) when `uv`/Python is unavailable or conversion times out. DOCX/PPTX convert via LibreOffice first. |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm`, resolved per process (`uv` -> system Python >= 3.12 with the package -> one-time managed venv in the user cache dir); degraded pure-JS fallback (`unpdf`) otherwise. DOCX/PPTX convert via LibreOffice first. Behavior lives in `lib/doc-to-md-core.ts`; also exposed as the `pi-quiver doc-to-md` CLI (see [Claude Code support](#claude-code-support)). |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -130,7 +130,7 @@ The npm package's bundled JS deps install automatically on `pi install`. A few *
 | Prerequisite | Needed by | If absent |
 | --- | --- | --- |
 | `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo/actions-run/actions-job routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
-| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion | Degrades to the pure-JS `unpdf` fallback (no faithful tables/headings). |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion (preferred route) | Falls back to a system Python >= 3.12 with `pymupdf4llm` (or a one-time managed venv it bootstraps); only when no capable Python exists does it degrade to `unpdf`. |
 | LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
 
 None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
@@ -209,9 +209,9 @@ Operational notes:
 
 `fetch`'s core (`lib/fetch-core.ts`) is also published as a CLI, so Claude Code can use the same routing, size gate, and spill behavior as pi's native tool - without pi ever seeing Claude-only files.
 
-**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with one skill: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`). The skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags.
+**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill runs `npx -y pi-quiver@latest doc-to-md <path>` via Bash - same backend ladder, size gate, and degraded-fallback marking as the pi tool. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes.
 
-**Not exposed:** pi extensions, `doc_to_md`, and everything else in this package - the marketplace allowlists only `./skills/fetch`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
+**Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
 
 Add the marketplace and enable the plugin in `.claude/settings.json`:
 
