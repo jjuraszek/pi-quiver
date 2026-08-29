@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { coerce, swordLines } from "../extensions/sword-header.ts";
+import swordHeader from "../extensions/sword-header.ts";
 
 test("coerce: boolean shorthand toggles enabled", () => {
 	assert.deepEqual(coerce(true), { enabled: true });
@@ -38,4 +42,33 @@ test("swordLines: stable shape, only accent/text tokens", () => {
 test("swordLines: blade rows carry a steel (text) segment", () => {
 	const bladeRows = swordLines().filter((segs) => segs.some(([tok]) => tok === "text"));
 	assert.equal(bladeRows.length, 3);
+});
+
+test("session_start: malformed swordHeader settings warn via notify", async () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "sword-agent-"));
+	const projectDir = mkdtempSync(join(tmpdir(), "sword-project-"));
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ swordHeader: "bogus" }));
+	try {
+		const hooks = new Map<string, (event: any, ctx: any) => any>();
+		const pi: any = { on: (event: string, h: any) => hooks.set(event, h), registerCommand: () => {} };
+		swordHeader(pi);
+		const notifications: Array<[string, string | undefined]> = [];
+		const ctx: any = {
+			mode: "tui",
+			cwd: projectDir,
+			ui: { setHeader: () => {}, notify: (m: string, t?: string) => notifications.push([m, t]) },
+		};
+		await hooks.get("session_start")!({}, ctx);
+		const hit = notifications.find(([m]) => m.includes('"swordHeader"'));
+		assert.ok(hit, "malformed swordHeader warns");
+		assert.equal(hit![1], "warning");
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
+	}
 });

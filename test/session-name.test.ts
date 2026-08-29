@@ -373,6 +373,21 @@ test("installed extension: external human names are cleaned but only get stale s
 	}
 });
 
+test("installed extension: malformed sessionAutoName settings warn via notify", async () => {
+	const h = extensionHarness([]);
+	const warnings: Array<[string, string | undefined]> = [];
+	h.ctx.ui = { notify: (m: string, t?: string) => warnings.push([m, t]) };
+	writeFileSync(join(h.ctx.cwd, ".pi", "settings.json"), JSON.stringify({ sessionAutoName: 42 }));
+	try {
+		await h.hooks.get("session_start")!({}, h.ctx);
+		const hit = warnings.find(([m]) => m.includes('"sessionAutoName"'));
+		assert.ok(hit, "malformed sessionAutoName warns");
+		assert.equal(hit![1], "warning");
+	} finally {
+		h.destroy();
+	}
+});
+
 test("coerce: partial object only carries the keys present", () => {
 	assert.deepEqual(coerce({ enabled: true }), { enabled: true });
 	assert.deepEqual(coerce({ ghosttyTab: false }), { ghosttyTab: false });

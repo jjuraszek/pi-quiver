@@ -137,23 +137,45 @@ None is a hard install-time dependency of the package; they are tools you provid
 
 ### Opt-in extension config
 
-These extensions are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer):
+These extensions are opt-in via `settings.json` (project `.pi/settings.json` overrides the global agent-dir layer), nested under an optional `"quiver"` root:
 
 ```jsonc
 {
-  "sessionAutoName": {
-    "enabled": false,
-    "ghosttyTab": true,
-    "rules": [],
-    "deny": [],
-    "revisitFirstTurn": 0,
-    "revisitEveryTurns": 0
-  }, // or boolean shorthand
-  "swordHeader": false, // or { "enabled": true }
-  "fastMode": false,                                           // or { "enabled": true }
-  "providerStallWatchdog": false                               // or { "enabled": true }
+  "quiver": {
+    "sessionAutoName": {
+      "enabled": false,
+      "ghosttyTab": true,
+      "rules": [],
+      "deny": [],
+      "revisitFirstTurn": 0,
+      "revisitEveryTurns": 0
+    }, // or boolean shorthand
+    "swordHeader": false, // or { "enabled": true }
+    "fastMode": false,                                         // or { "enabled": true }
+    "providerStallWatchdog": false                             // or { "enabled": true }
+  }
 }
 ```
+
+Each key resolves independently: within a layer, `quiver.<key>` wins over a
+flat top-level `<key>` by presence alone (even when the winning value is
+malformed); across layers, each layer's candidate is validated into a partial
+patch and `Object.assign`ed over the accumulator in layer order (project
+last), so project fields override matching global fields while unmatched
+global fields survive - a flat-vs-nested shape difference between layers
+never changes this. The flat top-level form still works, but only for four
+legacy keys, frozen at `fastMode`, `sessionAutoName`, `swordHeader`, and
+`providerStallWatchdog` - never extended to new settings (see [Migrating from
+flat keys](#migrating-from-flat-keys)).
+
+Worked mixed-shape example: global `settings.json` has flat
+`"fastMode": false`, project `.pi/settings.json` has
+`"quiver": { "fastMode": { "enabled": true } }`. The project layer's
+patch (`{ "enabled": true }`) is `Object.assign`ed over the accumulator
+seeded from global's patch, so the resolved config is `{ "enabled": true }` -
+same outcome here because `enabled` is the only field either layer sets, but
+the merge is per-field: a global field with no project counterpart would
+survive untouched.
 
 `sessionAutoName.enabled` makes one extra short LLM call per session (once, after the first turn) to title it; `false` (default) makes no model calls. `rules` appends house conventions to the naming prompt (later rules win when they conflict with the built-ins). Literal, case-insensitive `deny` phrases are stripped from every name; whitespace inside a phrase is loose, so `"acme corp"` also catches `AcmeCorp`. `revisitFirstTurn` re-evaluates the name once that many model round trips have completed, while `revisitEveryTurns` does so at every multiple; both default to `0` (off) because each revisit costs another short LLM call. For example, `10` and `100` mark round trips 10, 100, 200, 300. Revisits only run when the agent has fully settled (idle, nothing queued) - an automated multi-turn run such as a subagent chain is never renamed or delayed mid-flight; cadence points it crossed fire once, at the settle. A machine-generated name is replaced when stale. A name set by a human is never overwritten: the extension strongly prefers it, and announces a suggestion only when the work has clearly moved on. Counts come from the persisted transcript, so they survive resume.
 
@@ -161,21 +183,25 @@ These extensions are opt-in via `settings.json` (project `.pi/settings.json` ove
 
 `pi-ai` prices every fast request at standard rates - it has no `usage.speed` support and no request-level pricing modifier - so `fastMode` corrects the reported cost itself: a `message_end` handler scales all four `usage.cost` components by `FAST_MODE_COST_MULTIPLIER` (2x) and returns the corrected message. Persisted session JSONL and pi's own native cost display are always exact, since they're written from this corrected message. pi-cohort's live `Σ$` reflects the correction only when pi-quiver's `message_end` handler runs before pi-cohort's - best-effort, depending on extension load order - and is reconciled on pi-cohort's next `session_start` regardless. The upstream fix (teaching `pi-ai`'s `Usage`/`calculateCost` about `usage.speed`) is the better long-term path and is tracked separately.
 
-Recommended explicit retry and watchdog settings:
+Recommended explicit retry and watchdog settings - `providerStallWatchdog`
+nests under `quiver`, while pi-core's own `retry` stays flat beside it (it is
+not a pi-quiver setting and is never nested):
 
 ```json
 {
+  "quiver": {
+    "providerStallWatchdog": {
+      "enabled": true,
+      "firstEventMs": 20000,
+      "warningMs": 120000,
+      "recoveryMs": 240000,
+      "maxStallRetries": 3
+    }
+  },
   "retry": {
     "enabled": true,
     "maxRetries": 3,
     "baseDelayMs": 2000
-  },
-  "providerStallWatchdog": {
-    "enabled": true,
-    "firstEventMs": 20000,
-    "warningMs": 120000,
-    "recoveryMs": 240000,
-    "maxStallRetries": 3
   }
 }
 ```
@@ -204,6 +230,30 @@ Operational notes:
 - **Settings are read once per session,** on the first provider request. Editing `settings.json` mid-session changes nothing until you restart the session - that includes repairing an invalid block that already disabled the extension.
 - **A watchdog abort that the provider ignores escalates after a fixed 10s.** Any post-abort stream event re-arms that deadline (bytes prove only that the connection was alive at that instant), so a stream that emits a straggler and then wedges still escalates 10s after its last event. This reduces the hang; it cannot force the provider to stop, and undici's timeouts remain the final backstop.
 - **Headless runs report on stderr.** In `print`/`json` mode pi binds a no-op UI, so watchdog notices go out via `console.warn`. Nothing is ever written to stdout, which `json` mode uses for its protocol. In TUI and RPC the notices render as main-window notifications, not the bottom status line.
+
+### Migrating from flat keys
+
+The flat top-level form (`"fastMode": ...` etc. directly under `settings.json`)
+is the outdated configuration style. It is legacy-frozen to exactly the four
+keys above - `fastMode`, `sessionAutoName`, `swordHeader`,
+`providerStallWatchdog` - and will never gain a fifth. To migrate, wrap your
+existing keys under `"quiver": { ... }` and delete the flat copies:
+
+```jsonc
+// before
+{ "fastMode": true }
+
+// after
+{ "quiver": { "fastMode": true } }
+```
+
+Until you delete the flat copy, having both set is not an error - the
+duplicate resolves per the precedence above (nested wins within a layer) -
+but it emits a warning notification, deduped per process (each unique
+message fires at most once per pi process - in practice once per interactive
+session) until the flat entry is removed. Every new pi-quiver setting introduced after this change
+(for example a future `slack` key) is nested-only from day one: it has no
+flat form to fall back to.
 
 ## Claude Code support
 

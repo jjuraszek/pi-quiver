@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 	const readFlag = (): boolean => pi.getFlag("fast") === true;
 
 	const resolveState = (ctx: ExtensionContext): boolean => {
-		const config = resolveConfig(ctx.cwd, "fastMode", DEFAULT_CONFIG, coerce).enabled;
+		const config = resolveConfig(ctx.cwd, "fastMode", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning")).enabled;
 		enabled = resolveEnabled({ config, flag: readFlag(), live: liveOverride });
 		return enabled;
 	};

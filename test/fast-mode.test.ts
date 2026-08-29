@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -374,4 +374,35 @@ test("cost: second message_end on the replacement does not double-correct", asyn
 	assert.deepEqual(res.message.usage.cost, doubledCost);
 	const again = await h.hooks.get("message_end")!({ message: res.message }, h.ctx);
 	assert.equal(again, undefined);
+});
+
+test("integration: malformed fastMode settings surface one warning notify", async () => {
+	const projectDir = mkdtempSync(join(tmpdir(), "fast-mode-warn-"));
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ fastMode: "bogus" }));
+	try {
+		const h = harness();
+		h.ctx.cwd = projectDir;
+		await h.hooks.get("session_start")!({}, h.ctx);
+		const warning = h.getNotifications().find((n) => n.msg.includes('"fastMode"'));
+		assert.ok(warning, "malformed fastMode warns");
+		assert.equal(warning!.level, "warning");
+		assert.ok(warning!.msg.includes(join(projectDir, ".pi", "settings.json")));
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+	}
+});
+
+test("integration: nested quiver.fastMode enables fast mode", async () => {
+	const projectDir = mkdtempSync(join(tmpdir(), "fast-mode-nested-"));
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ quiver: { fastMode: true } }));
+	try {
+		const h = harness();
+		h.ctx.cwd = projectDir;
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(h.getStatus(), "\u26a1 fast", "fast mode enabled from nested settings sets the status line");
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+	}
 });

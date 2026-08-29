@@ -66,7 +66,7 @@ function renderSwordLines(theme: Theme): string[] {
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		const cfg = resolveConfig(ctx.cwd, "swordHeader", DEFAULT_CONFIG, coerce);
+		const cfg = resolveConfig(ctx.cwd, "swordHeader", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning"));
 		if (!cfg.enabled) return;
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(_width: number): string[] {

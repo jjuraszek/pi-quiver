@@ -91,8 +91,8 @@ export function resolveRetryMaxRetries(cwd: string): number {
 	return maxRetries;
 }
 
-export function resolveWatchdogConfig(cwd: string): ConfigValidation {
-	const candidate = resolveConfig(cwd, "providerStallWatchdog", DEFAULT_CANDIDATE, coerce);
+export function resolveWatchdogConfig(cwd: string, warn?: (msg: string) => void): ConfigValidation {
+	const candidate = resolveConfig(cwd, "providerStallWatchdog", DEFAULT_CANDIDATE, coerce, warn);
 	if (candidate.blockIsObject === true && candidate.maxStallRetries === undefined) {
 		candidate.maxStallRetries = resolveRetryMaxRetries(cwd);
 	}
@@ -278,7 +278,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			ui = ctx.ui;
 			hasUI = ctx.hasUI;
 			if (!config) {
-				const resolved = resolveWatchdogConfig(ctx.cwd);
+				const resolved = resolveWatchdogConfig(ctx.cwd, (m) => announce(m, "warning"));
 				if (!resolved.ok) {
 					disabled = true;
 					announce(`providerStallWatchdog disabled: ${resolved.error}`, "warning");

@@ -96,7 +96,7 @@ export function coerce(raw: unknown): Partial<Config> | undefined {
 }
 
 function loadConfig(ctx: ExtensionContext): Config {
-	return resolveConfig(ctx.cwd, "sessionAutoName", DEFAULT_CONFIG, coerce);
+	return resolveConfig(ctx.cwd, "sessionAutoName", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning"));
 }
 
 type ContentBlock = { type?: string; text?: string };

@@ -267,6 +267,44 @@ test("warning status formats configured warning and remaining recovery threshold
 	});
 });
 
+test("config warnings: flat+nested providerStallWatchdog reaches announce with type warning", () => {
+	withSettings(
+		{},
+		{
+			providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 },
+			quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		},
+		(cwd) => {
+			const h = watchdogHarness("tui", cwd);
+			h.emit("before_provider_request");
+			const hit = h.notifications.find(([text]) => text.includes('"providerStallWatchdog" is set both flat and under "quiver"'));
+			assert.ok(hit, "duplicate settings warning reaches announce");
+			assert.equal(hit![1], "warning");
+		},
+	);
+});
+
+test("nested-only quiver.providerStallWatchdog config resolves", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 30_000, recoveryMs: 90_000 } } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("before_provider_request");
+		h.emit("message_start", messageStart());
+		h.advance(30_000);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 30s; aborting and asking Pi to retry in 1m (Esc aborts now)", "warning"]);
+	});
+});
+
+test("resolveRetryMaxRetries: quiver.retry is never consulted", () => {
+	withSettings({}, { quiver: { retry: { maxRetries: 7 }, providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("before_provider_request");
+		h.emit("message_start", messageStart());
+		h.advance(20);
+		const notice = h.notifications.at(-1)![0];
+		assert.ok(notice.includes("(1/3)"), `stall budget stays at pi's default 3, not quiver.retry's 7: ${notice}`);
+	});
+});
+
 function withEnabledWatchdog(assertion: (cwd: string) => void): void {
 	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } }, assertion);
 }
