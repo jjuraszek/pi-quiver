@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v4.5.0 - 2026-08-29
 
 - Settings resolution: every pi-quiver setting is now read from an optional `"quiver"` root object in `settings.json` (`quiver.<key>`), grouping the four legacy flat keys (`fastMode`, `sessionAutoName`, `swordHeader`, `providerStallWatchdog`) plus any future key. The flat top-level form keeps working, but only for those four legacy keys - it is frozen there and never extended to new settings. Within a layer, `quiver.<key>` wins over flat `<key>` by presence; malformed values and flat/nested duplicates now emit a warning instead of resolving silently.
 
