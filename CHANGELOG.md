@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- **New opt-in `slack` extension** (#7): eight `slack_*` tools (search, thread, post, update, delete, pin, upload, cache refresh) for context-safe Slack search/threads/posting. Dual `user`/`bot` token identities resolved per call from process env or the repo's `.env`, never cross-identity fallback. Workspace-keyed channel/user name->ID cache with a repo-overridable `cachePath`. Fetch-style output size gating on search/thread reads. `slack_post`'s `thread_body` (no `thread_ts`) posts a transactional headline+thread announce - oversized detail bodies upload as a file - with a documented recovery path on delivery failure. OFF by default; nested-only `quiver.slack` config, no legacy flat form. See [doc/slack.md](doc/slack.md).
+
 ## v4.5.0 - 2026-08-29
 
 - Settings resolution: every pi-quiver setting is now read from an optional `"quiver"` root object in `settings.json` (`quiver.<key>`), grouping the four legacy flat keys (`fastMode`, `sessionAutoName`, `swordHeader`, `providerStallWatchdog`) plus any future key. The flat top-level form keeps working, but only for those four legacy keys - it is frozen there and never extended to new settings. Within a layer, `quiver.<key>` wins over flat `<key>` by presence; malformed values and flat/nested duplicates now emit a warning instead of resolving silently.

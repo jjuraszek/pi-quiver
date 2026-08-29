@@ -18,7 +18,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 `fetch` and `doc_to_md` bring real web pages, GitHub issues/PRs, and local PDF/DOCX/PPTX files into context - and every result is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint, so a single call can never flood the window. Ingestion is what makes data-driven work possible; the gate is what keeps it safe.
 
-`session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` are opt-in ergonomics and recovery controls: session labeling, a themed startup header, Anthropic fast mode, and semantic-stall recovery.
+`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting.
 
 ## Part of the pi agent toolkit
 
@@ -33,7 +33,7 @@ No code dependency between them. pi-quiver is call-level: it gates the size of w
 
 ## Mental model
 
-Every ingestion extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. `fetch` and `doc_to_md` bring real sources in; `session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` are opt-in.
+Every ingestion extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. `fetch` and `doc_to_md` bring real sources in; `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in.
 
 ```mermaid
 flowchart LR
@@ -68,8 +68,9 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
 | `extensions/provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Policy D offers each stall to Pi's retry loop until the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) is exhausted. OFF by default. |
+| `extensions/slack.ts` | `slack_search`, `slack_thread`, `slack_post`, `slack_update`, `slack_delete`, `slack_pin`, `slack_upload`, `slack_cache_refresh` | Context-safe Slack search/threads/posting with dual `user`/`bot` token identities, a workspace-keyed channel/user name->ID cache, fetch-style output size gating, and a transactional headline+detail-thread announce protocol with a documented recovery path. OFF by default. Behavior lives in `lib/slack-core.ts` and `lib/slack-cache.ts`. |
 
-Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md).
+Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md), [doc/slack.md](doc/slack.md).
 
 ## Key concepts
 
@@ -78,7 +79,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 | Size gate | Text/Markdown/JSON output over 32 KB or 1000 lines spills to a temp file with a 60-line preview instead of inlining. |
 | Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI (failed runs/jobs get failed-step logs appended), everything else -> the size gate. |
 | Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
-| Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, and `provider-stall-watchdog` do nothing until explicitly enabled in `settings.json`. |
+| Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` do nothing until explicitly enabled in `settings.json`. |
 | Provider stall recovery | The watchdog detects a missing first stream event and missing parsed semantic progress, not network liveness. The pre-first-event tier covers every mode and origin; the mid-stream tier is TUI-only. |
 
 ## When to use
@@ -152,7 +153,8 @@ These extensions are opt-in via `settings.json` (project `.pi/settings.json` ove
     }, // or boolean shorthand
     "swordHeader": false, // or { "enabled": true }
     "fastMode": false,                                         // or { "enabled": true }
-    "providerStallWatchdog": false                             // or { "enabled": true }
+    "providerStallWatchdog": false,                            // or { "enabled": true }
+    "slack": false                                             // or { "enabled": true, ... }
   }
 }
 ```
@@ -231,6 +233,32 @@ Operational notes:
 - **A watchdog abort that the provider ignores escalates after a fixed 10s.** Any post-abort stream event re-arms that deadline (bytes prove only that the connection was alive at that instant), so a stream that emits a straggler and then wedges still escalates 10s after its last event. This reduces the hang; it cannot force the provider to stop, and undici's timeouts remain the final backstop.
 - **Headless runs report on stderr.** In `print`/`json` mode pi binds a no-op UI, so watchdog notices go out via `console.warn`. Nothing is ever written to stdout, which `json` mode uses for its protocol. In TUI and RPC the notices render as main-window notifications, not the bottom status line.
 
+`slack` is OFF by default and, once enabled, adds eight `slack_*` tools (search, thread, post, update, delete, pin, upload, cache refresh) covering context-safe Slack search/threads/posting under dual `user`/`bot` token identities. Nested-only from day one (no legacy flat form):
+
+```json
+{
+  "quiver": {
+    "slack": {
+      "enabled": true,
+      "cachePath": ".pi/slack-cache.json",
+      "userTokenEnv": "SLACK_USER_TOKEN",
+      "botTokenEnv": "SLACK_BOT_TOKEN",
+      "uploadThresholdChars": 4000
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch, checked at `session_start`; toggling takes effect next session. |
+| `cachePath` | user-scope per-OS cache dir | Overrides where the workspace-keyed channel/user name->ID cache file is written; relative paths resolve against the repo root. |
+| `userTokenEnv` | `SLACK_USER_TOKEN` | Env var name holding the user token (required for `slack_search`/`slack_thread`, no bot fallback). |
+| `botTokenEnv` | `SLACK_BOT_TOKEN` | Env var name holding the bot token. |
+| `uploadThresholdChars` | `4000` | Link-collapsed length above which an announce/thread detail body is delivered as a file upload instead of inline text. |
+
+Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `PI_QUIVER_SLACK_CACHE_PATH`, `PI_QUIVER_SLACK_USER_TOKEN_ENV`, `PI_QUIVER_SLACK_BOT_TOKEN_ENV`, and `PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS` - applied on top of the resolved `settings.json` layers, same override rung the extension's config resolver defines. Tokens themselves are resolved per call: process env first, then the repo's `.env` file (or the primary checkout's, for a worktree with none) - never a fallback across identities. Full reference incl. cache layering, the announce protocol, and the `search.messages`/`conversations.replies` throttle caveats: [doc/slack.md](doc/slack.md).
+
 ### Migrating from flat keys
 
 The flat top-level form (`"fastMode": ...` etc. directly under `settings.json`)
@@ -261,7 +289,7 @@ flat form to fall back to.
 
 **Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill runs `npx -y pi-quiver@latest doc-to-md <path>` via Bash - same backend ladder, size gate, and degraded-fallback marking as the pi tool. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes.
 
-**Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
+**Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
 
 Add the marketplace and enable the plugin in `.claude/settings.json`:
 
