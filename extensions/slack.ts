@@ -16,6 +16,7 @@ import { basename, isAbsolute, join } from "node:path";
 import {
 	defaultApiCall,
 	defaultUploadBytes,
+	buildPolicyBlock,
 	discoverRepoRoot,
 	resolveSlackConfig,
 	resolveToken,
@@ -26,6 +27,7 @@ import {
 	deleteMessage,
 	pinMessage,
 	uploadFile,
+	formatUnresolvedSuffix,
 	SlackError,
 	type SlackConfig,
 	type CoreDeps,
@@ -33,8 +35,9 @@ import {
 	type AnnounceResult,
 	type SearchResult,
 	type ThreadResult,
+	type UnresolvedMention,
 } from "../lib/slack-core.ts";
-import { cacheFilePath, teamIdFor, resolveChannel, refreshCache, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
+import { cacheFilePath, teamIdFor, resolveChannel, refreshCache, resolveMentions, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
 
 const IDENTITY = Type.Union([Type.Literal("user"), Type.Literal("bot")], {
 	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which token env var is used and whose name shows as the author.',
@@ -139,6 +142,19 @@ export function channelLine(result: MutationResult | (MutationResult & { fileId:
 	return parts.join(" | ");
 }
 
+/** Shared by slack_post/slack_update: the channelLine + unresolved-mentions suffix result shape. */
+function mentionAwareResult(
+	result: MutationResult | AnnounceResult,
+	mentions: { unresolved: UnresolvedMention[]; lookupError?: string },
+	opts: { detailUploaded?: boolean } = {},
+) {
+	const suffix = formatUnresolvedSuffix(mentions.unresolved, { lookupError: mentions.lookupError, ...opts });
+	return {
+		content: [{ type: "text" as const, text: suffix ? `${channelLine(result)} | ${suffix}` : channelLine(result) }],
+		details: { ...result, ...(mentions.unresolved.length > 0 ? { unresolvedMentions: mentions.unresolved } : {}) },
+	};
+}
+
 export function searchResultText(result: SearchResult): string {
 	return `${result.output}\n\ntotal: ${result.total} | page: ${result.page} of ${result.pageCount}`;
 }
@@ -190,6 +206,36 @@ export default function slackExtension(pi: ExtensionAPI) {
 		registered = true;
 
 		const repoRoot = discoverRepoRoot(ctx.cwd);
+
+		const policyPath = cfg.policyPath;
+		if (policyPath !== undefined) {
+			const resolvedPolicyPath = isAbsolute(policyPath) ? policyPath : join(repoRoot, policyPath);
+			let policyWarned = false;
+			const warnOnce = (eventCtx: typeof ctx, message: string): void => {
+				if (policyWarned) return;
+				policyWarned = true;
+				if (eventCtx.hasUI) eventCtx.ui.notify(message, "warning");
+				else console.warn(message);
+			};
+
+			pi.on("before_agent_start", async (event, eventCtx) => {
+				let block: string;
+				try {
+					const body = readFileSync(resolvedPolicyPath, "utf8");
+					if (body.trim() === "") {
+						warnOnce(eventCtx, `pi-quiver: Slack policy file ${policyPath} is empty; posting policy is unknown this session.`);
+						block = buildPolicyBlock({ source: policyPath, status: "empty" });
+					} else {
+						block = buildPolicyBlock({ source: policyPath, status: "ok", body });
+					}
+				} catch (err) {
+					const code = (err as { code?: string }).code ?? (err instanceof Error ? err.message : String(err));
+					warnOnce(eventCtx, `pi-quiver: Slack policy file ${policyPath} could not be read (${code}); posting policy is unknown this session.`);
+					block = buildPolicyBlock({ source: policyPath, status: "unreadable", code });
+				}
+				return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+			});
+		}
 
 		pi.registerTool({
 			name: "slack_search",
@@ -248,7 +294,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Post",
 			promptSnippet: "Post a Slack message, reply, or headline+detail announcement",
 			description:
-				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name or a channel ID (user @names not accepted). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts `thread_body` as the first threaded reply in the same call; if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the error names the path.",
+				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name or a channel ID (user @names not accepted). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts `thread_body` as the first threaded reply in the same call; if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the error names the path. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
@@ -256,20 +302,69 @@ export default function slackExtension(pi: ExtensionAPI) {
 				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON array, passed through unvalidated" })),
 				thread_ts: Type.Optional(Type.String({ description: "Reply into this existing thread instead of posting a new headline" })),
 				thread_body: Type.Optional(Type.String({ description: "Detail body for an announce headline, or the reply body when thread_ts is set" })),
+				unfurl_links: Type.Optional(
+					Type.Boolean({ description: "Slack unfurls link previews by default; pass false to suppress text-link previews for this message." }),
+				),
+				unfurl_media: Type.Optional(
+					Type.Boolean({ description: "Pass false to suppress image/video previews for this message." }),
+				),
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
 					assertNoMarkdownText(params);
 					const { deps, cacheCtx } = await resolveCall(params.as, cfg, ctx, signal, repoRoot);
 					const channel = await resolveChannel(params.channel, cacheCtx);
+
+					// Only the fields core will actually send: announce uses text + thread_body (both
+					// scanned), a threaded reply collapses to thread_body ?? text (whichever param carried
+					// the body is the one core reads, so substitute into that same field - never the
+					// other), a plain post is text alone.
+					const isAnnounce = params.thread_body !== undefined && params.thread_ts === undefined;
+					const isReply = params.thread_ts !== undefined;
+					let text: string | undefined;
+					let threadBody: string | undefined;
+					let mentions: { unresolved: UnresolvedMention[]; lookupError?: string };
+					if (isAnnounce) {
+						const resolved = await resolveMentions(
+							[
+								{ field: "text", value: params.text ?? "" },
+								{ field: "thread_body", value: params.thread_body ?? "" },
+							],
+							cacheCtx,
+						);
+						mentions = resolved;
+						text = resolved.values[0];
+						threadBody = resolved.values[1];
+					} else if (isReply) {
+						const replyField: "text" | "thread_body" = params.thread_body !== undefined ? "thread_body" : "text";
+						const resolved = await resolveMentions([{ field: replyField, value: params.thread_body ?? params.text ?? "" }], cacheCtx);
+						mentions = resolved;
+						if (replyField === "thread_body") {
+							text = params.text;
+							threadBody = resolved.values[0];
+						} else {
+							text = params.text === undefined ? undefined : resolved.values[0];
+							threadBody = undefined;
+						}
+					} else {
+						const resolved = await resolveMentions([{ field: "text", value: params.text ?? "" }], cacheCtx);
+						mentions = resolved;
+						text = params.text === undefined ? undefined : resolved.values[0];
+					}
+
 					const result = await postMessage(
-						{ channel, text: params.text, blocks: params.blocks, thread_ts: params.thread_ts, thread_body: params.thread_body },
+						{
+							channel,
+							text,
+							blocks: params.blocks,
+							thread_ts: params.thread_ts,
+							thread_body: threadBody,
+							unfurl_links: params.unfurl_links,
+							unfurl_media: params.unfurl_media,
+						},
 						{ ...deps, thresholdChars: cfg.uploadThresholdChars, uploadBytes: defaultUploadBytes },
 					);
-					return {
-						content: [{ type: "text" as const, text: channelLine(result) }],
-						details: result,
-					};
+					return mentionAwareResult(result, mentions, { detailUploaded: "detailUploaded" in result && result.detailUploaded === true });
 				}, params.as);
 			},
 			renderCall: (args, theme) => oneLine(theme, "slack_post", `as:${args.as} ${args.channel}`),
@@ -294,11 +389,12 @@ export default function slackExtension(pi: ExtensionAPI) {
 					assertNoMarkdownText(params);
 					const { deps, cacheCtx } = await resolveCall(params.as, cfg, ctx, signal, repoRoot);
 					const channel = await resolveChannel(params.channel, cacheCtx);
-					const result = await updateMessage({ channel, ts: params.ts, text: params.text, blocks: params.blocks }, deps);
-					return {
-						content: [{ type: "text" as const, text: channelLine(result) }],
-						details: result,
-					};
+					const mentions = await resolveMentions([{ field: "text", value: params.text ?? "" }], cacheCtx);
+					const result = await updateMessage(
+						{ channel, ts: params.ts, text: params.text === undefined ? undefined : mentions.values[0], blocks: params.blocks },
+						deps,
+					);
+					return mentionAwareResult(result, mentions);
 				}, params.as);
 			},
 			renderCall: (args, theme) => oneLine(theme, "slack_update", `as:${args.as} ${args.channel} ts:${args.ts}`),
@@ -410,15 +506,21 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Cache Refresh",
 			promptSnippet: "Rebuild the Slack channel/user name->ID cache",
 			description:
-				'Rebuild the Slack channel and user name->ID cache from scratch (full conversations.list + users.list scan, atomic replace). Uses the "user" identity when a user token is configured, else falls back to "bot" (no `as` param). Run this after channels/users change or when a #name/@name lookup unexpectedly fails with name_not_found. Reports the resulting channel and user counts.',
+				'Rebuild the Slack channel and user name->ID cache from scratch (full conversations.list + users.list scan, atomic replace). Uses the "user" identity when a user token is configured, else falls back to "bot" (no `as` param). Run this after channels/users change or when a #name/@name lookup unexpectedly fails with name_not_found. Reports the resulting channel, user, and email counts - a low email/user ratio hints the users:read.email scope may be missing.',
 			parameters: Type.Object({}),
 			async execute(_toolCallId, _params, signal) {
 				const identity = pickCacheRefreshIdentity(cfg, process.env, repoRoot);
 				return guarded(async () => {
 					const { cacheCtx } = await resolveCall(identity, cfg, ctx, signal, repoRoot);
 					const result = await refreshCache(cacheCtx);
+					const ratio =
+						result.users === 0
+							? ""
+							: result.emails === 0
+								? ` | emails: 0/${result.users} (users:read.email scope may be missing)`
+								: ` | emails: ${result.emails}/${result.users}`;
 					return {
-						content: [{ type: "text" as const, text: `channels: ${result.channels}, users: ${result.users}` }],
+						content: [{ type: "text" as const, text: `channels: ${result.channels}, users: ${result.users}${ratio}` }],
 						details: result,
 					};
 				}, identity);

@@ -23,6 +23,7 @@ All keys live under `quiver.slack`:
 |---|---|---|---|
 | `enabled` | boolean | `false` | master switch; anything other than resolved `true` registers zero tools |
 | `cachePath` | string | per-OS user cache dir, keyed by workspace | name->ID cache file location; absolute or repo-root-relative |
+| `policyPath` | string | none (no injection) | repo policy file injected into the system prompt every turn; absolute or repo-root-relative; no env-var override - see [Repo policy injection](#repo-policy-injection) |
 | `userTokenEnv` | string | `SLACK_USER_TOKEN` | env var name holding the user token |
 | `botTokenEnv` | string | `SLACK_BOT_TOKEN` | env var name holding the bot token |
 | `uploadThresholdChars` | number | `4000` | link-collapsed length above which an announce `thread_body` becomes a threaded file upload |
@@ -68,6 +69,33 @@ covered by a present bot token. A missing token is a hard per-call error
 naming the empty env var. Token values are never logged or echoed back in
 tool output or errors.
 
+## Repo policy injection
+
+When `policyPath` is set, a `before_agent_start` hook (registered once, at
+`session_start`, alongside the tools) rereads the file fresh from disk on
+every agent turn and appends a `<slack-policy source="...">` block to that
+turn's system prompt. `policyPath` itself is relative to the repo root or
+absolute; there is no `PI_QUIVER_SLACK_*` override for it.
+
+- **Ok** (file reads, non-empty): `<slack-policy source="<policyPath>">`
+  followed by the raw file contents and the closing tag. The `source`
+  attribute is HTML-escaped. The file contents themselves are injected
+  verbatim, unescaped - a policy body must not contain the literal
+  `</slack-policy>` closing tag, or the injected block truncates there.
+- **Empty** (file reads, blank after trim): the block instead carries
+  `status="empty"` and a fixed body - `Configured Slack policy file is
+  empty. Slack tools are available but the repository's posting policy is
+  unknown - ask the operator before posting.`
+- **Unreadable** (missing file, permission error, ...): `status="unreadable"`
+  with `Configured Slack policy file could not be read (<error code>).`
+  plus the same "ask the operator" sentence.
+
+Either degraded case also emits one deduped warning for the session
+(`ctx.ui.notify(..., "warning")` in a UI session, `console.warn` otherwise)
+- naming the configured `policyPath` and the failure. The Slack tools
+  themselves are unaffected either way; only the injected guidance
+  degrades.
+
 ## Cache
 
 Channel/user name->ID resolution is cached in a single JSON file per Slack
@@ -79,7 +107,19 @@ workspace (keyed by team ID from `auth.test`):
   on macOS, `$XDG_CACHE_HOME/pi-quiver` else), file named `slack-<team_id>.json`.
   Only this one location is ever read or written; the other is never touched.
 - **Format**: `{ team_id, channels: {name -> id}, users: {username ->
-  {id, display_name, real_name}}, refreshed_at }`.
+  {id, display_name, real_name, email?}}, refreshed_at, snapshot_at? }`.
+- **`email`** (optional, per user): the user's `profile.email` from
+  `users.list`, omitted from the entry when Slack returns none. User and
+  workspace tokens need the `users:read.email` scope to receive it; classic
+  bot tokens get it without that scope.
+- **`snapshot_at`** (optional, file-level): set only by `slack_cache_refresh`'s
+  full replace (to the same timestamp as `refreshed_at`), never by an
+  incremental miss-fill merge. Its presence is what makes a display-name/
+  real-name alias match trustable straight from the cache file - without it
+  (i.e. the cache has only ever been built up by incremental misses), an
+  alias candidate is left for the live `users.list` lookup instead of being
+  trusted from a possibly-partial population; only an exact username hit
+  resolves from cache in that case.
 - **Cross-token check**: best-effort - on each call, it runs only when the
   other identity's token resolves and authenticates; if so, its team ID is
   compared against the acting identity's team ID, and a mismatch errors
@@ -94,7 +134,8 @@ workspace (keyed by team ID from `auth.test`):
   don't clobber each other's entries (a true simultaneous race is
   last-writer-wins - accepted for an append-mostly map).
 - **`slack_cache_refresh`**: regenerates the whole file from a full
-  `conversations.list` + `users.list` scan and atomically replaces it. Uses
+  `conversations.list` + `users.list` scan and atomically replaces it,
+  setting `snapshot_at` to the same timestamp as `refreshed_at`. Uses
   the user token when one is configured, else falls back to the bot token.
 - **Staleness**: a renamed channel/user resolves to its old ID silently until
   the next `slack_cache_refresh` - this is a known limitation, not a bug.
@@ -120,12 +161,56 @@ it's absent.
 |---|---|---|---|
 | `slack_search` | always user | `query`, `count` (<=100), `page` | `search.messages` with Slack's operator grammar (`in:#chan`, `from:@name`); one page per call, size-gated output |
 | `slack_thread` | always user | `channel`+`ts`, or `permalink`, optional `cursor` to resume | `conversations.replies`, cursor-paginated to completion or a 50-page/5000-message cap (returns `next_cursor` when capped); size-gated |
-| `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body` | plain post, threaded reply, or announce (headline + threaded detail) - see below |
+| `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body`, optional `unfurl_links`/`unfurl_media` | plain post, threaded reply, or announce (headline + threaded detail) - see below |
 | `slack_update` | `as` | `channel`, `ts`, `text`/`blocks` | `chat.update`; only the original poster's identity can edit |
 | `slack_delete` | `as` | `channel`, `ts` | `chat.delete`; same ownership constraint |
 | `slack_pin` | `as` | `channel`, `ts` | `pins.add`; maps `already_pinned`/`not_pinnable`/`too_many_pins` |
 | `slack_upload` | `as` | `channel`, `path`, optional `filename`/`title`/`thread_ts`/`initial_comment` | `files.getUploadURLExternal` -> upload -> `files.completeUploadExternal` |
-| `slack_cache_refresh` | user if configured, else bot | none | full cache regeneration, reports channel/user counts |
+| `slack_cache_refresh` | user if configured, else bot | none | full cache regeneration; reports `channels: N, users: N` plus `\| emails: N/N` (omitted when there are zero users; a `0/N` count adds a `(users:read.email scope may be missing)` hint) |
+
+### Mentions (`slack_post`, `slack_update`)
+
+`text` and `thread_body` - never `blocks` - are scanned for `@name` tokens
+and substituted with `<@U...>` before the call reaches Slack:
+
+- **Grammar**: `@` followed by one or more of `[A-Za-z0-9._-]`. A candidate
+  must be preceded by start-of-string or one of ` \t\n\r([*_"'`; backtick is
+  deliberately not a boundary character, so an inline-code `` `@name` ``
+  never becomes a candidate (stays literal, never reported). The same rule
+  is why `user@host.com` and Slack's own `<@U...>` never qualify - the
+  character immediately before `@` fails the boundary check.
+- **Deny list**: `@here`, `@channel`, `@everyone` are never substituted
+  (checked against both the raw and the trailing-trimmed form).
+- **Trailing trim**: `[.,;:!?)_]+` is stripped from the end of a candidate
+  before lookup, so `@alice.` and `_@alice_` both resolve on `alice`; `_` is
+  trimmed even though it's also a boundary character, specifically so an
+  italic-wrapped mention like `_@alice_` is reachable at all.
+- **Escape**: `\@name` (itself preceded by a boundary) loses the leading
+  backslash and is left literal - never looked up, never reported.
+- **Resolution**: a cache hit resolves first; every name still unresolved
+  across all scanned fields is then looked up with one batched `users.list`
+  call (not one call per name).
+- **Unresolved**: a name that is not found, ambiguous, or hit a live-lookup
+  error is left literal in the text and reported two ways - in the result
+  line's `unresolved mentions: @alice, @bob` suffix (appended with
+  `(lookup failed: <reason>)` when the live pass itself failed), and as an
+  ordered, deduplicated `details.unresolvedMentions: { field, name }[]`.
+- **Uploaded-detail limitation**: if an announce's `thread_body` overflowed
+  to a file upload (`detailUploaded`) and it also carried an unresolved
+  mention, the suffix instead reads `... (detail uploaded as a file -
+  slack_update cannot repair it; repost to fix)` - `slack_update` can edit
+  the headline or the `Detail attached.` stub, never an uploaded file's
+  contents.
+
+### Unfurl control (`slack_post`)
+
+`unfurl_links`/`unfurl_media` are forwarded to `chat.postMessage` only when
+the caller explicitly sets them; left unset, Slack's own default stands (no
+parameter is sent). In announce mode both flags apply to the headline leg
+and to the inline threaded-reply detail leg, but never to the
+`Detail attached.` upload-fallback stub. `slack_update` has no equivalent -
+`chat.update` accepts no unfurl parameter, so a message's unfurl behavior
+can't be changed after it's posted.
 
 ## Announce protocol
 
@@ -198,12 +283,17 @@ threaded reply, in one call.
    `slack_cache_refresh` once - there is no importer for old cache file
    formats.
 4. Rewrite script/skill invocations as `slack_*` tool calls.
-5. Keep house policy - channel conventions, message templates, identity
-   rules, review gates - in the consuming repo's own skills. This extension
-   ships plumbing only; it does not ship a pi skill. The intended shape is a
-   **thin proxy skill**: the skill body encodes the policy (which channel,
-   which template, which `as` identity) and simply invokes the `slack_*`
-   tools to carry it out - policy lives in the skill, mechanism lives in the
+5. For a short standing policy (e.g. "always post as bot to
+   #eng-releases", "get sign-off before deleting"), point `policyPath` at a
+   repo file and let it auto-inject every turn - see [Repo policy
+   injection](#repo-policy-injection). For anything with actual branching
+   (choosing among channels, templates, or identities), keep that logic -
+   channel conventions, message templates, identity rules, review gates -
+   in the consuming repo's own skills. This extension ships plumbing only;
+   it does not ship a pi skill. The intended shape is a **thin proxy
+   skill**: the skill body encodes the policy (which channel, which
+   template, which `as` identity) and simply invokes the `slack_*` tools to
+   carry it out - policy lives in the skill, mechanism lives in the
    extension. Sketch:
 
    ```
@@ -227,3 +317,10 @@ test workspace/channel:
 - Search for a message.
 - Read a thread.
 - Run `slack_cache_refresh` and confirm the channel/user counts.
+- Set `policyPath` to a real file and confirm the `<slack-policy>` block
+  shows up in the system prompt; point it at a bad path and confirm exactly
+  one warning fires and `slack_post` still succeeds.
+- Post a message whose text has one known and one unknown `@name` mention;
+  confirm the known one renders as a Slack link and the unknown one stays a
+  literal `@name`, named in the result line's `unresolved mentions:`
+  segment.

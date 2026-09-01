@@ -11,10 +11,12 @@ import {
 	teamIdFor,
 	resolveChannel,
 	resolveUser,
+	resolveMentions,
 	refreshCache,
 	assertSameTeam,
 	MAX_LIST_PAGES,
 	type SlackCacheFile,
+	type UserEntry,
 } from "../lib/slack-cache.ts";
 
 function tmpDir(prefix: string): string {
@@ -443,7 +445,7 @@ test("refreshCache: full paginated replace, returns counts, drops stale keys", a
 	]);
 
 	const counts = await refreshCache({ apiCall, token: "tok-refresh-unique", filePath });
-	assert.deepEqual(counts, { channels: 2, users: 1 });
+	assert.deepEqual(counts, { channels: 2, users: 1, emails: 0 });
 	assert.equal(calls.length, 4);
 
 	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
@@ -495,4 +497,476 @@ test("teamIdFor: forwards a provided signal into the auth.test apiCall opts", as
 	assert.equal(teamId, "T-SIGNAL");
 	assert.equal(seenOpts.length, 1);
 	assert.equal(seenOpts[0].signal, controller.signal);
+});
+
+// --- gh-9: email + snapshot_at ---
+
+test("resolveUser: username match writes email when users.list returned one", async () => {
+	const dir = tmpDir("quiver-slack-email-username-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U1", name: "alice", profile: { display_name: "Alice", real_name: "Alice A", email: "alice@corp.com" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const id = await resolveUser("@alice", { apiCall, token: "tok-email-1", filePath });
+	assert.equal(id, "U1");
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.users.alice.email, "alice@corp.com");
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveUser: display-name match also writes email (the easily-missed branch)", async () => {
+	const dir = tmpDir("quiver-slack-email-display-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U2", name: "bob.smith", profile: { display_name: "Bobby", real_name: "Bob Smith", email: "bob@corp.com" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const id = await resolveUser("@Bobby", { apiCall, token: "tok-email-2", filePath });
+	assert.equal(id, "U2");
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.users["bob.smith"].email, "bob@corp.com");
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveUser: real-name match also writes email (the easily-missed branch)", async () => {
+	const dir = tmpDir("quiver-slack-email-realname-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U4", name: "eve.jones", profile: { display_name: "", real_name: "Eve Jones", email: "eve@corp.com" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const id = await resolveUser("@Eve Jones", { apiCall, token: "tok-email-4", filePath });
+	assert.equal(id, "U4");
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.users["eve.jones"].email, "eve@corp.com");
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveUser: email key is omitted, never empty string, when Slack returns none", async () => {
+	const dir = tmpDir("quiver-slack-email-absent-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U3", name: "carol", profile: { display_name: "Carol", real_name: "Carol C" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	await resolveUser("@carol", { apiCall, token: "tok-email-3", filePath });
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal("email" in written.users.carol, false);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("refreshCache: writes snapshot_at, returns an email count, backfills an email-less file", async () => {
+	const dir = tmpDir("quiver-slack-snapshot-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, {
+		team_id: "T1",
+		channels: {},
+		users: { alice: { id: "U1", display_name: "Alice", real_name: "Alice A" } },
+		refreshed_at: "x",
+	});
+	const { apiCall } = scriptedApiCall([
+		{ method: "auth.test", result: { team_id: "T1" } },
+		{ method: "conversations.list", result: { channels: [{ id: "C1", name: "general" }], response_metadata: { next_cursor: "" } } },
+		{
+			method: "users.list",
+			result: {
+				members: [
+					{ id: "U1", name: "alice", profile: { display_name: "Alice", real_name: "Alice A", email: "alice@corp.com" } },
+					{ id: "U2", name: "dave", profile: { display_name: "Dave", real_name: "Dave D" } },
+				],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const counts = await refreshCache({ apiCall, token: "tok-snapshot-1", filePath });
+	assert.deepEqual(counts, { channels: 1, users: 2, emails: 1 });
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.users.alice.email, "alice@corp.com");
+	assert.equal("email" in written.users.dave, false);
+	assert.ok(typeof written.snapshot_at === "string" && written.snapshot_at.length > 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("mergeAndWrite path: a lazy user write preserves an existing snapshot_at", async () => {
+	const dir = tmpDir("quiver-slack-snapshot-keep-");
+	const filePath = join(dir, "cache.json");
+	const before = new Date("2020-01-01T00:00:00.000Z").toISOString();
+	writeFileSync(
+		filePath,
+		JSON.stringify({ team_id: "T1", channels: {}, users: {}, refreshed_at: "x", snapshot_at: before }, null, 2),
+	);
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U9", name: "erin", profile: { display_name: "Erin", real_name: "Erin E" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	await resolveUser("@erin", { apiCall, token: "tok-snapshot-keep", filePath });
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.snapshot_at, before);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+// --- gh-9: resolveMentions grammar ---
+
+function cacheWithAlice(filePath: string, extra: Partial<SlackCacheFile> = {}): void {
+	writeFileSync(
+		filePath,
+		JSON.stringify(
+			{
+				team_id: "T1",
+				channels: {},
+				users: { alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" } },
+				refreshed_at: "x",
+				...extra,
+			},
+			null,
+			2,
+		),
+	);
+}
+
+test("resolveMentions: cache hit substitutes, zero apiCall", async () => {
+	const dir = tmpDir("quiver-slack-mention-hit-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const out = await resolveMentions([{ field: "text", value: "ping @alice now" }], { apiCall, token: "tok-m1", filePath });
+	assert.deepEqual(out.values, ["ping <@U01ALICE> now"]);
+	assert.deepEqual(out.unresolved, []);
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: deny list, email-like text, and formatted mentions are never candidates", async () => {
+	const dir = tmpDir("quiver-slack-mention-deny-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const input = "@here @channel @everyone user@host.com <@U01ALICE>";
+	const out = await resolveMentions([{ field: "text", value: input }], { apiCall, token: "tok-m2", filePath });
+	assert.deepEqual(out.values, [input]);
+	assert.deepEqual(out.unresolved, []);
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: boundary characters (, [, *, _, quotes resolve; backtick does not", async () => {
+	const dir = tmpDir("quiver-slack-mention-boundary-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall } = scriptedApiCall([]);
+	const out = await resolveMentions(
+		[{ field: "text", value: "(@alice) [@alice] *@alice* _@alice_ \"@alice\" '@alice' `@alice`" }],
+		{ apiCall, token: "tok-m3", filePath },
+	);
+	const substitutions = out.values[0].split("<@U01ALICE>").length - 1;
+	assert.equal(substitutions, 6);
+	assert.match(out.values[0], /`@alice`/);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: escaped \\@alice stays literal, loses the backslash, is not reported", async () => {
+	const dir = tmpDir("quiver-slack-mention-escape-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const out = await resolveMentions([{ field: "text", value: "hi \\@alice and x\\@alice" }], {
+		apiCall,
+		token: "tok-m4",
+		filePath,
+	});
+	assert.equal(out.values[0], "hi @alice and x\\@alice");
+	assert.deepEqual(out.unresolved, []);
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: trailing punctuation is trimmed, dotted username retried untrimmed", async () => {
+	const dir = tmpDir("quiver-slack-mention-punct-");
+	const filePath = join(dir, "cache.json");
+	writeFileSync(
+		filePath,
+		JSON.stringify(
+			{
+				team_id: "T1",
+				channels: {},
+				users: {
+					alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" },
+					"bob.s": { id: "U01BOB", display_name: "Bob", real_name: "Bob S" },
+				},
+				refreshed_at: "x",
+			},
+			null,
+			2,
+		),
+	);
+	const { apiCall } = scriptedApiCall([]);
+	const out = await resolveMentions([{ field: "text", value: "ask @alice, or @bob.s." }], {
+		apiCall,
+		token: "tok-m5",
+		filePath,
+	});
+	assert.equal(out.values[0], "ask <@U01ALICE>, or <@U01BOB>.");
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: deny list still catches boundary-wrapped and punctuated pseudo-mentions", async () => {
+	const dir = tmpDir("quiver-slack-mention-deny-trim-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const input = "_@channel_ update, @here. now";
+	const out = await resolveMentions([{ field: "text", value: input }], { apiCall, token: "tok-m5b", filePath });
+	assert.deepEqual(out.values, [input]);
+	assert.deepEqual(out.unresolved, []);
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: a name that is entirely trailing punctuation is not a candidate", async () => {
+	const dir = tmpDir("quiver-slack-mention-empty-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const input = "see @... over there";
+	const out = await resolveMentions([{ field: "text", value: input }], { apiCall, token: "tok-m5c", filePath });
+	assert.deepEqual(out.values, [input]);
+	assert.ok(!out.unresolved.some((u) => u.name === "@"));
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: a snapshot-proven ambiguous alias skips the live lookup entirely", async () => {
+	const dir = tmpDir("quiver-slack-mention-ambig-snapshot-");
+	const filePath = join(dir, "cache.json");
+	writeFileSync(
+		filePath,
+		JSON.stringify(
+			{
+				team_id: "T1",
+				channels: {},
+				users: {
+					a1: { id: "U1", display_name: "Twin", real_name: "One" },
+					a2: { id: "U2", display_name: "Twin", real_name: "Two" },
+				},
+				refreshed_at: "x",
+				snapshot_at: new Date().toISOString(),
+			},
+			null,
+			2,
+		),
+	);
+	const { apiCall, calls } = scriptedApiCall([]);
+	const out = await resolveMentions([{ field: "text", value: "hey @Twin" }], { apiCall, token: "tok-m5d", filePath });
+	assert.equal(out.values[0], "hey @Twin");
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@Twin" }]);
+	assert.equal(calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+// --- gh-9: resolveMentions resolution and degradation ---
+
+test("resolveMentions: misses across both fields cost exactly one users.list pagination", async () => {
+	const dir = tmpDir("quiver-slack-mention-batch-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [
+					{ id: "U01BOB", name: "bob", profile: { display_name: "Bob", real_name: "Bob B" } },
+					{ id: "U01CAR", name: "carol", profile: { display_name: "Carol", real_name: "Carol C" } },
+				],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const out = await resolveMentions(
+		[
+			{ field: "text", value: "@bob and @dave" },
+			{ field: "thread_body", value: "@carol and @erin" },
+		],
+		{ apiCall, token: "tok-m6", filePath },
+	);
+	assert.equal(calls.filter((c) => c.method === "users.list").length, 1);
+	assert.equal(out.values[0], "<@U01BOB> and @dave");
+	assert.equal(out.values[1], "<@U01CAR> and @erin");
+	assert.deepEqual(out.unresolved, [
+		{ field: "text", name: "@dave" },
+		{ field: "thread_body", name: "@erin" },
+	]);
+	const written = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+	assert.equal(written.users.bob.id, "U01BOB");
+	assert.equal(written.users.carol.id, "U01CAR");
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: ambiguous alias stays literal and is reported, never throws", async () => {
+	const dir = tmpDir("quiver-slack-mention-ambig-");
+	const filePath = join(dir, "cache.json");
+	const { apiCall } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [
+					{ id: "U1", name: "a1", profile: { display_name: "Twin", real_name: "One" } },
+					{ id: "U2", name: "a2", profile: { display_name: "Twin", real_name: "Two" } },
+				],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const out = await resolveMentions([{ field: "text", value: "hey @Twin" }], { apiCall, token: "tok-m7", filePath });
+	assert.equal(out.values[0], "hey @Twin");
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@Twin" }]);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: alias hit is trusted from cache only when snapshot_at is present", async () => {
+	const dir = tmpDir("quiver-slack-mention-alias-");
+	const withoutPath = join(dir, "without.json");
+	const withPath = join(dir, "with.json");
+	cacheWithAlice(withoutPath);
+	cacheWithAlice(withPath, { snapshot_at: new Date().toISOString() });
+
+	const live = scriptedApiCall([
+		{
+			method: "users.list",
+			result: {
+				members: [{ id: "U01ALICE", name: "alice", profile: { display_name: "Alice", real_name: "Alice A" } }],
+				response_metadata: { next_cursor: "" },
+			},
+		},
+	]);
+	const noSnapshot = await resolveMentions([{ field: "text", value: "@Alice" }], {
+		apiCall: live.apiCall,
+		token: "tok-m8a",
+		filePath: withoutPath,
+	});
+	assert.equal(noSnapshot.values[0], "<@U01ALICE>");
+	assert.equal(live.calls.filter((c) => c.method === "users.list").length, 1);
+
+	const cached = scriptedApiCall([]);
+	const withSnapshot = await resolveMentions([{ field: "text", value: "@Alice" }], {
+		apiCall: cached.apiCall,
+		token: "tok-m8b",
+		filePath: withPath,
+	});
+	assert.equal(withSnapshot.values[0], "<@U01ALICE>");
+	assert.equal(cached.calls.length, 0);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: users.list transport failure degrades to all-literal with lookupError", async () => {
+	const dir = tmpDir("quiver-slack-mention-transport-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall } = scriptedApiCall([
+		{ method: "users.list", error: new SlackError("ratelimited", "Slack rate-limited the request.") },
+	]);
+	const out = await resolveMentions([{ field: "text", value: "@alice and @dave" }], {
+		apiCall,
+		token: "tok-m9",
+		filePath,
+	});
+	assert.equal(out.values[0], "<@U01ALICE> and @dave");
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@dave" }]);
+	assert.match(out.lookupError ?? "", /rate-limited/);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: users.list exceeding MAX_LIST_PAGES degrades to all-literal with pagination_overflow lookupError", async () => {
+	const dir = tmpDir("quiver-slack-mention-overflow-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+
+	let calls = 0;
+	const apiCall: ApiCall = async () => {
+		calls += 1;
+		return { members: [], response_metadata: { next_cursor: `cur${calls}` } };
+	};
+
+	const out = await resolveMentions([{ field: "text", value: "@dave" }], { apiCall, token: "tok-m11", filePath });
+	assert.equal(calls, MAX_LIST_PAGES);
+	assert.equal(out.values[0], "@dave");
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@dave" }]);
+	assert.match(out.lookupError ?? "", /did not terminate within/);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: a repeated non-empty cursor terminates the scan", async () => {
+	const dir = tmpDir("quiver-slack-mention-cursor-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall, calls } = scriptedApiCall([
+		{ method: "users.list", result: { members: [], response_metadata: { next_cursor: "same" } } },
+		{ method: "users.list", result: { members: [], response_metadata: { next_cursor: "same" } } },
+	]);
+	const out = await resolveMentions([{ field: "text", value: "@dave" }], { apiCall, token: "tok-m10", filePath });
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@dave" }]);
+	assert.equal(calls.length, 2);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: a repeated unknown mention within one field yields exactly one unresolved entry", async () => {
+	const dir = tmpDir("quiver-slack-mention-dedup-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall } = scriptedApiCall([
+		{ method: "users.list", result: { members: [], response_metadata: { next_cursor: "" } } },
+	]);
+	const out = await resolveMentions([{ field: "text", value: "cc @bob @bob" }], { apiCall, token: "tok-m12", filePath });
+	assert.deepEqual(out.unresolved, [{ field: "text", name: "@bob" }]);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveMentions: a same-name miss in two different fields still yields two entries", async () => {
+	const dir = tmpDir("quiver-slack-mention-dedup-field-");
+	const filePath = join(dir, "cache.json");
+	cacheWithAlice(filePath);
+	const { apiCall } = scriptedApiCall([
+		{ method: "users.list", result: { members: [], response_metadata: { next_cursor: "" } } },
+	]);
+	const out = await resolveMentions(
+		[
+			{ field: "text", value: "@bob" },
+			{ field: "thread_body", value: "@bob" },
+		],
+		{ apiCall, token: "tok-m13", filePath },
+	);
+	assert.deepEqual(out.unresolved, [
+		{ field: "text", name: "@bob" },
+		{ field: "thread_body", name: "@bob" },
+	]);
+	rmSync(dir, { recursive: true, force: true });
 });

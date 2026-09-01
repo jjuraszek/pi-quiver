@@ -476,7 +476,7 @@ function makeMockApi(): { api: ExtensionAPI; defs: ToolDefinition[]; handlers: R
 }
 
 function makeFakeCtx(cwd: string, notify: (m: string, type?: string) => void = () => {}): ExtensionContext {
-	return { cwd, ui: { notify } } as unknown as ExtensionContext;
+	return { cwd, hasUI: true, ui: { notify } } as unknown as ExtensionContext;
 }
 
 // Async sibling of withSettings: session_start handlers are declared async, so callers must
@@ -485,9 +485,9 @@ async function withSettingsAsync(
 	global: Record<string, unknown>,
 	project: Record<string, unknown>,
 	fn: (cwd: string) => Promise<void>,
+	projectDir: string = mkdtempSync(join(tmpdir(), "quiver-slack-project-")),
 ): Promise<void> {
 	const agentDir = mkdtempSync(join(tmpdir(), "quiver-slack-agent-"));
-	const projectDir = mkdtempSync(join(tmpdir(), "quiver-slack-project-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	try {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -804,10 +804,406 @@ test("slack_update: markdown_text field is rejected before any token resolution"
 });
 
 // --- (c) end-to-end execute through the mock ExtensionAPI ---
-// Skipped intentionally: extensions/slack.ts calls defaultApiCall (a real network fetch) directly
-// inside resolveCall/searchMessages/etc. with no injection seam (no deps parameter threaded through
-// registration, no module-level override hook). Exercising slack_pin's execute end-to-end would
-// either hit the network or require adding a new seam purely for tests, which is out of scope for
-// this dispatch (F2/F3/F4 refactor adapter internals but do not add an execute-level test seam).
-// The unit tests above cover the adapter-level helpers (formatToolError, channelLine,
-// renderToolResult) that execute delegates to.
+// extensions/slack.ts calls defaultApiCall (a real network fetch) directly inside resolveCall,
+// with no deps-injection seam threaded through registration - so the tests below stub the one
+// thing defaultApiCall is built on: the global fetch. Each handler is keyed by Slack method name
+// (the /api/<method> path segment); an unscripted method throws loudly instead of hitting the
+// network.
+
+type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown>>;
+
+async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): Promise<void> {
+	const original = globalThis.fetch;
+	globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+		const method = new URL(String(url)).pathname.replace(/^\/api\//, "");
+		const handler = handlers[method];
+		if (!handler) throw new Error(`unscripted Slack API call in test: ${method}`);
+		let params: Record<string, unknown> = {};
+		const body = init?.body;
+		if (typeof body === "string") {
+			try {
+				params = JSON.parse(body);
+			} catch {
+				params = Object.fromEntries(new URLSearchParams(body));
+			}
+		}
+		return new Response(JSON.stringify(handler(params)), { status: 200, headers: { "content-type": "application/json" } });
+	}) as typeof fetch;
+	try {
+		await fn();
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+async function withEnvToken(envVar: string, value: string, fn: () => Promise<void>): Promise<void> {
+	const previous = process.env[envVar];
+	process.env[envVar] = value;
+	try {
+		await fn();
+	} finally {
+		if (previous === undefined) delete process.env[envVar];
+		else process.env[envVar] = previous;
+	}
+}
+
+function writeMentionCache(filePath: string): void {
+	writeFileSync(
+		filePath,
+		JSON.stringify({
+			team_id: "T1",
+			channels: { general: "C123" },
+			users: { alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" } },
+			refreshed_at: new Date().toISOString(),
+			snapshot_at: new Date().toISOString(),
+		}),
+	);
+}
+
+const MENTION_FETCH_HANDLERS: FetchHandlers = {
+	"auth.test": () => ({ ok: true, team_id: "T1" }),
+	"chat.postMessage": () => ({ ok: true, ts: "1111.1" }),
+	"chat.getPermalink": () => ({ ok: true, permalink: "https://x.slack.com/archives/C123/p11111" }),
+};
+
+async function runSlackPost(
+	dir: string,
+	params: Record<string, unknown>,
+): Promise<{ content: { type: string; text: string }[]; details: Record<string, unknown> }> {
+	const cacheFile = join(dir, "cache.json");
+	writeMentionCache(cacheFile);
+	let result!: { content: { type: string; text: string }[]; details: Record<string, unknown> };
+	await withEnvToken("SLACK_BOT_TOKEN", "xoxb-e2e-mentions", async () => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+			await withFakeFetch(MENTION_FETCH_HANDLERS, async () => {
+				const { api, defs, handlers } = makeMockApi();
+				slackExtension(api);
+				await handlers.session_start({}, makeFakeCtx(cwd));
+				const def = defs.find((d) => d.name === "slack_post")!;
+				result = (await def.execute(
+					"tc1",
+					{ as: "bot", channel: "#general", ...params } as never,
+					new AbortController().signal,
+					() => {},
+					undefined as never,
+				)) as never;
+			});
+		});
+	});
+	return result;
+}
+
+test("slack_post execute: announce mode scans both text and thread_body for mentions", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-announce-"));
+	try {
+		const result = await runSlackPost(dir, { text: "hi @alice", thread_body: "cc @bob for detail" });
+		assert.match(result.content[0].text, /unresolved mentions: @bob/);
+		assert.deepEqual(result.details.unresolvedMentions, [{ field: "thread_body", name: "@bob" }]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_post execute: threaded reply via thread_body scans only thread_body, never the bare text param", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-reply-body-"));
+	try {
+		const result = await runSlackPost(dir, { thread_ts: "1111.1", text: "@carol note", thread_body: "loop in @bob please" });
+		assert.match(result.content[0].text, /unresolved mentions: @bob/);
+		assert.ok(!/@carol/.test(result.content[0].text));
+		assert.deepEqual(result.details.unresolvedMentions, [{ field: "thread_body", name: "@bob" }]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_post execute: threaded reply via bare text (no thread_body) scans text", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-reply-text-"));
+	try {
+		const result = await runSlackPost(dir, { thread_ts: "1111.1", text: "loop in @bob please" });
+		assert.match(result.content[0].text, /unresolved mentions: @bob/);
+		assert.deepEqual(result.details.unresolvedMentions, [{ field: "text", name: "@bob" }]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_post execute: plain post scans text", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-plain-"));
+	try {
+		const result = await runSlackPost(dir, { text: "hi @bob" });
+		assert.match(result.content[0].text, /unresolved mentions: @bob/);
+		assert.deepEqual(result.details.unresolvedMentions, [{ field: "text", name: "@bob" }]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_post execute: blocks-only plain post omits text from chat.postMessage params", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-blocks-plain-"));
+	try {
+		const cacheFile = join(dir, "cache.json");
+		writeMentionCache(cacheFile);
+		const captured: Record<string, unknown>[] = [];
+		const handlers: FetchHandlers = {
+			"auth.test": () => ({ ok: true, team_id: "T1" }),
+			"chat.postMessage": (params) => {
+				captured.push(params);
+				return { ok: true, ts: "1111.1" };
+			},
+			"chat.getPermalink": () => ({ ok: true, permalink: "https://x.slack.com/archives/C123/p11111" }),
+		};
+		await withEnvToken("SLACK_BOT_TOKEN", "xoxb-e2e-blocks-plain", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch(handlers, async () => {
+					const { api, defs, handlers: extHandlers } = makeMockApi();
+					slackExtension(api);
+					await extHandlers.session_start({}, makeFakeCtx(cwd));
+					const def = defs.find((d) => d.name === "slack_post")!;
+					await def.execute(
+						"tc1",
+						{ as: "bot", channel: "#general", blocks: [{ type: "section", text: { type: "mrkdwn", text: "hi" } }] } as never,
+						new AbortController().signal,
+						() => {},
+						undefined as never,
+					);
+				});
+			});
+		});
+		assert.equal(captured.length, 1);
+		assert.ok(!("text" in captured[0]), "chat.postMessage params should not include a text key");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_post execute: blocks-only threaded reply (no thread_body, no text) omits text from chat.postMessage params", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-blocks-reply-"));
+	try {
+		const cacheFile = join(dir, "cache.json");
+		writeMentionCache(cacheFile);
+		const captured: Record<string, unknown>[] = [];
+		const handlers: FetchHandlers = {
+			"auth.test": () => ({ ok: true, team_id: "T1" }),
+			"chat.postMessage": (params) => {
+				captured.push(params);
+				return { ok: true, ts: "1111.1" };
+			},
+			"chat.getPermalink": () => ({ ok: true, permalink: "https://x.slack.com/archives/C123/p11111" }),
+		};
+		await withEnvToken("SLACK_BOT_TOKEN", "xoxb-e2e-blocks-reply", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch(handlers, async () => {
+					const { api, defs, handlers: extHandlers } = makeMockApi();
+					slackExtension(api);
+					await extHandlers.session_start({}, makeFakeCtx(cwd));
+					const def = defs.find((d) => d.name === "slack_post")!;
+					await def.execute(
+						"tc1",
+						{
+							as: "bot",
+							channel: "#general",
+							thread_ts: "1111.1",
+							blocks: [{ type: "section", text: { type: "mrkdwn", text: "hi" } }],
+						} as never,
+						new AbortController().signal,
+						() => {},
+						undefined as never,
+					);
+				});
+			});
+		});
+		assert.equal(captured.length, 1);
+		assert.ok(!("text" in captured[0]), "chat.postMessage params should not include a text key");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("slack_cache_refresh execute: zero emails out of N users names the missing scope in the content string", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-cache-refresh-"));
+	try {
+		const cacheFile = join(dir, "cache.json");
+		await withEnvToken("SLACK_BOT_TOKEN", "xoxb-e2e-refresh", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch(
+					{
+						"auth.test": () => ({ ok: true, team_id: "T1" }),
+						"conversations.list": () => ({
+							channels: [{ id: "C1", name: "general" }],
+							response_metadata: { next_cursor: "" },
+						}),
+						"users.list": () => ({
+							members: [{ id: "U1", name: "bob", profile: { display_name: "Bob", real_name: "Bob B" } }],
+							response_metadata: { next_cursor: "" },
+						}),
+					},
+					async () => {
+						const { api, defs, handlers } = makeMockApi();
+						slackExtension(api);
+						await handlers.session_start({}, makeFakeCtx(cwd));
+						const def = defs.find((d) => d.name === "slack_cache_refresh")!;
+						const result = (await def.execute("tc1", {}, new AbortController().signal, () => {}, undefined as never)) as {
+							content: { type: string; text: string }[];
+						};
+						assert.equal(result.content[0].text, "channels: 1, users: 1 | emails: 0/1 (users:read.email scope may be missing)");
+					},
+				);
+			});
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+// --- gh-9: policyPath ---
+
+test("coerce: policyPath string is accepted, non-string ignored", () => {
+	assert.equal(coerce({ policyPath: "doc/SLACK.md" })?.policyPath, "doc/SLACK.md");
+	assert.equal(coerce({ policyPath: 42 })?.policyPath, undefined);
+});
+
+test("DEFAULT_SLACK_CONFIG: policyPath is undefined by default", () => {
+	assert.equal(DEFAULT_SLACK_CONFIG.policyPath, undefined);
+});
+
+test("applyEnvOverrides: no env var can set policyPath", () => {
+	const out = applyEnvOverrides({ ...DEFAULT_SLACK_CONFIG }, {
+		PI_QUIVER_SLACK_POLICY_PATH: "doc/OTHER.md",
+	});
+	assert.equal(out.policyPath, undefined);
+});
+
+// --- gh-9: policy injection ---
+
+async function withPolicyRepo(
+	policy: string | undefined,
+	fn: (repoDir: string) => Promise<void>,
+): Promise<void> {
+	const repoDir = mkdtempSync(join(tmpdir(), "quiver-slack-policy-"));
+	try {
+		execFileSync("git", ["init", "-q"], { cwd: repoDir });
+		if (policy !== undefined) writeFileSync(join(repoDir, "SLACK.md"), policy);
+		await fn(repoDir);
+	} finally {
+		rmSync(repoDir, { recursive: true, force: true });
+	}
+}
+
+test("policy injection: no handler registered when policyPath is unset", async () => {
+	await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+		const { api, handlers } = makeMockApi();
+		slackExtension(api);
+		await handlers.session_start({}, makeFakeCtx(cwd));
+		assert.equal(handlers.before_agent_start, undefined);
+	});
+});
+
+test("policy injection: no handler registered when slack is disabled", async () => {
+	await withSettingsAsync({}, { quiver: { slack: { enabled: false, policyPath: "SLACK.md" } } }, async (cwd) => {
+		const { api, handlers } = makeMockApi();
+		slackExtension(api);
+		await handlers.session_start({}, makeFakeCtx(cwd));
+		assert.equal(handlers.before_agent_start, undefined);
+	});
+});
+
+test("policy injection: appends the policy block to the incoming systemPrompt", async () => {
+	await withPolicyRepo("Confirm exact text before posting.", async (repoDir) => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: "SLACK.md" } } }, async () => {
+			const { api, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(repoDir));
+			const out = (await handlers.before_agent_start(
+				{ systemPrompt: "BASE" },
+				makeFakeCtx(repoDir),
+			)) as { systemPrompt: string };
+			assert.match(out.systemPrompt, /^BASE\n\n<slack-policy source="SLACK\.md">\n/);
+			assert.match(out.systemPrompt, /Confirm exact text before posting\./);
+		}, repoDir);
+	});
+});
+
+test("policy injection: re-reads the file every turn", async () => {
+	await withPolicyRepo("first", async (repoDir) => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: "SLACK.md" } } }, async () => {
+			const { api, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(repoDir));
+			const one = (await handlers.before_agent_start({ systemPrompt: "B" }, makeFakeCtx(repoDir))) as { systemPrompt: string };
+			assert.match(one.systemPrompt, /first/);
+			writeFileSync(join(repoDir, "SLACK.md"), "second");
+			const two = (await handlers.before_agent_start({ systemPrompt: "B" }, makeFakeCtx(repoDir))) as { systemPrompt: string };
+			assert.match(two.systemPrompt, /second/);
+		}, repoDir);
+	});
+});
+
+test("policy injection: missing file injects status=unreadable and warns exactly once", async () => {
+	await withPolicyRepo(undefined, async (repoDir) => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: "SLACK.md" } } }, async () => {
+			const warnings: string[] = [];
+			const ctx = makeFakeCtx(repoDir, (m) => warnings.push(m));
+			const { api, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, ctx);
+			for (let i = 0; i < 3; i++) {
+				const out = (await handlers.before_agent_start({ systemPrompt: "B" }, ctx)) as { systemPrompt: string };
+				assert.match(out.systemPrompt, /status="unreadable"/);
+			}
+			assert.equal(warnings.filter((w) => /policy/i.test(w)).length, 1);
+		}, repoDir);
+	});
+});
+
+test("policy injection: empty file injects status=empty", async () => {
+	await withPolicyRepo("   \n", async (repoDir) => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: "SLACK.md" } } }, async () => {
+			const { api, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(repoDir));
+			const out = (await handlers.before_agent_start({ systemPrompt: "B" }, makeFakeCtx(repoDir))) as { systemPrompt: string };
+			assert.match(out.systemPrompt, /status="empty"/);
+		}, repoDir);
+	});
+});
+
+test("policy injection: an absolute policyPath is used verbatim, not joined onto repoRoot", async () => {
+	await withPolicyRepo("Confirm exact text before posting.", async (repoDir) => {
+		const policyDir = mkdtempSync(join(tmpdir(), "quiver-slack-policy-abs-"));
+		try {
+			const absolutePolicyPath = join(policyDir, "OUTSIDE.md");
+			writeFileSync(absolutePolicyPath, "Absolute policy body.");
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: absolutePolicyPath } } }, async () => {
+				const { api, handlers } = makeMockApi();
+				slackExtension(api);
+				await handlers.session_start({}, makeFakeCtx(repoDir));
+				const out = (await handlers.before_agent_start({ systemPrompt: "B" }, makeFakeCtx(repoDir))) as { systemPrompt: string };
+				assert.match(out.systemPrompt, /Absolute policy body\./);
+				assert.ok(
+					out.systemPrompt.includes(`<slack-policy source="${absolutePolicyPath}">`),
+					"source attribute should carry the absolute path verbatim",
+				);
+			}, repoDir);
+		} finally {
+			rmSync(policyDir, { recursive: true, force: true });
+		}
+	});
+});
+
+test("policy injection: a relative policyPath resolves against repoRoot even when cwd is a subdirectory", async () => {
+	await withPolicyRepo("Confirm exact text before posting.", async (repoDir) => {
+		const subDir = join(repoDir, "a", "b");
+		mkdirSync(subDir, { recursive: true });
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true, policyPath: "SLACK.md" } } }, async () => {
+			const { api, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(subDir));
+			const out = (await handlers.before_agent_start({ systemPrompt: "B" }, makeFakeCtx(subDir))) as { systemPrompt: string };
+			assert.match(out.systemPrompt, /Confirm exact text before posting\./);
+			assert.ok(
+				out.systemPrompt.includes('<slack-policy source="SLACK.md">'),
+				"source attribute should carry the configured relative path as written",
+			);
+		}, subDir);
+	});
+});

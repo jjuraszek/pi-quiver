@@ -19,6 +19,7 @@ import { resolveConfig } from "./extension-config.ts";
 export interface SlackConfig {
 	enabled: boolean;
 	cachePath: string | undefined;
+	policyPath: string | undefined;
 	userTokenEnv: string;
 	botTokenEnv: string;
 	uploadThresholdChars: number;
@@ -27,6 +28,7 @@ export interface SlackConfig {
 export const DEFAULT_SLACK_CONFIG: SlackConfig = {
 	enabled: false,
 	cachePath: undefined,
+	policyPath: undefined,
 	userTokenEnv: "SLACK_USER_TOKEN",
 	botTokenEnv: "SLACK_BOT_TOKEN",
 	uploadThresholdChars: 4000,
@@ -49,6 +51,7 @@ export function coerce(raw: unknown): Partial<SlackConfig> | undefined {
 	const patch: Partial<SlackConfig> = {};
 	if (typeof o.enabled === "boolean") patch.enabled = o.enabled;
 	if (typeof o.cachePath === "string") patch.cachePath = o.cachePath;
+	if (typeof o.policyPath === "string") patch.policyPath = o.policyPath;
 	if (typeof o.userTokenEnv === "string") patch.userTokenEnv = o.userTokenEnv;
 	if (typeof o.botTokenEnv === "string") patch.botTokenEnv = o.botTokenEnv;
 	if (typeof o.uploadThresholdChars === "number" && Number.isInteger(o.uploadThresholdChars) && o.uploadThresholdChars > 0) {
@@ -635,7 +638,14 @@ async function withPermalink(deps: CoreDeps, channel: string, ts: string): Promi
 }
 
 export async function postPlain(
-	args: { channel: string; text?: string; blocks?: unknown[]; thread_ts?: string },
+	args: {
+		channel: string;
+		text?: string;
+		blocks?: unknown[];
+		thread_ts?: string;
+		unfurl_links?: boolean;
+		unfurl_media?: boolean;
+	},
 	deps: CoreDeps,
 ): Promise<MutationResult> {
 	assertTextWithinLimit(args.text);
@@ -644,6 +654,8 @@ export async function postPlain(
 	if (args.text !== undefined) params.text = args.text;
 	if (args.blocks !== undefined) params.blocks = args.blocks;
 	if (args.thread_ts !== undefined) params.thread_ts = args.thread_ts;
+	if (args.unfurl_links !== undefined) params.unfurl_links = args.unfurl_links;
+	if (args.unfurl_media !== undefined) params.unfurl_media = args.unfurl_media;
 
 	const data = await deps.apiCall("chat.postMessage", deps.token, params, { retry: true, signal: deps.signal });
 	const channel = typeof data.channel === "string" ? data.channel : args.channel;
@@ -740,6 +752,49 @@ export function linkCollapsedLength(text: string): number {
 	return text.replace(/<([^|>]+)\|([^>]+)>/g, "$2").replace(/<[^>]+>/g, "x").length;
 }
 
+function escapeAttr(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Pure: the handler in extensions/slack.ts owns readFileSync and maps the outcome to this input. */
+export function buildPolicyBlock(input: {
+	source: string;
+	status: "ok" | "unreadable" | "empty";
+	body?: string;
+	code?: string;
+}): string {
+	const source = escapeAttr(input.source);
+	if (input.status === "ok") {
+		return `<slack-policy source="${source}">\n${input.body ?? ""}</slack-policy>`;
+	}
+	const reason =
+		input.status === "empty"
+			? `Configured Slack policy file is empty.`
+			: `Configured Slack policy file could not be read (${input.code ?? "unknown error"}).`;
+	return `<slack-policy source="${source}" status="${input.status}">\n${reason} Slack tools are available but the repository's posting policy is unknown - ask the operator before posting.\n</slack-policy>`;
+}
+
+export interface UnresolvedMention {
+	field: "text" | "thread_body";
+	name: string;
+}
+
+/** Pure: the `channelLine` suffix segment for unresolved mentions. Empty string means "append nothing". */
+export function formatUnresolvedSuffix(
+	unresolved: UnresolvedMention[],
+	opts: { lookupError?: string; detailUploaded?: boolean },
+): string {
+	if (unresolved.length === 0) return "";
+	const names: string[] = [];
+	for (const u of unresolved) if (!names.includes(u.name)) names.push(u.name);
+	let suffix = `unresolved mentions: ${names.join(", ")}`;
+	if (opts.lookupError !== undefined) suffix += ` (lookup failed: ${opts.lookupError})`;
+	if (opts.detailUploaded && unresolved.some((u) => u.field === "thread_body")) {
+		suffix += ` (detail uploaded as a file - slack_update cannot repair it; repost to fix)`;
+	}
+	return suffix;
+}
+
 export function persistDetail(body: string): string {
 	const dir = join(tmpdir(), "pi-slack");
 	mkdirSync(dir, { recursive: true });
@@ -763,6 +818,11 @@ function assertHeadline(text: string): void {
 
 export interface AnnounceResult extends MutationResult {
 	detailTs?: string;
+	// Set only when the detail leg took the file-upload path (deliverDetailUpload) rather than the
+	// inline threaded chat.postMessage reply - detailTs alone can't distinguish the two, since both
+	// paths set it. slack_update can edit the headline or the "Detail attached." stub, never an
+	// uploaded file's contents, so callers need this to know a mention-repair edit won't reach it.
+	detailUploaded?: true;
 }
 
 async function deliverDetailUpload(
@@ -874,14 +934,23 @@ async function recoverFromDetailFailure(
 
 export async function announce(
 	args: { channel: string; text: string; thread_body: string },
-	deps: CoreDeps & { uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string) => string },
+	deps: CoreDeps & {
+		uploadBytes: UploadBytes;
+		thresholdChars: number;
+		persist?: (body: string) => string;
+		unfurl_links?: boolean;
+		unfurl_media?: boolean;
+	},
 ): Promise<AnnounceResult> {
 	assertHeadline(args.text);
 	const persist = deps.persist ?? persistDetail;
+	const unfurl: Record<string, unknown> = {};
+	if (deps.unfurl_links !== undefined) unfurl.unfurl_links = deps.unfurl_links;
+	if (deps.unfurl_media !== undefined) unfurl.unfurl_media = deps.unfurl_media;
 
 	let headlineData: Record<string, unknown>;
 	try {
-		headlineData = await deps.apiCall("chat.postMessage", deps.token, { channel: args.channel, text: args.text }, { retry: false, signal: deps.signal });
+		headlineData = await deps.apiCall("chat.postMessage", deps.token, { channel: args.channel, text: args.text, ...unfurl }, { retry: false, signal: deps.signal });
 	} catch (err) {
 		if (err instanceof SlackError && err.code === "transport") {
 			const { detailPath, note } = persistOrDescribe(args.thread_body, persist);
@@ -923,7 +992,7 @@ export async function announce(
 			const causeMessage = err instanceof Error ? err.message : String(err);
 			return recoverFromDetailFailure(causeMessage, args.text, args.thread_body, channel, ts, permalink, deps, persist);
 		}
-		return { channel, ts, permalink, warning, detailTs };
+		return { channel, ts, permalink, warning, detailTs, detailUploaded: true };
 	}
 
 	let detailData: Record<string, unknown>;
@@ -931,14 +1000,14 @@ export async function announce(
 		detailData = await deps.apiCall(
 			"chat.postMessage",
 			deps.token,
-			{ channel, text: args.thread_body, thread_ts: ts },
+			{ channel, text: args.thread_body, thread_ts: ts, ...unfurl },
 			{ retry: true, signal: deps.signal },
 		);
 	} catch (err) {
 		if (err instanceof SlackError && err.code === "msg_too_long") {
 			try {
 				const { detailTs } = await deliverDetailUpload(channel, ts, args.thread_body, deps);
-				return { channel, ts, permalink, warning, detailTs };
+				return { channel, ts, permalink, warning, detailTs, detailUploaded: true };
 			} catch (uploadErr) {
 				const causeMessage = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
 				return recoverFromDetailFailure(causeMessage, args.text, args.thread_body, channel, ts, permalink, deps, persist);
@@ -953,11 +1022,22 @@ export async function announce(
 }
 
 export async function postMessage(
-	args: { channel: string; text?: string; blocks?: unknown[]; thread_ts?: string; thread_body?: string },
+	args: {
+		channel: string;
+		text?: string;
+		blocks?: unknown[];
+		thread_ts?: string;
+		thread_body?: string;
+		unfurl_links?: boolean;
+		unfurl_media?: boolean;
+	},
 	deps: CoreDeps & { uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string) => string },
 ): Promise<MutationResult | AnnounceResult> {
 	if (args.thread_body !== undefined && args.thread_ts === undefined) {
-		return announce({ channel: args.channel, text: args.text ?? "", thread_body: args.thread_body }, deps);
+		return announce(
+			{ channel: args.channel, text: args.text ?? "", thread_body: args.thread_body },
+			{ ...deps, unfurl_links: args.unfurl_links, unfurl_media: args.unfurl_media },
+		);
 	}
 
 	if (args.thread_ts !== undefined) {
@@ -965,7 +1045,14 @@ export async function postMessage(
 		// the threshold/upload path only applies when composing plain mrkdwn from thread_body/text.
 		if (args.blocks !== undefined) {
 			return postPlain(
-				{ channel: args.channel, text: args.thread_body ?? args.text, blocks: args.blocks, thread_ts: args.thread_ts },
+				{
+					channel: args.channel,
+					text: args.thread_body ?? args.text,
+					blocks: args.blocks,
+					thread_ts: args.thread_ts,
+					unfurl_links: args.unfurl_links,
+					unfurl_media: args.unfurl_media,
+				},
 				deps,
 			);
 		}
@@ -980,7 +1067,10 @@ export async function postMessage(
 		// (server-side). This body is extension-composed detail, same as announce's detail leg, so
 		// it gets the same upload fallback instead of a bare throw.
 		try {
-			return await postPlain({ channel: args.channel, text: body, thread_ts: args.thread_ts }, deps);
+			return await postPlain(
+				{ channel: args.channel, text: body, thread_ts: args.thread_ts, unfurl_links: args.unfurl_links, unfurl_media: args.unfurl_media },
+				deps,
+			);
 		} catch (err) {
 			if (err instanceof SlackError && (err.code === "text_too_long" || err.code === "msg_too_long")) {
 				const { detailTs } = await deliverDetailUploadOrPersist(args.channel, args.thread_ts, body, deps);
@@ -990,5 +1080,8 @@ export async function postMessage(
 		}
 	}
 
-	return postPlain({ channel: args.channel, text: args.text, blocks: args.blocks }, deps);
+	return postPlain(
+		{ channel: args.channel, text: args.text, blocks: args.blocks, unfurl_links: args.unfurl_links, unfurl_media: args.unfurl_media },
+		deps,
+	);
 }

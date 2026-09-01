@@ -7,14 +7,24 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import type { ApiCall, SlackConfig } from "./slack-core.ts";
+import type { ApiCall, SlackConfig, UnresolvedMention } from "./slack-core.ts";
 import { SlackError } from "./slack-core.ts";
+
+export interface UserEntry {
+	id: string;
+	display_name: string;
+	real_name: string;
+	email?: string;
+}
 
 export interface SlackCacheFile {
 	team_id: string;
 	channels: Record<string, string>;
-	users: Record<string, { id: string; display_name: string; real_name: string }>;
+	users: Record<string, UserEntry>;
 	refreshed_at: string;
+	/** Set only by refreshCache's full replacement; presence means this file once held a complete
+	 * workspace listing, which is the only state where an alias match may be trusted from cache. */
+	snapshot_at?: string;
 }
 
 export interface CacheCtx {
@@ -99,6 +109,16 @@ function stripPrefix(input: string): string {
 	return input.startsWith("#") || input.startsWith("@") ? input.slice(1) : input;
 }
 
+function toUserEntry(u: SlackUser): UserEntry {
+	const email = u.profile?.email;
+	return {
+		id: u.id,
+		display_name: u.profile?.display_name ?? "",
+		real_name: u.profile?.real_name ?? u.real_name ?? "",
+		...(email ? { email } : {}),
+	};
+}
+
 export async function resolveChannel(input: string, ctx: CacheCtx): Promise<string> {
 	if (RAW_CHANNEL_ID.test(input)) return input;
 	if (input.startsWith("@")) {
@@ -150,7 +170,7 @@ export async function resolveChannel(input: string, ctx: CacheCtx): Promise<stri
 interface SlackUser {
 	id: string;
 	name: string;
-	profile?: { display_name?: string; real_name?: string };
+	profile?: { display_name?: string; real_name?: string; email?: string };
 	real_name?: string;
 }
 
@@ -208,11 +228,7 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 		for (const u of members) {
 			if (u.name === name) {
 				mergeAndWrite(ctx.filePath, cached?.team_id ?? (await teamIdFor(ctx.token, ctx.apiCall, ctx.signal)), (base) => {
-					base.users[name] = {
-						id: u.id,
-						display_name: u.profile?.display_name ?? "",
-						real_name: u.profile?.real_name ?? u.real_name ?? "",
-					};
+					base.users[name] = toUserEntry(u);
 				});
 				return u.id;
 			}
@@ -231,11 +247,7 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 	if (displayCandidates.length === 1) {
 		const u = displayCandidates[0];
 		mergeAndWrite(ctx.filePath, cached?.team_id ?? (await teamIdFor(ctx.token, ctx.apiCall, ctx.signal)), (base) => {
-			base.users[u.name] = {
-				id: u.id,
-				display_name: u.profile?.display_name ?? "",
-				real_name: u.profile?.real_name ?? u.real_name ?? "",
-			};
+			base.users[u.name] = toUserEntry(u);
 		});
 		return u.id;
 	}
@@ -249,11 +261,7 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 	if (realCandidates.length === 1) {
 		const u = realCandidates[0];
 		mergeAndWrite(ctx.filePath, cached?.team_id ?? (await teamIdFor(ctx.token, ctx.apiCall, ctx.signal)), (base) => {
-			base.users[u.name] = {
-				id: u.id,
-				display_name: u.profile?.display_name ?? "",
-				real_name: u.profile?.real_name ?? u.real_name ?? "",
-			};
+			base.users[u.name] = toUserEntry(u);
 		});
 		return u.id;
 	}
@@ -267,16 +275,202 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 	throw new SlackError("name_not_found", `No user named "${name}" was found in the workspace.`);
 }
 
+const MENTION_DENY = new Set(["here", "channel", "everyone"]);
+const MENTION_BOUNDARY = new Set([" ", "\t", "\n", "\r", "(", "[", "*", "_", '"', "'"]);
+// `_` is trimmed here even though it is also a boundary character: it is a legal username
+// character too, so an italic-wrapped mention like `_@alice_` is otherwise unreachable - the
+// trailing `_` must be stripped for the candidate to resolve.
+const MENTION_TRAILING = /[.,;:!?)_]+$/;
+const MENTION_SCAN = /(\\?)@([A-Za-z0-9._-]+)/g;
+
+function isBoundary(text: string, atIndex: number): boolean {
+	if (atIndex === 0) return true;
+	return MENTION_BOUNDARY.has(text[atIndex - 1]);
+}
+
+/**
+ * Substitutes `@name` -> `<@U...>` across every field a mutation will actually send.
+ * Never throws for an unresolvable name: not-found, ambiguous, and a failed live lookup all
+ * leave the text literal and report it, because a mention is prose, not an addressed parameter.
+ */
+export async function resolveMentions(
+	fields: { field: "text" | "thread_body"; value: string }[],
+	ctx: CacheCtx,
+): Promise<{
+	values: string[];
+	unresolved: UnresolvedMention[];
+	lookupError?: string;
+}> {
+	interface Candidate {
+		field: "text" | "thread_body";
+		start: number;
+		end: number;
+		escaped: boolean;
+		/** [name, endOffsetForThatName] pairs, trimmed variant first so it wins the lookup race. */
+		lookups: [string, number][];
+	}
+
+	const perField: Candidate[][] = fields.map(() => []);
+	const wanted = new Set<string>();
+
+	fields.forEach((f, fi) => {
+		for (const m of f.value.matchAll(MENTION_SCAN)) {
+			const escaped = m[1] === "\\";
+			const at = m.index + m[1].length;
+			if (escaped) {
+				if (!isBoundary(f.value, m.index)) continue;
+			} else if (!isBoundary(f.value, at)) continue;
+
+			const raw = m[2];
+			const fullEnd = m.index + m[0].length;
+			const trimmed = raw.replace(MENTION_TRAILING, "");
+			// Check the deny list against both forms: `_@channel_`/`@here.` still carry the
+			// trailing punctuation stripped below, so a raw-only check misses them.
+			if (MENTION_DENY.has(raw) || MENTION_DENY.has(trimmed)) continue;
+			// A name that is entirely trailing-punctuation (e.g. `@...`) trims to "" - not a
+			// real candidate, so skip it rather than looking up an empty username.
+			if (trimmed === "") continue;
+			const trimmedEnd = fullEnd - (raw.length - trimmed.length);
+			const lookups: [string, number][] =
+				trimmed === raw ? [[raw, fullEnd]] : [[trimmed, trimmedEnd], [raw, fullEnd]];
+			perField[fi].push({ field: f.field, start: m.index, end: fullEnd, escaped, lookups });
+			if (!escaped) for (const [name] of lookups) wanted.add(name);
+		}
+	});
+
+	const cached = readCacheFile(ctx.filePath);
+	const resolved = new Map<string, string>();
+	const aliasTrusted = cached?.snapshot_at !== undefined;
+	// Names an aliasTrusted FULL snapshot already proved ambiguous: a live users.list call
+	// cannot un-ambiguate them, so they must not fall into `outstanding`.
+	const conclusivelyAmbiguous = new Set<string>();
+
+	if (cached) {
+		for (const name of wanted) {
+			const byUsername = cached.users[name];
+			if (byUsername) {
+				resolved.set(name, byUsername.id);
+				continue;
+			}
+			if (!aliasTrusted) continue;
+			const entries = Object.values(cached.users);
+			const display = entries.filter((u) => u.display_name === name);
+			if (display.length === 1) {
+				resolved.set(name, display[0].id);
+				continue;
+			}
+			if (display.length > 1) {
+				conclusivelyAmbiguous.add(name);
+				continue;
+			}
+			const real = entries.filter((u) => u.real_name === name);
+			if (real.length === 1) resolved.set(name, real[0].id);
+			else if (real.length > 1) conclusivelyAmbiguous.add(name);
+		}
+	}
+
+	const outstanding = [...wanted].filter((n) => !resolved.has(n) && !conclusivelyAmbiguous.has(n));
+	let lookupError: string | undefined;
+
+	if (outstanding.length > 0) {
+		try {
+			const found = new Map<string, SlackUser>();
+			const aliasHits = new Map<string, SlackUser[]>();
+			let cursor = "";
+			for (let page = 1; ; page++) {
+				if (page > MAX_LIST_PAGES) {
+					throw new SlackError(
+						"pagination_overflow",
+						`resolveMentions: users.list did not terminate within ${MAX_LIST_PAGES} pages.`,
+					);
+				}
+				const data = await ctx.apiCall(
+					"users.list",
+					ctx.token,
+					{ limit: 1000, ...(cursor ? { cursor } : {}) },
+					{ retry: false, signal: ctx.signal },
+				);
+				for (const u of (data.members as SlackUser[]) ?? []) {
+					for (const name of outstanding) {
+						if (u.name === name) found.set(name, u);
+						else if (u.profile?.display_name === name || (u.profile?.real_name ?? u.real_name) === name) {
+							aliasHits.set(name, [...(aliasHits.get(name) ?? []), u]);
+						}
+					}
+				}
+				const meta = data.response_metadata as { next_cursor?: string } | undefined;
+				const nextCursor = meta?.next_cursor ?? "";
+				if (nextCursor !== "" && nextCursor === cursor) break;
+				cursor = nextCursor;
+				if (!cursor) break;
+			}
+
+			const writes: SlackUser[] = [];
+			for (const name of outstanding) {
+				const exact = found.get(name);
+				const aliases = aliasHits.get(name) ?? [];
+				const pick = exact ?? (aliases.length === 1 ? aliases[0] : undefined);
+				if (!pick) continue;
+				resolved.set(name, pick.id);
+				writes.push(pick);
+			}
+			if (writes.length > 0) {
+				const teamId = cached?.team_id ?? (await teamIdFor(ctx.token, ctx.apiCall, ctx.signal));
+				mergeAndWrite(ctx.filePath, teamId, (base) => {
+					for (const u of writes) base.users[u.name] = toUserEntry(u);
+				});
+			}
+		} catch (err) {
+			lookupError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	const unresolved: UnresolvedMention[] = [];
+	const seenUnresolved = new Set<string>();
+	const values = fields.map((f, fi) => {
+		let out = "";
+		let cursor = 0;
+		for (const c of perField[fi]) {
+			out += f.value.slice(cursor, c.start);
+			const literal = f.value.slice(c.start, c.end);
+			if (c.escaped) {
+				out += literal.slice(1);
+				cursor = c.end;
+			} else {
+				const hit = c.lookups.find(([n]) => resolved.has(n));
+				if (hit !== undefined) {
+					out += `<@${resolved.get(hit[0])}>`;
+					cursor = hit[1];
+				} else {
+					out += literal;
+					const name = `@${c.lookups[0][0]}`;
+					// Documented contract (doc/slack.md): unresolvedMentions is deduplicated by
+					// (field, name), so "cc @bob @bob" reports @bob once, not once per occurrence.
+					const key = `${c.field}\u0000${name}`;
+					if (!seenUnresolved.has(key)) {
+						seenUnresolved.add(key);
+						unresolved.push({ field: c.field, name });
+					}
+					cursor = c.end;
+				}
+			}
+		}
+		return out + f.value.slice(cursor);
+	});
+
+	return { values, unresolved, ...(lookupError !== undefined ? { lookupError } : {}) };
+}
+
 /**
  * Full snapshot replace, deliberately asymmetric with mergeAndWrite: refresh's job is to
  * atomically overwrite the whole file, so a concurrent mergeAndWrite write racing this one may
  * be clobbered (last-writer-wins). Accepted per spec (doc/specs/2026-08-29-gh-7-slack-extension.md
  * Cache section) - a clobbered merge self-heals on the next cache miss.
  */
-export async function refreshCache(ctx: CacheCtx): Promise<{ channels: number; users: number }> {
+export async function refreshCache(ctx: CacheCtx): Promise<{ channels: number; users: number; emails: number }> {
 	const teamId = await teamIdFor(ctx.token, ctx.apiCall, ctx.signal);
 	const channels: Record<string, string> = {};
-	const users: Record<string, { id: string; display_name: string; real_name: string }> = {};
+	const users: Record<string, UserEntry> = {};
 
 	let cursor = "";
 	for (let page = 1; ; page++) {
@@ -319,7 +513,7 @@ export async function refreshCache(ctx: CacheCtx): Promise<{ channels: number; u
 		const data = await ctx.apiCall("users.list", ctx.token, { limit: 1000, ...(cursor ? { cursor } : {}) }, { retry: false, signal: ctx.signal });
 		const members = (data.members as SlackUser[]) ?? [];
 		for (const u of members) {
-			users[u.name] = { id: u.id, display_name: u.profile?.display_name ?? "", real_name: u.profile?.real_name ?? u.real_name ?? "" };
+			users[u.name] = toUserEntry(u);
 		}
 		const meta = data.response_metadata as { next_cursor?: string } | undefined;
 		const nextCursor = meta?.next_cursor ?? "";
@@ -333,6 +527,11 @@ export async function refreshCache(ctx: CacheCtx): Promise<{ channels: number; u
 		if (!cursor) break;
 	}
 
-	atomicWrite(ctx.filePath, { team_id: teamId, channels, users, refreshed_at: new Date().toISOString() });
-	return { channels: Object.keys(channels).length, users: Object.keys(users).length };
+	const snapshotAt = new Date().toISOString();
+	atomicWrite(ctx.filePath, { team_id: teamId, channels, users, refreshed_at: snapshotAt, snapshot_at: snapshotAt });
+	return {
+		channels: Object.keys(channels).length,
+		users: Object.keys(users).length,
+		emails: Object.values(users).filter((u) => u.email !== undefined).length,
+	};
 }

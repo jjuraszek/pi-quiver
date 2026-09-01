@@ -38,6 +38,8 @@ import {
 	DETAIL_PENDING_MARKER,
 	DETAIL_INTRO,
 	DETAIL_FILENAME,
+	buildPolicyBlock,
+	formatUnresolvedSuffix,
 	type UploadBytes,
 } from "../lib/slack-core.ts";
 
@@ -1121,6 +1123,7 @@ test("announce: oversized detail (>threshold, non-link chars) delivers as thread
 	assert.equal(uploadCalls.length, 1);
 	assert.equal(result.ts, "14.1");
 	assert.equal(result.detailTs, "14.2");
+	assert.equal(result.detailUploaded, true);
 });
 
 test("linkCollapsedLength: labeled links collapse to their label; a link-heavy 5000-char body stays under threshold", async () => {
@@ -1145,6 +1148,8 @@ test("linkCollapsedLength: labeled links collapse to their label; a link-heavy 5
 		calls.filter((c) => c.method.startsWith("files.")).length,
 		0,
 	);
+	// Inline detail leg (no upload) must never claim the upload-only discriminant.
+	assert.equal(result.detailUploaded, undefined);
 });
 
 test("announce: msg_too_long slips through the threshold gate -> falls back to upload, no marker edit, no error", async () => {
@@ -1166,6 +1171,7 @@ test("announce: msg_too_long slips through the threshold gate -> falls back to u
 		calls.filter((c) => c.method.startsWith("files.")).map((c) => c.method),
 		["files.getUploadURLExternal", "files.completeUploadExternal"],
 	);
+	assert.equal(result.detailUploaded, true);
 });
 
 test("postMessage: thread_ts + caller-supplied blocks bypasses upload-fallback logic entirely, forwards blocks verbatim", async () => {
@@ -1401,4 +1407,136 @@ test("postMessage: thread_ts reply with raw length over MAX_TEXT_LENGTH but coll
 		calls.filter((c) => c.method.startsWith("files.")).map((c) => c.method),
 		["files.getUploadURLExternal", "files.completeUploadExternal"],
 	);
+});
+
+// --- gh-9: buildPolicyBlock ---
+
+test("buildPolicyBlock: ok status wraps the body verbatim and names the configured source", () => {
+	const block = buildPolicyBlock({ source: "doc/SLACK.md", status: "ok", body: "Always confirm exact text.\n" });
+	assert.equal(block, '<slack-policy source="doc/SLACK.md">\nAlways confirm exact text.\n</slack-policy>');
+});
+
+test("buildPolicyBlock: unreadable status carries the errno and tells the model policy is unknown", () => {
+	const block = buildPolicyBlock({ source: "doc/SLACK.md", status: "unreadable", code: "ENOENT" });
+	assert.match(block, /^<slack-policy source="doc\/SLACK\.md" status="unreadable">\n/);
+	assert.match(block, /could not be read \(ENOENT\)/);
+	assert.match(block, /ask the operator before posting/);
+	assert.match(block, /<\/slack-policy>$/);
+});
+
+test("buildPolicyBlock: empty status says the file is empty", () => {
+	const block = buildPolicyBlock({ source: "doc/SLACK.md", status: "empty" });
+	assert.match(block, /status="empty"/);
+	assert.match(block, /is empty/);
+});
+
+test("buildPolicyBlock: escapes &, <, >, \" in the source attribute", () => {
+	const block = buildPolicyBlock({ source: 'a&b<c>d"e.md', status: "ok", body: "x" });
+	assert.match(block, /source="a&amp;b&lt;c&gt;d&quot;e\.md"/);
+});
+
+// --- gh-9: formatUnresolvedSuffix ---
+
+test("formatUnresolvedSuffix: empty list yields no suffix", () => {
+	assert.equal(formatUnresolvedSuffix([], {}), "");
+});
+
+test("formatUnresolvedSuffix: dedups by name in first-seen order", () => {
+	const suffix = formatUnresolvedSuffix(
+		[
+			{ field: "text" as const, name: "@bob" },
+			{ field: "thread_body" as const, name: "@alice" },
+			{ field: "thread_body" as const, name: "@bob" },
+		],
+		{},
+	);
+	assert.equal(suffix, "unresolved mentions: @bob, @alice");
+});
+
+test("formatUnresolvedSuffix: lookupError appends the reason", () => {
+	const suffix = formatUnresolvedSuffix([{ field: "text" as const, name: "@alice" }], { lookupError: "ratelimited" });
+	assert.equal(suffix, "unresolved mentions: @alice (lookup failed: ratelimited)");
+});
+
+test("formatUnresolvedSuffix: uploaded detail with a thread_body miss adds the repair note", () => {
+	const suffix = formatUnresolvedSuffix([{ field: "thread_body" as const, name: "@alice" }], { detailUploaded: true });
+	assert.equal(
+		suffix,
+		"unresolved mentions: @alice (detail uploaded as a file - slack_update cannot repair it; repost to fix)",
+	);
+});
+
+test("formatUnresolvedSuffix: uploaded detail with only a text miss adds no repair note", () => {
+	const suffix = formatUnresolvedSuffix([{ field: "text" as const, name: "@alice" }], { detailUploaded: true });
+	assert.equal(suffix, "unresolved mentions: @alice");
+});
+
+test("formatUnresolvedSuffix: lookupError and uploaded detail on a thread_body miss both appear", () => {
+	const suffix = formatUnresolvedSuffix([{ field: "thread_body" as const, name: "@alice" }], {
+		lookupError: "ratelimited",
+		detailUploaded: true,
+	});
+	assert.equal(
+		suffix,
+		"unresolved mentions: @alice (lookup failed: ratelimited) (detail uploaded as a file - slack_update cannot repair it; repost to fix)",
+	);
+});
+
+// --- gh-9: unfurl params ---
+
+test("postPlain: unfurl params omitted from the payload when unset", async () => {
+	const { apiCall, calls } = recordingApiCall((method) => {
+		if (method === "chat.postMessage") return { ok: true, channel: "C1", ts: "1.1" };
+		if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await postPlain({ channel: "C1", text: "hi" }, { apiCall, token: "t" });
+	const post = calls.find((c) => c.method === "chat.postMessage");
+	assert.equal("unfurl_links" in (post?.params ?? {}), false);
+	assert.equal("unfurl_media" in (post?.params ?? {}), false);
+});
+
+test("postPlain: explicit false survives (not dropped as falsy)", async () => {
+	const { apiCall, calls } = recordingApiCall((method) => {
+		if (method === "chat.postMessage") return { ok: true, channel: "C1", ts: "1.1" };
+		if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await postPlain({ channel: "C1", text: "hi", unfurl_links: false, unfurl_media: false }, { apiCall, token: "t" });
+	const post = calls.find((c) => c.method === "chat.postMessage");
+	assert.equal(post?.params.unfurl_links, false);
+	assert.equal(post?.params.unfurl_media, false);
+});
+
+test("announce: unfurl params reach the headline and the inline detail post", async () => {
+	const { apiCall, calls } = recordingApiCall((method) => {
+		if (method === "chat.postMessage") return { ok: true, channel: "C1", ts: "1.1" };
+		if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await announce(
+		{ channel: "C1", text: "headline", thread_body: "detail" },
+		{ apiCall, token: "t", uploadBytes: (async () => {}) as UploadBytes, thresholdChars: 4000, unfurl_links: false },
+	);
+	const posts = calls.filter((c) => c.method === "chat.postMessage");
+	assert.equal(posts.length, 2);
+	assert.equal(posts[0].params.unfurl_links, false);
+	assert.equal(posts[1].params.unfurl_links, false);
+});
+
+test("announce: unfurl params never reach the Detail attached. upload stub", async () => {
+	const { apiCall, calls } = recordingApiCall((method) => {
+		if (method === "chat.postMessage") return { ok: true, channel: "C1", ts: "1.1" };
+		if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+		if (method === "files.getUploadURLExternal") return { ok: true, upload_url: "https://u", file_id: "F1" };
+		if (method === "files.completeUploadExternal") return { ok: true, files: [{ permalink: "https://x/f1" }] };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await announce(
+		{ channel: "C1", text: "headline", thread_body: "d".repeat(50) },
+		{ apiCall, token: "t", uploadBytes: (async () => {}) as UploadBytes, thresholdChars: 10, unfurl_links: false },
+	);
+	const stub = calls.filter((c) => c.method === "chat.postMessage").find((c) => c.params.text === DETAIL_INTRO);
+	assert.ok(stub, "expected the Detail attached. stub post");
+	assert.equal("unfurl_links" in stub.params, false);
 });

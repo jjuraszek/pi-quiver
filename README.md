@@ -18,7 +18,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 `fetch` and `doc_to_md` bring real web pages, GitHub issues/PRs, and local PDF/DOCX/PPTX files into context - and every result is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint, so a single call can never flood the window. Ingestion is what makes data-driven work possible; the gate is what keeps it safe.
 
-`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting.
+`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting with repo-policy injection, `@name` mention resolution, cached emails, and per-call unfurl control.
 
 ## Part of the pi agent toolkit
 

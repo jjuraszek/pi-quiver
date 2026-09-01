@@ -1,5 +1,7 @@
 # Slack extension: context-safe search, threads, and posting (gh-7)
 
+> **Superseded by:** [doc/specs/2026-09-01-gh-9-slack-repo-policy-gap.md](./2026-09-01-gh-9-slack-repo-policy-gap.md) - the Goal's "house policy stays out of the extension" stance only; the tool contract, cache model, and announce protocol remain current.
+
 Ticket: https://github.com/jjuraszek/pi-quiver/issues/7
 Depends on: gh-8 nested `quiver.*` settings root (shipped, `24a20db`; contract in
 `doc/specs/2026-08-29-gh-8-quiver-settings-root.md`).
