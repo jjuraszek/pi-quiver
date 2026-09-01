@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v5.1.0 - 2026-09-01
 
 - `slack`: optional `policyPath` config injects a repo policy file into the system prompt every turn (`<slack-policy source="...">`); a missing/unreadable/empty file degrades to a `status=` block plus one deduped warning, tools stay fully usable either way (#9). `slack_post`/`slack_update` now resolve `@name` mentions to `<@U...>` (cache-first, one batched `users.list` live pass), leaving unresolvable names literal and reported via `unresolved mentions: ...` plus `details.unresolvedMentions`. The name cache gained an optional per-user `email` field and a file-level `snapshot_at` marker (set only by a full `slack_cache_refresh`, gating whether an alias match can be trusted straight from cache); `slack_cache_refresh`'s result line now reports an email/user ratio with a missing-scope hint. `slack_post` gained `unfurl_links`/`unfurl_media` params, applied to the headline and inline detail leg (never the upload stub), omitted when unset so Slack's default stands; `slack_update` has no equivalent (`chat.update` has no unfurl argument). See [doc/slack.md](doc/slack.md).
 
