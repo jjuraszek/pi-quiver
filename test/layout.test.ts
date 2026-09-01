@@ -48,6 +48,11 @@ test("doc-to-md core imports no @earendil-works packages", () => {
 	assert.ok(!src.includes("@earendil-works"));
 });
 
+test("herdr-tab core imports no @earendil-works packages", () => {
+	const src = readFileSync(new URL("../lib/herdr-tab.ts", import.meta.url), "utf8");
+	assert.ok(!src.includes("@earendil-works"));
+});
+
 test("marketplace allowlist entries exist and contain SKILL.md", () => {
 	const mp = JSON.parse(readFileSync(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
 	assert.strictEqual(mp.plugins.length, 1);

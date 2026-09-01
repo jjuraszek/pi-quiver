@@ -36,6 +36,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "../lib/extension-config.ts";
 
+// ExtensionMode ("tui" | "rpc" | "json" | "print") isn't among the package's
+// public exports; derive it from ExtensionContext, which is, instead of
+// duplicating the union here.
+type Mode = ExtensionContext["mode"];
+import { getTab, isHerdrActive, listTabs, renameTab } from "../lib/herdr-tab.ts";
+
 // `complete` moved between pi-ai layouts: older builds re-export it from the
 // package index, newer ones expose it only via the `/compat` subpath. A static
 // import that targets one breaks at load time on the other (and a missing
@@ -52,6 +58,7 @@ async function loadComplete(): Promise<CompleteFn> {
 type Config = {
 	enabled: boolean;
 	ghosttyTab: boolean;
+	herdrTab: boolean;
 	rules: string[];
 	deny: string[];
 	revisitFirstTurn: number;
@@ -60,6 +67,7 @@ type Config = {
 const DEFAULT_CONFIG: Config = {
 	enabled: false,
 	ghosttyTab: true,
+	herdrTab: true,
 	rules: [],
 	deny: [],
 	revisitFirstTurn: 0,
@@ -76,12 +84,13 @@ const turnCount = (v: unknown): number | undefined =>
 
 export function coerce(raw: unknown): Partial<Config> | undefined {
 	if (raw === undefined) return undefined;
-	if (typeof raw === "boolean") return { enabled: raw, ghosttyTab: raw };
+	if (typeof raw === "boolean") return { enabled: raw, ghosttyTab: raw, herdrTab: raw };
 	if (raw && typeof raw === "object") {
 		const o = raw as Record<string, unknown>;
 		const out: Partial<Config> = {};
 		if (typeof o.enabled === "boolean") out.enabled = o.enabled;
 		if (typeof o.ghosttyTab === "boolean") out.ghosttyTab = o.ghosttyTab;
+		if (typeof o.herdrTab === "boolean") out.herdrTab = o.herdrTab;
 		const rules = stringList(o.rules);
 		if (rules) out.rules = rules;
 		const deny = stringList(o.deny);
@@ -425,6 +434,8 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// per-turn re-assert wins the race and keeps the tab in sync with the name.
 	let lastSyncedName: string | null = null;
 	let currentTabLabel: string | null = null;
+	let herdrClaim: { lastWritten: string } | "backed-off" | null = null;
+	let herdrChain: Promise<void> = Promise.resolve();
 
 	// Adopt a name we set ourselves, keeping any curated tab label (auto-naming
 	// produces a separate TAB line that need not match the first words of the
@@ -451,12 +462,13 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		return "human";
 	};
 
-	const setName = (
+	const setName = async (
 		cfg: Config,
 		name: string,
 		tabLabel?: string,
 		author?: NameAuthor,
-	): void => {
+		mode?: Mode,
+	): Promise<void> => {
 		const clean = applyDenyList(name, cfg.deny);
 		if (author) recordNameAuthor(clean, author);
 		expectedInternalName = clean;
@@ -464,13 +476,17 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		lastSyncedName = clean;
 		currentTabLabel = toTabLabel(applyDenyList(tabLabel ?? clean, cfg.deny));
 		renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
+		await syncHerdrTab(cfg, currentTabLabel, mode);
 	};
 
 	// Re-assert the tab from the current session name. Self-heals when the name
 	// changed outside setName (builtin/manual rename we didn't author): the
-	// curated label no longer applies, so re-derive from the name.
+	// curated label no longer applies, so re-derive from the name. The Ghostty
+	// write is already internally gated by renameGhosttyTab's own cfg.ghosttyTab
+	// check, which lets turn_start re-derive currentTabLabel for the Herdr sink
+	// even with the Ghostty sink off.
 	const syncTab = (cfg: Config): void => {
-		if (!cfg.enabled || !cfg.ghosttyTab) return;
+		if (!cfg.enabled) return;
 		const name = pi.getSessionName();
 		if (!name) return;
 		if (name !== lastSyncedName) {
@@ -480,13 +496,83 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		if (currentTabLabel) renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
 	};
 
+	// Herdr sink. Claim-once: adopt the tab only while it shows its default
+	// (position) label; a human rename - before or during the session - wins
+	// permanently. All syncs serialize on one chain so overlapping hooks never
+	// interleave a read with a rename.
+	// Used both for turn_start syncs (bounds a wedged-but-accepting Herdr so it
+	// can't stall the turn) and for the session_end restore.
+	const HERDR_TIMEOUT_MS = 500;
+
+	const positionOf = (tabs: { tab_id: string; workspace_id: string }[], tabId: string): number => {
+		const own = tabs.find((t) => t.tab_id === tabId);
+		if (!own) return -1;
+		const siblings = tabs.filter((t) => t.workspace_id === own.workspace_id);
+		return siblings.findIndex((t) => t.tab_id === tabId) + 1;
+	};
+
+	const syncHerdrTab = (cfg: Config, label: string | null, mode: Mode | undefined): Promise<void> => {
+		const run = async (): Promise<void> => {
+			if (!cfg.herdrTab || mode !== "tui" || !label) return;
+			if (herdrClaim === "backed-off") return;
+			if (!isHerdrActive()) return;
+			const sock = process.env.HERDR_SOCKET_PATH as string;
+			const tabId = process.env.HERDR_TAB_ID as string;
+			if (herdrClaim === null) {
+				const tabs = await listTabs(sock, HERDR_TIMEOUT_MS);
+				if (!tabs) return; // transient; retry next sync
+				const position = positionOf(tabs, tabId);
+				if (position === -1) return; // stale tab id (pane moved); retry harmlessly
+				const own = tabs.find((t) => t.tab_id === tabId)!;
+				if (own.label !== String(position)) {
+					herdrClaim = "backed-off"; // human (or crashed predecessor) owns it
+					return;
+				}
+				if (await renameTab(sock, tabId, label, HERDR_TIMEOUT_MS)) {
+					herdrClaim = { lastWritten: label };
+				}
+				return;
+			}
+			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
+			if (!live) return; // failed read is not a human rename; stay claimed
+			if (live.label !== herdrClaim.lastWritten) {
+				herdrClaim = "backed-off";
+				return;
+			}
+			if (label === herdrClaim.lastWritten) return;
+			if (await renameTab(sock, tabId, label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
+		};
+		herdrChain = herdrChain.then(run, run);
+		return herdrChain;
+	};
+
+	// No mode gate needed here: herdrClaim can only become an object via
+	// syncHerdrTab, which itself gates on mode === "tui".
+	const restoreHerdrTab = (): Promise<void> => {
+		const run = async (): Promise<void> => {
+			if (typeof herdrClaim !== "object" || herdrClaim === null) return;
+			if (!isHerdrActive()) return;
+			const sock = process.env.HERDR_SOCKET_PATH as string;
+			const tabId = process.env.HERDR_TAB_ID as string;
+			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
+			if (!live || live.label !== herdrClaim.lastWritten) return; // human's label wins
+			const tabs = await listTabs(sock, HERDR_TIMEOUT_MS);
+			if (!tabs) return;
+			const position = positionOf(tabs, tabId);
+			if (position === -1) return;
+			await renameTab(sock, tabId, String(position), HERDR_TIMEOUT_MS);
+		};
+		herdrChain = herdrChain.then(run, run);
+		return herdrChain;
+	};
+
 	pi.registerCommand("session-name", {
 		description: "Set or show session name (usage: /session-name [new name])",
 		handler: async (args, ctx) => {
 			const name = args.trim();
 			if (name) {
 				autoNameTried = true; // manual name wins; don't auto-overwrite later
-				setName(loadConfig(ctx), name, undefined, "human");
+				await setName(loadConfig(ctx), name, undefined, "human", ctx.mode);
 				ctx.ui.notify(`Session named: ${pi.getSessionName()}`, "info");
 			} else {
 				const current = pi.getSessionName();
@@ -504,7 +590,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 			// The curated tab label is not persisted, so derive from the name.
 			autoNameTried = true;
 			nameAuthor = restoredNameAuthor(ctx, current);
-			setName(cfg, current);
+			await setName(cfg, current, undefined, undefined, ctx.mode);
 		} else {
 			// Fresh session: clear carryover so a new name re-derives cleanly and
 			// auto-naming can run again.
@@ -534,14 +620,24 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		recordNameAuthor(current, "human");
 		if (cfg.deny.length === 0) return;
 		const clean = applyDenyList(current, cfg.deny);
-		if (clean !== current) setName(cfg, clean, undefined, "human");
+		if (clean !== current) await setName(cfg, clean, undefined, "human", ctx.mode);
 	});
 
 	// Re-assert at the start of every turn. This is the only signal we get that
 	// fires after pi's own OS-title writer on session replacement, so it keeps
 	// the tab pinned to the session name and picks up external renames.
 	pi.on("turn_start", async (_event, ctx) => {
-		syncTab(loadConfig(ctx));
+		const cfg = loadConfig(ctx);
+		syncTab(cfg);
+		if (cfg.enabled) await syncHerdrTab(cfg, currentTabLabel, ctx.mode);
+	});
+
+	// Restore the numeric label on every teardown reason (quit/reload/new/
+	// resume/fork): a successor session in this pane must find the default so
+	// claim-once stays sound. The restored label is internally a custom name -
+	// Herdr has no clear-to-auto API - so it looks right but won't renumber.
+	pi.on("session_shutdown", async () => {
+		await restoreHerdrTab();
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
@@ -552,7 +648,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		try {
 			const generated = await generate(ctx, { rules: cfg.rules });
 			if (generated && generated !== KEEP && !pi.getSessionName()) {
-				setName(cfg, generated.sessionName, generated.tabLabel, "auto");
+				await setName(cfg, generated.sessionName, generated.tabLabel, "auto", ctx.mode);
 				if (ctx.hasUI) ctx.ui.notify(`Auto-named session: ${pi.getSessionName()}`, "info");
 			}
 		} catch {
@@ -588,7 +684,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 				if (!result || result === KEEP) return;
 				if (pi.getSessionName() !== current) return; // renamed under us mid-call
 				if (nameAuthor === "auto") {
-					setName(cfg, result.sessionName, result.tabLabel, "auto");
+					await setName(cfg, result.sessionName, result.tabLabel, "auto", ctx.mode);
 					if (ctx.hasUI) ctx.ui.notify(`Renamed session: ${pi.getSessionName()}`, "info");
 				} else if (ctx.hasUI) {
 					// Human wording is theirs to change; surface the drift and stop.

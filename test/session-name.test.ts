@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import net from "node:net";
 import {
 	coerce,
 	toTabLabel,
@@ -67,8 +68,18 @@ test("toTabLabel: strips control chars and collapses whitespace", () => {
 });
 
 test("coerce: boolean shorthand enables/disables everything", () => {
-	assert.deepEqual(coerce(true), { enabled: true, ghosttyTab: true });
-	assert.deepEqual(coerce(false), { enabled: false, ghosttyTab: false });
+	assert.deepEqual(coerce(true), { enabled: true, ghosttyTab: true, herdrTab: true });
+	assert.deepEqual(coerce(false), { enabled: false, ghosttyTab: false, herdrTab: false });
+});
+
+test("coerce: boolean shorthand drives herdrTab too", () => {
+	assert.deepEqual(coerce(false), { enabled: false, ghosttyTab: false, herdrTab: false });
+	assert.deepEqual(coerce(true), { enabled: true, ghosttyTab: true, herdrTab: true });
+});
+
+test("coerce: object branch reads herdrTab independently of ghosttyTab", () => {
+	assert.deepEqual(coerce({ ghosttyTab: false, herdrTab: true }), { ghosttyTab: false, herdrTab: true });
+	assert.deepEqual(coerce({ ghosttyTab: true, herdrTab: false }), { ghosttyTab: true, herdrTab: false });
 });
 
 test("coerce: rules/deny accept string arrays, trimmed and de-blanked", () => {
@@ -238,7 +249,10 @@ test("parseRevisitReply: a name merely mentioning keep is not a KEEP verdict", (
 
 type Hook = (event: any, ctx: any) => Promise<void>;
 
-function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; tabLabel: string }>) {
+function extensionHarness(
+	generated: Array<typeof KEEP | { sessionName: string; tabLabel: string }>,
+	settingsOverride?: Record<string, unknown>,
+) {
 	const cwd = mkdtempSync(join(tmpdir(), "session-name-test-"));
 	mkdirSync(join(cwd, ".pi"));
 	writeFileSync(
@@ -251,16 +265,20 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 				deny: ["grid strong"],
 				revisitFirstTurn: 10,
 				revisitEveryTurns: 100,
+				...settingsOverride,
 			},
 		}),
 	);
 	const hooks = new Map<string, Hook>();
+	const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
 	const entries: any[] = [];
 	const notifications: string[] = [];
 	let name: string | undefined;
 	const pi: any = {
 		on: (event: string, hook: Hook) => hooks.set(event, hook),
-		registerCommand: () => {},
+		registerCommand: (cmdName: string, spec: { handler: (args: string, ctx: unknown) => unknown }) => {
+			commands.set(cmdName, spec.handler);
+		},
 		setSessionName: (next: string) => { name = next; },
 		getSessionName: () => name,
 		appendEntry: (customType: string, data: unknown) => {
@@ -270,6 +288,7 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 	const ctx: any = {
 		cwd,
 		hasUI: true,
+		mode: "tui",
 		ui: { notify: (message: string) => notifications.push(message) },
 		sessionManager: { getEntries: () => entries },
 	};
@@ -285,11 +304,119 @@ function extensionHarness(generated: Array<typeof KEEP | { sessionName: string; 
 		ctx,
 		entries,
 		hooks,
+		commands,
 		notifications,
 		runAgentSettled,
 		getName: () => name,
 		setExternalName: (next: string) => { name = next; },
 		destroy: () => rmSync(cwd, { recursive: true, force: true }),
+	};
+}
+
+// Scriptable Herdr fake: holds one tab table, answers tab.get/list/rename
+// with the real nested envelope, and records every rename.
+function fakeHerdr(
+	tabs: Array<{ tab_id: string; workspace_id: string; label: string; number: number }>,
+	opts: { delayMs?: number } = {},
+) {
+	const dir = mkdtempSync(join(tmpdir(), "session-name-herdr-"));
+	const clientPath = process.platform === "win32"
+		? `pi-quiver-sn-herdr-${process.pid}-${Math.random().toString(36).slice(2)}`
+		: join(dir, "herdr.sock");
+	const listenPath = process.platform === "win32" ? `\\\\.\\pipe\\${clientPath}` : clientPath;
+	const renames: Array<{ tab_id: string; label: string }> = [];
+	// Every incoming method, in arrival order, so overlap/serialization tests
+	// can assert on the exact read/write sequence rather than just outcomes.
+	const requests: string[] = [];
+	let failReads = false;
+	const server = net.createServer((conn) => {
+		let buf = "";
+		conn.on("data", (chunk) => {
+			buf += chunk.toString("utf8");
+			let nl: number;
+			while ((nl = buf.indexOf("\n")) !== -1) {
+				const msg = JSON.parse(buf.slice(0, nl));
+				buf = buf.slice(nl + 1);
+				requests.push(msg.method);
+				const reply = (body: Record<string, unknown>) => conn.write(`${JSON.stringify({ id: msg.id, ...body })}\n`);
+				const respond = async () => {
+					if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
+					const found = tabs.find((t) => t.tab_id === msg.params?.tab_id);
+					if (failReads && msg.method !== "tab.rename") {
+						reply({ error: { code: "unavailable", message: "scripted failure" } });
+					} else if (msg.method === "tab.get") {
+						found ? reply({ result: { type: "tab_info", tab: found } }) : reply({ error: { code: "not_found", message: "no tab" } });
+					} else if (msg.method === "tab.list") {
+						reply({ result: { type: "tab_list", tabs } });
+					} else if (msg.method === "tab.rename") {
+						if (!found) { reply({ error: { code: "not_found", message: "no tab" } }); return; }
+						found.label = String(msg.params.label);
+						renames.push({ tab_id: found.tab_id, label: found.label });
+						reply({ result: { type: "tab_info", tab: found } });
+					}
+				};
+				respond();
+			}
+		});
+	});
+	const listening = new Promise<void>((resolve) => server.listen(listenPath, resolve));
+	return {
+		clientPath, listening, tabs, renames, requests,
+		setFailReads: (v: boolean) => { failReads = v; },
+		close: async () => { await new Promise((resolve) => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); },
+	};
+}
+
+// Activates isGhosttyActive() (TTY + a Ghostty env marker) and captures
+// process.stdout.write calls so OSC tab-title writes are observable without
+// leaking escape sequences into the test runner's own output.
+function withGhosttyEnv() {
+	const saved = {
+		TERM_PROGRAM: process.env.TERM_PROGRAM,
+		TERM: process.env.TERM,
+		GHOSTTY_RESOURCES_DIR: process.env.GHOSTTY_RESOURCES_DIR,
+		GHOSTTY_BIN_DIR: process.env.GHOSTTY_BIN_DIR,
+	};
+	const savedTTY = process.stdout.isTTY;
+	const savedWrite = process.stdout.write;
+	const writes: string[] = [];
+	process.env.TERM_PROGRAM = "ghostty";
+	process.stdout.isTTY = true;
+	(process.stdout as unknown as { write: (chunk: unknown) => boolean }).write = (chunk: unknown) => {
+		writes.push(String(chunk));
+		return true;
+	};
+	return {
+		writes,
+		restore: () => {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k as keyof typeof saved];
+				else process.env[k as keyof typeof saved] = v;
+			}
+			process.stdout.isTTY = savedTTY;
+			process.stdout.write = savedWrite;
+		},
+	};
+}
+
+// Points the process at the fake Herdr pane; returns a restore function.
+function withHerdrEnv(clientPath: string, tabId: string) {
+	const saved = {
+		HERDR_ENV: process.env.HERDR_ENV,
+		HERDR_TAB_ID: process.env.HERDR_TAB_ID,
+		HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
+	};
+	const savedTTY = process.stdout.isTTY;
+	process.env.HERDR_ENV = "1";
+	process.env.HERDR_TAB_ID = tabId;
+	process.env.HERDR_SOCKET_PATH = clientPath;
+	process.stdout.isTTY = true;
+	return () => {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k as keyof typeof saved];
+			else process.env[k as keyof typeof saved] = v;
+		}
+		process.stdout.isTTY = savedTTY;
 	};
 }
 
@@ -459,4 +586,322 @@ test("withAuthBaseUrl: returns model unchanged when auth has no baseUrl", () => 
 	const model = { id: "kimi-k3", baseUrl: "https://api.individual.githubcopilot.com" };
 	assert.equal(withAuthBaseUrl(model, {}), model);
 	assert.equal(withAuthBaseUrl(model, { baseUrl: undefined }), model);
+});
+
+test("herdr sync: claims and renames on position-default label", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 naming rules" });
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: backs off on non-default first read", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "gs", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 0);
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: backs off on mid-session external rename", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "claim rename happened");
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "mine now";
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "no new rename after human intervened");
+
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "renames stay frozen once backed off");
+		assert.equal(own.label, "mine now");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: steady-state no-op when the curated label is unchanged", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "unchanged name never re-writes");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: stays claimed on a failed read, resumes writing once reads recover", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		fake.setFailReads(true);
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "failed read neither renames nor backs off");
+
+		fake.setFailReads(false);
+		h.setExternalName("E-42 mature context");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 2, "claim survived the transient failure");
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 mature context" });
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: restores the recomputed position label on shutdown", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		// Change our tab's position after claiming (w1:t1 drops out, so w1:t2
+		// is now position 1) so the restore write can only match if it
+		// recomputes the position at shutdown time rather than replaying the
+		// claim-time label "2".
+		fake.tabs.splice(fake.tabs.findIndex((t) => t.tab_id === "w1:t1"), 1);
+
+		await h.hooks.get("session_shutdown")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "1" }, "restore uses the recomputed position, not the claim-time position");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: does not restore when the live label differs from ours", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "mine now";
+		await h.hooks.get("session_shutdown")!({}, h.ctx);
+		assert.equal(own.label, "mine now", "human label wins, no restore write");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: overlapping syncs serialize (no interleaved read/write)", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	], { delayMs: 5 });
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.requests, ["tab.list", "tab.rename"], "claim: read-then-write");
+
+		// Two turn_start calls fired back-to-back, deliberately not awaited
+		// between them, each changing the name so both must write. If the
+		// herdrChain serialization were missing, the two reads could race ahead
+		// of the writes (tab.get, tab.get, tab.rename, tab.rename).
+		h.setExternalName("First sync");
+		const p1 = h.hooks.get("turn_start")!({}, h.ctx);
+		h.setExternalName("Second sync");
+		const p2 = h.hooks.get("turn_start")!({}, h.ctx);
+		await Promise.all([p1, p2]);
+
+		assert.deepEqual(
+			fake.requests.slice(2),
+			["tab.get", "tab.rename", "tab.get", "tab.rename"],
+			"each sync's read completes before the next sync's read begins",
+		);
+		assert.deepEqual(fake.renames.slice(1), [
+			{ tab_id: "w1:t2", label: "First sync" },
+			{ tab_id: "w1:t2", label: "Second sync" },
+		]);
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: non-TUI mode never syncs", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	h.ctx.mode = "print";
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		await h.hooks.get("session_shutdown")!({}, h.ctx);
+		assert.equal(fake.renames.length, 0);
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: sinks are independent (ghosttyTab off, herdrTab on and off)", async () => {
+	const fakeOn = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fakeOn.listening;
+	let restore = withHerdrEnv(fakeOn.clientPath, "w1:t2");
+	let h = extensionHarness([], { ghosttyTab: false, herdrTab: true });
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fakeOn.renames.length, 1, "herdrTab true still syncs with ghosttyTab off");
+	} finally {
+		restore();
+		h.destroy();
+		await fakeOn.close();
+	}
+
+	const fakeOff = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fakeOff.listening;
+	restore = withHerdrEnv(fakeOff.clientPath, "w1:t2");
+	let ghostty: ReturnType<typeof withGhosttyEnv> | undefined;
+	try {
+		ghostty = withGhosttyEnv();
+		h = extensionHarness([], { ghosttyTab: true, herdrTab: false });
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(ghostty.writes.length, 1, "ghosttyTab true still drives exactly one Ghostty OSC write");
+		assert.match(ghostty.writes[0], /\u001b\]2;.*\u0007/, "observed write is an OSC 2 tab-title escape");
+		assert.equal(fakeOff.renames.length, 0, "herdrTab false drove zero Herdr renames");
+
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fakeOff.renames.length, 0, "herdrTab false never syncs");
+		assert.equal(ghostty.writes.length, 2, "turn_start re-asserts the Ghostty title unconditionally");
+	} finally {
+		restore();
+		ghostty?.restore();
+		h.destroy();
+		await fakeOff.close();
+	}
+});
+
+test("herdr sync: empty name never writes", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 0);
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: manual /session-name works with enabled:false (herdrTab-only gating)", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([], { enabled: false, herdrTab: true });
+	try {
+		// session_start no-ops when disabled, so nothing is claimed yet.
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 0, "disabled: no auto sync on session_start");
+
+		await h.commands.get("session-name")!("E-42 naming rules", h.ctx);
+		assert.equal(h.getName(), "E-42 naming rules");
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 naming rules" }, "manual rename claims the tab despite enabled:false");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
 });
