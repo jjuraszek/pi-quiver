@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v5.2.1 - 2026-09-02
 
 - sword-header: clip each header line to the terminal width in `render(width)` (ANSI-aware `truncateToWidth`, hard clip). Fixes a hard crash (`Rendered line N exceeds terminal width`) in terminals/panes narrower than 80 columns.
 
