@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- sword-header: clip each header line to the terminal width in `render(width)` (ANSI-aware `truncateToWidth`, hard clip). Fixes a hard crash (`Rendered line N exceeds terminal width`) in terminals/panes narrower than 80 columns.
+
 ## v5.2.0 - 2026-09-01
 
 - session-name: sync the session name to the Herdr tab label (`herdrTab`, default true within the opt-in `quiver.sessionAutoName`). Claim-once - only a tab still on its default numeric label is adopted; manual renames always win. Restores the default label on shutdown; crash leaves the last label (rename by hand to recover).

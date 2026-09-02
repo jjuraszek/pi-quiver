@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { resolveConfig } from "../lib/extension-config.ts";
 
 type Config = { enabled: boolean };
@@ -69,8 +70,8 @@ export default function (pi: ExtensionAPI) {
 		const cfg = resolveConfig(ctx.cwd, "swordHeader", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning"));
 		if (!cfg.enabled) return;
 		ctx.ui.setHeader((_tui, theme) => ({
-			render(_width: number): string[] {
-				return renderSwordLines(theme);
+			render(width: number): string[] {
+				return renderSwordLines(theme).map((line) => truncateToWidth(line, width, ""));
 			},
 			invalidate() {},
 		}));
