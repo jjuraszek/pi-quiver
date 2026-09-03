@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v5.2.2 - 2026-09-03
 
 - fast-mode: discover pi's `anthropic-beta` list at request time by probing
   pi-ai's request assembly (capturing fetch, zero network) instead of
