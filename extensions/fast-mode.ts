@@ -13,16 +13,20 @@
  *
  * Header coupling to pi-ai internals: pi assembles `anthropic-beta` AFTER this
  * hook and merges the hook's headers LAST, so setting the header here REPLACES
- * pi's list. For opus-4-8 and opus-5 pi's conditional betas (fine-grained tool
- * streaming, interleaved thinking) are never applied (eager tool streaming
- * defaults on + forceAdaptiveThinking; verified identical compat in pi-ai
- * 0.82.1), so the only betas to preserve are the OAuth identity betas. We
- * detect OAuth via the same token marker pi uses and rebuild the exact list.
- * If pi later adds betas for these models, revisit buildBetaHeader.
+ * pi's list. Instead of guessing that list, the hook discovers it: it probes
+ * pi-ai's own request assembly (dynamic import of the lazy anthropic-messages
+ * entrypoint) with a capturing fetch - zero network, zero tokens - and unions
+ * the captured betas with the fast-mode beta. Probe failure falls back to the
+ * static reconstruction (OAUTH_IDENTITY_BETAS stays, demoted to fallback-only
+ * seeding). Known limit: the probe context is tool-less, so tool/thinking-
+ * conditional betas are captured under fixed defaults - fine while allowlisted
+ * models keep forceAdaptiveThinking: true in the catalog. Probe cost: one
+ * extra in-process request-assembly pass per qualifying call, no network -
+ * per-request by design, no cache.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Context, Model, StreamOptions, Usage } from "@earendil-works/pi-ai";
 import { resolveConfig } from "../lib/extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
@@ -82,7 +86,11 @@ export function injectSpeed(payload: unknown): unknown {
 	return { ...(payload as Record<string, unknown>), speed: FAST_SPEED };
 }
 
-export function buildBetaHeader(existing: string | null | undefined, isOAuth: boolean): string {
+export function buildBetaHeader(
+	existing: string | null | undefined,
+	isOAuth: boolean,
+	probedBetas: string | null = null,
+): string {
 	const seen = new Set<string>();
 	const out: string[] = [];
 	const add = (b: string): void => {
@@ -92,10 +100,60 @@ export function buildBetaHeader(existing: string | null | undefined, isOAuth: bo
 			out.push(t);
 		}
 	};
-	if (isOAuth) OAUTH_IDENTITY_BETAS.forEach(add);
+	if (probedBetas !== null) probedBetas.split(",").forEach(add);
+	else if (isOAuth) OAUTH_IDENTITY_BETAS.forEach(add);
 	if (typeof existing === "string") existing.split(",").forEach(add);
 	add(FAST_MODE_BETA);
 	return out.join(",");
+}
+
+export type ProbeAuth = { apiKey?: string; headers?: Record<string, string | null> };
+
+// Minimal context for the beta probe: one user message, no tools, no system
+// prompt. Option-dependent betas (fine-grained tool streaming) are therefore
+// probed under fixed defaults - sufficient while the allowlisted models keep
+// forceAdaptiveThinking: true in the catalog; a future allowlisted model with
+// tool- or thinking-conditional betas would have those dropped, same as today.
+const PROBE_CONTEXT: Context = { messages: [{ role: "user", content: "probe", timestamp: 0 }] };
+
+/**
+ * Discover the anthropic-beta list pi-ai would send for this model + auth by
+ * driving pi-ai's own request assembly against a capturing fetch. Zero
+ * network, zero tokens: the fetch records the request headers, then throws.
+ * Returns the captured header value, or null on any failure - missing
+ * optional peer (the guarded dynamic import() below), probe throw before
+ * capture, or no header present - and the caller falls back to the static
+ * reconstruction. maxRetries: 0 stops pi-ai's retry wrapper from re-driving
+ * the intentionally failing probe fetch.
+ */
+export async function probePiBetaHeader(
+	model: Model<any>,
+	auth: ProbeAuth,
+	fetchImpl?: (input: any, init?: any) => Promise<any>,
+): Promise<string | null> {
+	let captured: string | null = null;
+	const capturingFetch = async (input: any, init?: any): Promise<any> => {
+		const headers = init?.headers ?? input?.headers;
+		let value: unknown;
+		if (headers && typeof headers.get === "function") value = headers.get(BETA_HEADER);
+		else if (headers && typeof headers === "object") value = (headers as Record<string, unknown>)[BETA_HEADER];
+		if (typeof value === "string") captured = value;
+		throw new Error("fast-mode beta probe abort");
+	};
+	const options: StreamOptions = {
+		apiKey: auth.apiKey,
+		headers: auth.headers,
+		fetch: (fetchImpl ?? capturingFetch) as unknown as StreamOptions["fetch"],
+		maxRetries: 0,
+	};
+	try {
+		const { anthropicMessagesApi } = await import("@earendil-works/pi-ai/api/anthropic-messages.lazy");
+		const stream = anthropicMessagesApi().stream(model, PROBE_CONTEXT, options);
+		await stream.result().catch(() => {});
+	} catch {
+		return captured;
+	}
+	return captured;
 }
 
 type State = { config: boolean; flag: boolean; live: boolean | null };
@@ -129,12 +187,18 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus(STATUS_KEY, shouldInject(enabled, ctx.model) ? "\u26a1 fast" : "\u26a1 n/a");
 	};
 
-	const detectOAuth = async (ctx: ExtensionContext): Promise<boolean | null> => {
+	type ResolvedAuth = ProbeAuth & { isOAuth: boolean };
+
+	const resolveAuth = async (ctx: ExtensionContext): Promise<ResolvedAuth | null> => {
 		if (!ctx.model) return null;
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
 			if (!auth.ok) return null;
-			return typeof auth.apiKey === "string" && auth.apiKey.includes("sk-ant-oat");
+			return {
+				isOAuth: typeof auth.apiKey === "string" && auth.apiKey.includes("sk-ant-oat"),
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+			};
 		} catch {
 			return null;
 		}
@@ -170,12 +234,13 @@ export default function (pi: ExtensionAPI) {
 			pendingFastHeader = false;
 			return;
 		}
-		const isOAuth = await detectOAuth(ctx);
-		if (isOAuth === null) {
+		const auth = await resolveAuth(ctx);
+		if (auth === null) {
 			pendingFastHeader = false;
 			return;
 		}
-		event.headers[BETA_HEADER] = buildBetaHeader(event.headers[BETA_HEADER], isOAuth);
+		const probed = await probePiBetaHeader(ctx.model!, auth);
+		event.headers[BETA_HEADER] = buildBetaHeader(event.headers[BETA_HEADER], auth.isOAuth, probed);
 		pendingFastHeader = true;
 	});
 

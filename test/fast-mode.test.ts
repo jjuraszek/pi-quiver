@@ -119,12 +119,102 @@ test("buildBetaHeader: merges an already-present list, dedups, trims", () => {
 	);
 });
 
+test("buildBetaHeader: probed seed replaces identity-beta seeding", () => {
+	assert.equal(
+		buildBetaHeader(undefined, true, "beta-a,beta-b"),
+		`beta-a,beta-b,${FAST_MODE_BETA}`,
+	);
+});
+
+test("buildBetaHeader: probed seed merges existing and dedups fast beta", () => {
+	assert.equal(
+		buildBetaHeader(`x-beta,${FAST_MODE_BETA}`, false, "beta-a , x-beta"),
+		`beta-a,x-beta,${FAST_MODE_BETA}`,
+	);
+});
+
+test("buildBetaHeader: null probe falls back to status-quo seeding", () => {
+	assert.equal(buildBetaHeader(undefined, true, null), `claude-code-20250219,oauth-2025-04-20,${FAST_MODE_BETA}`);
+	assert.equal(buildBetaHeader(undefined, false, null), FAST_MODE_BETA);
+});
+
+test("buildBetaHeader: empty-string probe seeds nothing (tripwire; pi-ai OAuth always sends non-empty)", () => {
+	assert.equal(buildBetaHeader(undefined, true, ""), FAST_MODE_BETA);
+});
+
 test("resolveEnabled: precedence config < flag(force-on) < live", () => {
 	assert.equal(resolveEnabled({ config: false, flag: false, live: null }), false);
 	assert.equal(resolveEnabled({ config: true, flag: false, live: null }), true);
 	assert.equal(resolveEnabled({ config: false, flag: true, live: null }), true);
 	assert.equal(resolveEnabled({ config: true, flag: true, live: false }), false);
 	assert.equal(resolveEnabled({ config: false, flag: false, live: true }), true);
+});
+
+import { probePiBetaHeader } from "../extensions/fast-mode.ts";
+
+// Catalog-shaped compat: production opus models set forceAdaptiveThinking: true.
+// Without it pi-ai emits the interleaved-thinking beta and assertions become
+// environment-shaped rather than production-shaped.
+const opusCompat = { forceAdaptiveThinking: true };
+const opus5Probe = {
+	id: "claude-opus-5",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
+	input: ["text"],
+	compat: { ...opusCompat, allowedFallbackModels: [{ provider: "anthropic", model: "claude-opus-4-8", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }] },
+} as any;
+const opus48Probe = { ...opus5Probe, id: "claude-opus-4-8", compat: { ...opusCompat } } as any;
+
+test("probe: opus-5 fixture captures the server-side fallback beta", async () => {
+	const captured = await probePiBetaHeader(opus5Probe, { apiKey: "sk-ant-api-xyz" });
+	assert.ok(captured !== null, "probe captured a header");
+	assert.ok(captured!.split(",").includes("server-side-fallback-2026-07-01"), `fallback beta in: ${captured}`);
+});
+
+test("probe: fixture without fallback models captures no fallback beta", async () => {
+	// API-key auth on this fixture emits no beta features at all (no fallback
+	// models, forceAdaptiveThinking suppresses interleaved-thinking), so the
+	// header is entirely absent rather than merely fallback-free. OAuth auth
+	// always emits identity betas (see "identity betas" test below), which
+	// guarantees a non-null capture here while still exercising the absence
+	// of the fallback beta for a fixture without allowedFallbackModels.
+	const captured = await probePiBetaHeader(opus48Probe, { apiKey: "sk-ant-oat-xyz" });
+	assert.ok(captured !== null, "probe captured a header");
+	assert.ok(!captured!.split(",").includes("server-side-fallback-2026-07-01"), `no fallback beta in: ${captured}`);
+});
+
+test("probe: OAuth key captures identity betas, API key does not", async () => {
+	const oauth = await probePiBetaHeader(opus48Probe, { apiKey: "sk-ant-oat-xyz" });
+	assert.ok(oauth !== null, "OAuth probe captured a header");
+	const oauthBetas = oauth!.split(",");
+	assert.ok(oauthBetas.includes("claude-code-20250219"), `identity beta in: ${oauth}`);
+	assert.ok(oauthBetas.includes("oauth-2025-04-20"), `identity beta in: ${oauth}`);
+	const apiKey = await probePiBetaHeader(opus48Probe, { apiKey: "sk-ant-api-xyz" });
+	const apiBetas = apiKey === null ? [] : apiKey.split(",");
+	assert.ok(!apiBetas.includes("oauth-2025-04-20"), `no identity beta in: ${apiKey}`);
+	assert.ok(!apiBetas.includes("claude-code-20250219"), `no identity beta in: ${apiKey}`);
+});
+
+test("probe: headers-only auth (no apiKey) still probes", async () => {
+	const captured = await probePiBetaHeader(opus5Probe, { headers: { "x-api-key": "sk-ant-api-xyz" } });
+	assert.ok(captured !== null, "headers-only auth captured a header");
+	assert.ok(captured!.split(",").includes("server-side-fallback-2026-07-01"), `fallback beta in: ${captured}`);
+});
+
+test("probe: throwing injected fetchImpl yields null (nothing captured)", async () => {
+	const captured = await probePiBetaHeader(opus5Probe, { apiKey: "sk-ant-api-xyz" }, async () => {
+		throw new Error("boom");
+	});
+	assert.equal(captured, null);
+});
+
+test("probe: post-capture synthetic failure still returns the capture (default fetch records, then throws)", async () => {
+	// The internal capturing fetch always throws after recording the header, so a
+	// non-null return proves the capture survives the synthetic failure.
+	const captured = await probePiBetaHeader(opus5Probe, { apiKey: "sk-ant-api-xyz" });
+	assert.ok(captured !== null, "capture survived the post-capture synthetic failure");
+	assert.ok(captured!.split(",").includes("server-side-fallback-2026-07-01"), `fallback beta in: ${captured}`);
 });
 
 import fastMode from "../extensions/fast-mode.ts";
@@ -148,7 +238,14 @@ function harness(opts: { flag?: boolean; oauth?: boolean; model?: any; authFails
 	let status: string | undefined;
 	const commands = new Map<string, any>();
 	const notifications: Array<{ msg: string; level: string }> = [];
-	const model = opts.model ?? { id: "claude-opus-4-8", api: "anthropic-messages", provider: "anthropic" };
+	const model = opts.model ?? {
+		id: "claude-opus-4-8",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		input: ["text"],
+		compat: { forceAdaptiveThinking: true },
+	};
 	const ctx: any = {
 		cwd: "/nonexistent-fast-mode-test",
 		model,
@@ -190,7 +287,9 @@ test("integration: --fast flag enables injection with speed + beta", async () =>
 	assert.deepEqual(payload, { m: 1, speed: "fast" });
 	const headers: Record<string, string> = {};
 	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
-	assert.equal(headers["anthropic-beta"], FAST_MODE_BETA);
+	const betas = headers["anthropic-beta"].split(",");
+	assert.ok(betas.includes(FAST_MODE_BETA), `fast beta in: ${headers["anthropic-beta"]}`);
+	assert.ok(!betas.includes("oauth-2025-04-20"), "no identity betas on API-key auth");
 	assert.equal(h.getStatus(), "\u26a1 fast");
 });
 
@@ -199,7 +298,31 @@ test("integration: OAuth preserves pi identity betas alongside fast-mode", async
 	await h.hooks.get("session_start")!({}, h.ctx);
 	const headers: Record<string, string> = {};
 	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
-	assert.equal(headers["anthropic-beta"], `claude-code-20250219,oauth-2025-04-20,${FAST_MODE_BETA}`);
+	const betas = headers["anthropic-beta"].split(",");
+	for (const b of ["claude-code-20250219", "oauth-2025-04-20", FAST_MODE_BETA]) {
+		assert.ok(betas.includes(b), `${b} in: ${headers["anthropic-beta"]}`);
+	}
+});
+
+test("integration: opus-5 with fallback catalog carries both fast and fallback betas", async () => {
+	const opus5 = {
+		id: "claude-opus-5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		input: ["text"],
+		compat: { forceAdaptiveThinking: true, allowedFallbackModels: [{ provider: "anthropic", model: "claude-opus-4-8", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }] },
+	};
+	const h = harness({ flag: true, oauth: true, model: opus5 });
+	await h.hooks.get("session_start")!({}, h.ctx);
+	const payload = await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+	assert.deepEqual(payload, { m: 1, speed: "fast" });
+	const headers: Record<string, string> = {};
+	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+	const betas = headers["anthropic-beta"].split(",");
+	for (const b of ["server-side-fallback-2026-07-01", "fast-mode-2026-02-01", "claude-code-20250219", "oauth-2025-04-20"]) {
+		assert.ok(betas.includes(b), `${b} in: ${headers["anthropic-beta"]}`);
+	}
 });
 
 test("integration: /fast on then off toggles live override over config", async () => {
@@ -374,6 +497,26 @@ test("cost: second message_end on the replacement does not double-correct", asyn
 	assert.deepEqual(res.message.usage.cost, doubledCost);
 	const again = await h.hooks.get("message_end")!({ message: res.message }, h.ctx);
 	assert.equal(again, undefined);
+});
+
+test("cost: fallback-served opus-5 request still doubles usage.cost via the reported response model", async () => {
+	const opus5 = {
+		id: "claude-opus-5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://api.anthropic.com",
+		input: ["text"],
+		compat: { forceAdaptiveThinking: true, allowedFallbackModels: [{ provider: "anthropic", model: "claude-opus-4-8", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }] },
+	};
+	const h = harness({ flag: true, model: opus5 });
+	await driveFast(h);
+	// pi-ai already swapped in the fallback model's cost upstream by the time
+	// message_end fires; the extension only multiplies whatever cost arrives,
+	// regardless of which model actually served the response.
+	const message = { ...assistantMsg(fastCost), model: "claude-opus-4-8" };
+	const res = await h.hooks.get("message_end")!({ message }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+	assert.equal(res.message.model, "claude-opus-4-8");
 });
 
 test("integration: malformed fastMode settings surface one warning notify", async () => {

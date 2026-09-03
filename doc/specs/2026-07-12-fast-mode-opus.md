@@ -1,5 +1,7 @@
 # Fast mode for Opus 4.8
 
+> **Superseded by:** [doc/specs/2026-09-02-gh-11-fast-mode-fallback-beta.md](./2026-09-02-gh-11-fast-mode-fallback-beta.md) - D3 beta-header reconstruction assumption only ("only betas to preserve are the OAuth identity betas"); rest stays live
+
 ## Problem
 
 Anthropic ships a "fast mode" for Claude Opus: requests carrying `speed: "fast"`
