@@ -14,8 +14,10 @@
  * Header coupling to pi-ai internals: pi assembles `anthropic-beta` AFTER this
  * hook and merges the hook's headers LAST, so setting the header here REPLACES
  * pi's list. Instead of guessing that list, the hook discovers it: it probes
- * pi-ai's own request assembly (dynamic import of the lazy anthropic-messages
- * entrypoint) with a capturing fetch - zero network, zero tokens - and unions
+ * pi-ai's own request assembly (dynamic import of `@earendil-works/pi-ai/compat`,
+ * one of the four specifiers pi's extension loader aliases for installed
+ * packages - deeper subpaths like `/api/*.lazy` do NOT resolve there) with a
+ * capturing fetch - zero network, zero tokens - and unions
  * the captured betas with the fast-mode beta. Probe failure falls back to the
  * static reconstruction (OAUTH_IDENTITY_BETAS stays, demoted to fallback-only
  * seeding). Known limit: the probe context is tool-less, so tool/thinking-
@@ -50,6 +52,15 @@ export function scaleCost(cost: Usage["cost"], multiplier: number): Usage["cost"
 }
 
 export const OAUTH_IDENTITY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"];
+// Mirrors pi-ai's SERVER_SIDE_FALLBACK_BETA: pi puts `fallbacks` in the body
+// whenever model.compat.allowedFallbackModels is non-empty, and OAuth rejects
+// that body without the beta (400 "fallbacks: Extra inputs are not permitted").
+export const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+export function needsFallbackBeta(model: Model<any> | undefined): boolean {
+	const compat = model?.compat as { allowedFallbackModels?: unknown[] } | undefined;
+	return (compat?.allowedFallbackModels?.length ?? 0) > 0;
+}
 const STATUS_KEY = "fast-mode";
 const BETA_HEADER = "anthropic-beta";
 
@@ -90,6 +101,7 @@ export function buildBetaHeader(
 	existing: string | null | undefined,
 	isOAuth: boolean,
 	probedBetas: string | null = null,
+	fallbackBeta = false,
 ): string {
 	const seen = new Set<string>();
 	const out: string[] = [];
@@ -101,7 +113,10 @@ export function buildBetaHeader(
 		}
 	};
 	if (probedBetas !== null) probedBetas.split(",").forEach(add);
-	else if (isOAuth) OAUTH_IDENTITY_BETAS.forEach(add);
+	else {
+		if (isOAuth) OAUTH_IDENTITY_BETAS.forEach(add);
+		if (fallbackBeta) add(SERVER_SIDE_FALLBACK_BETA);
+	}
 	if (typeof existing === "string") existing.split(",").forEach(add);
 	add(FAST_MODE_BETA);
 	return out.join(",");
@@ -147,7 +162,7 @@ export async function probePiBetaHeader(
 		maxRetries: 0,
 	};
 	try {
-		const { anthropicMessagesApi } = await import("@earendil-works/pi-ai/api/anthropic-messages.lazy");
+		const { anthropicMessagesApi } = await import("@earendil-works/pi-ai/compat");
 		const stream = anthropicMessagesApi().stream(model, PROBE_CONTEXT, options);
 		await stream.result().catch(() => {});
 	} catch {
@@ -240,7 +255,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const probed = await probePiBetaHeader(ctx.model!, auth);
-		event.headers[BETA_HEADER] = buildBetaHeader(event.headers[BETA_HEADER], auth.isOAuth, probed);
+		event.headers[BETA_HEADER] = buildBetaHeader(
+			event.headers[BETA_HEADER],
+			auth.isOAuth,
+			probed,
+			needsFallbackBeta(ctx.model),
+		);
 		pendingFastHeader = true;
 	});
 

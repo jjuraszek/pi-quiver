@@ -8,6 +8,8 @@ import {
 	shouldInject,
 	injectSpeed,
 	buildBetaHeader,
+	needsFallbackBeta,
+	SERVER_SIDE_FALLBACK_BETA,
 	resolveEnabled,
 	FAST_MODE_BETA,
 	FAST_SPEED,
@@ -136,6 +138,26 @@ test("buildBetaHeader: probed seed merges existing and dedups fast beta", () => 
 test("buildBetaHeader: null probe falls back to status-quo seeding", () => {
 	assert.equal(buildBetaHeader(undefined, true, null), `claude-code-20250219,oauth-2025-04-20,${FAST_MODE_BETA}`);
 	assert.equal(buildBetaHeader(undefined, false, null), FAST_MODE_BETA);
+});
+
+test("buildBetaHeader: null probe + fallback-capable model keeps the server-side fallback beta", () => {
+	assert.equal(
+		buildBetaHeader(undefined, true, null, true),
+		`claude-code-20250219,oauth-2025-04-20,${SERVER_SIDE_FALLBACK_BETA},${FAST_MODE_BETA}`,
+	);
+	assert.equal(buildBetaHeader(undefined, false, null, true), `${SERVER_SIDE_FALLBACK_BETA},${FAST_MODE_BETA}`);
+	// A successful probe already carries it; the flag must not double-add.
+	assert.equal(
+		buildBetaHeader(undefined, true, `a,${SERVER_SIDE_FALLBACK_BETA}`, true),
+		`a,${SERVER_SIDE_FALLBACK_BETA},${FAST_MODE_BETA}`,
+	);
+});
+
+test("needsFallbackBeta: follows model.compat.allowedFallbackModels", () => {
+	assert.equal(needsFallbackBeta(undefined), false);
+	assert.equal(needsFallbackBeta({ compat: {} } as any), false);
+	assert.equal(needsFallbackBeta({ compat: { allowedFallbackModels: [] } } as any), false);
+	assert.equal(needsFallbackBeta({ compat: { allowedFallbackModels: ["claude-opus-4-8"] } } as any), true);
 });
 
 test("buildBetaHeader: empty-string probe seeds nothing (tripwire; pi-ai OAuth always sends non-empty)", () => {

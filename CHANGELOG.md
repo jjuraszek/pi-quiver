@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v5.2.3 - 2026-09-04
+
+- `fast-mode`: fix `400 fallbacks: Extra inputs are not permitted` on OAuth/subscription auth with fallback-capable models (`claude-opus-5` on pi 0.84.x). The 5.2.2 beta probe imported `@earendil-works/pi-ai/api/anthropic-messages.lazy`, which pi's extension loader does not alias for installed packages, so it always failed in real installs and the static beta list dropped `server-side-fallback-2026-07-01` while pi kept `fallbacks` in the body. Probe now imports the aliased `@earendil-works/pi-ai/compat`; the static fallback also adds the fallback beta whenever `model.compat.allowedFallbackModels` is non-empty.
+
 ## v5.2.2 - 2026-09-03
 
 - fast-mode: discover pi's `anthropic-beta` list at request time by probing
