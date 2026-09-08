@@ -47,7 +47,7 @@ export const QUIVER_CONFIG_KEYS: Record<string, readonly string[]> = {
 	sessionAutoName: ["enabled", "ghosttyTab", "herdrTab", "rules", "deny", "revisitFirstTurn", "revisitEveryTurns"],
 	swordHeader: ["enabled"],
 	providerStallWatchdog: ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries"],
-	slack: ["enabled", "cachePath", "policyPath", "userTokenEnv", "botTokenEnv", "uploadThresholdChars"],
+	slack: ["enabled", "cachePath", "policyPath", "userTokenEnv", "userTokenCommand", "userTokenCommandTimeoutSeconds", "botTokenEnv", "uploadThresholdChars"],
 	docToMd: DOC_TO_MD_OPTIONS.filter((o) => o.settable).map((o) => o.key),
 };
 
@@ -104,7 +104,7 @@ export function resolveConfig<T extends object>(
 	cwd: string,
 	key: string,
 	defaults: T,
-	coerce: (raw: unknown) => Partial<T> | undefined,
+	coerce: (raw: unknown, warn?: (message: string) => void) => Partial<T> | undefined,
 	warn?: (message: string) => void,
 ): T {
 	const cfg: T = { ...defaults };
@@ -119,7 +119,7 @@ export function resolveConfig<T extends object>(
 		const hasFlat = Object.hasOwn(settings, key);
 		if (!hasNested && !(hasFlat && LEGACY_FLAT_KEYS.has(key))) continue;
 		const candidate = hasNested ? nested![key] : settings[key];
-		const patch = coerce(candidate);
+		const patch = coerce(candidate, (message) => emitWarning(warn, message));
 		if (patch) Object.assign(cfg, patch);
 		else emitWarning(warn, `pi-quiver: "${key}" in ${path} has an unrecognized value; ignored.`);
 	}

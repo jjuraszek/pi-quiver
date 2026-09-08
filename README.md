@@ -274,11 +274,13 @@ Operational notes:
 | --- | --- | --- |
 | `enabled` | `false` | Master switch, checked at `session_start`; toggling takes effect next session. |
 | `cachePath` | user-scope per-OS cache dir | Overrides where the workspace-keyed channel/user name->ID cache file is written; relative paths resolve against the repo root. |
-| `userTokenEnv` | `SLACK_USER_TOKEN` | Env var name holding the user token (required for `slack_search`/`slack_thread`, no bot fallback). |
+| `userTokenEnv` | `SLACK_USER_TOKEN` | Env var name holding the user token when `userTokenCommand` is unset (required for `slack_search`/`slack_thread`, no bot fallback). |
+| `userTokenCommand` | unset | Executable argv array that prints the current user token to stdout; resolved on every user-identity tool call. |
+| `userTokenCommandTimeoutSeconds` | `10` | Positive finite timeout in seconds for `userTokenCommand`. Increase this when an interactive credential helper may need authorization. |
 | `botTokenEnv` | `SLACK_BOT_TOKEN` | Env var name holding the bot token. |
 | `uploadThresholdChars` | `4000` | Link-collapsed length above which an announce/thread detail body is delivered as a file upload instead of inline text. |
 
-Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `PI_QUIVER_SLACK_CACHE_PATH`, `PI_QUIVER_SLACK_USER_TOKEN_ENV`, `PI_QUIVER_SLACK_BOT_TOKEN_ENV`, and `PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS` - applied on top of the resolved `settings.json` layers, same override rung the extension's config resolver defines. Tokens themselves are resolved per call: process env first, then the repo's `.env` file (or the primary checkout's, for a worktree with none) - never a fallback across identities. Full reference incl. cache layering, the announce protocol, and the `search.messages`/`conversations.replies` throttle caveats: [doc/slack.md](doc/slack.md).
+Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `PI_QUIVER_SLACK_CACHE_PATH`, `PI_QUIVER_SLACK_USER_TOKEN_ENV`, `PI_QUIVER_SLACK_BOT_TOKEN_ENV`, and `PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS` - applied on top of the resolved `settings.json` layers, same override rung the extension's config resolver defines. `userTokenCommand` and `userTokenCommandTimeoutSeconds` are settings-only: pi executes the argv directly, without a shell, on every user-identity Slack tool call. For example, macOS Keychain can supply the token with `"userTokenCommand": ["security", "find-generic-password", "-s", "slack-user-token", "-w"]`. Its stdout is the token; empty output, nonzero exit, or timeout is a sanitized hard error and never falls back to `userTokenEnv`. Without the command, tokens resolve per call from process env and then `.env` (or the primary checkout's, for a worktree with none). Bot resolution is unchanged. Restart pi after changing Slack settings because the extension captures them at session start. Full reference incl. cache layering, the announce protocol, and the `search.messages`/`conversations.replies` throttle caveats: [doc/slack.md](doc/slack.md).
 
 ### doc_to_md settings
 

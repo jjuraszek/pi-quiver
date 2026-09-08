@@ -9,7 +9,7 @@
  * slack-local `PI_QUIVER_SLACK_*` env-var overlay applied on top.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +21,8 @@ export interface SlackConfig {
 	cachePath: string | undefined;
 	policyPath: string | undefined;
 	userTokenEnv: string;
+	userTokenCommand: string[] | undefined;
+	userTokenCommandTimeoutSeconds: number;
 	botTokenEnv: string;
 	uploadThresholdChars: number;
 }
@@ -30,6 +32,8 @@ export const DEFAULT_SLACK_CONFIG: SlackConfig = {
 	cachePath: undefined,
 	policyPath: undefined,
 	userTokenEnv: "SLACK_USER_TOKEN",
+	userTokenCommand: undefined,
+	userTokenCommandTimeoutSeconds: 10,
 	botTokenEnv: "SLACK_BOT_TOKEN",
 	uploadThresholdChars: 4000,
 };
@@ -44,7 +48,9 @@ export class SlackError extends Error {
 	}
 }
 
-export function coerce(raw: unknown): Partial<SlackConfig> | undefined {
+const MAX_TIMER_SECONDS = 2_147_483.647;
+
+export function coerce(raw: unknown, warn?: (message: string) => void): Partial<SlackConfig> | undefined {
 	if (typeof raw === "boolean") return { enabled: raw };
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const o = raw as Record<string, unknown>;
@@ -53,6 +59,28 @@ export function coerce(raw: unknown): Partial<SlackConfig> | undefined {
 	if (typeof o.cachePath === "string") patch.cachePath = o.cachePath;
 	if (typeof o.policyPath === "string") patch.policyPath = o.policyPath;
 	if (typeof o.userTokenEnv === "string") patch.userTokenEnv = o.userTokenEnv;
+	if (
+		Array.isArray(o.userTokenCommand) &&
+		typeof o.userTokenCommand[0] === "string" &&
+		o.userTokenCommand[0].length > 0 &&
+		o.userTokenCommand.every((part) => typeof part === "string")
+	) {
+		patch.userTokenCommand = [...o.userTokenCommand];
+	}
+	if (o.userTokenCommandTimeoutSeconds !== undefined) {
+		if (
+			typeof o.userTokenCommandTimeoutSeconds === "number" &&
+			Number.isFinite(o.userTokenCommandTimeoutSeconds) &&
+			o.userTokenCommandTimeoutSeconds > 0 &&
+			o.userTokenCommandTimeoutSeconds <= MAX_TIMER_SECONDS
+		) {
+			patch.userTokenCommandTimeoutSeconds = o.userTokenCommandTimeoutSeconds;
+		} else {
+			warn?.(
+				`pi-quiver: quiver.slack.userTokenCommandTimeoutSeconds must be a positive finite number no greater than ${MAX_TIMER_SECONDS}; ignored.`,
+			);
+		}
+	}
 	if (typeof o.botTokenEnv === "string") patch.botTokenEnv = o.botTokenEnv;
 	if (typeof o.uploadThresholdChars === "number" && Number.isInteger(o.uploadThresholdChars) && o.uploadThresholdChars > 0) {
 		patch.uploadThresholdChars = o.uploadThresholdChars;
@@ -220,6 +248,42 @@ export function resolveToken(
 		"missing_token",
 		`No Slack ${identity} token: env var ${envVar} is empty and no .env entry was found.`,
 	);
+}
+
+function runCredentialCommand(command: string[], timeoutMs: number): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const [file, ...args] = command;
+		execFile(file, args, { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024, encoding: "utf8" }, (err, stdout) => {
+			if (err) {
+				const childError = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null };
+				if (childError.killed) {
+					reject(new SlackError("credential_command_failed", `Slack user credential command timed out after ${timeoutMs}ms.`));
+					return;
+				}
+				const status = typeof childError.code === "number" ? ` (status ${childError.code})` : "";
+				reject(new SlackError("credential_command_failed", `Slack user credential command failed${status}.`));
+				return;
+			}
+			const token = stdout.trim();
+			if (!token) {
+				reject(new SlackError("missing_token", "Slack user credential command returned no token."));
+				return;
+			}
+			resolve(token);
+		});
+	});
+}
+
+export async function resolveCredential(
+	identity: "user" | "bot",
+	cfg: SlackConfig,
+	env: Record<string, string | undefined>,
+	repoRoot: string,
+): Promise<string> {
+	if (identity === "user" && cfg.userTokenCommand) {
+		return runCredentialCommand(cfg.userTokenCommand, Math.ceil(cfg.userTokenCommandTimeoutSeconds * 1000));
+	}
+	return resolveToken(identity, cfg, env, repoRoot);
 }
 
 /**

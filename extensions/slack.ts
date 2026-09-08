@@ -19,6 +19,7 @@ import {
 	buildPolicyBlock,
 	discoverRepoRoot,
 	resolveSlackConfig,
+	resolveCredential,
 	resolveToken,
 	searchMessages,
 	readThread,
@@ -40,7 +41,7 @@ import {
 import { cacheFilePath, teamIdFor, resolveChannel, refreshCache, resolveMentions, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
 
 const IDENTITY = Type.Union([Type.Literal("user"), Type.Literal("bot")], {
-	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which token env var is used and whose name shows as the author.',
+	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which credential source is used and whose name shows as the author.',
 });
 
 // Approved recovery fields only - never dump the raw Slack API response (err.data can carry it
@@ -75,12 +76,13 @@ async function resolveCall(
 	signal: AbortSignal | undefined,
 	repoRoot: string,
 ): Promise<ResolvedCall> {
-	const token = resolveToken(identity, cfg, process.env, repoRoot);
+	const token = await resolveCredential(identity, cfg, process.env, repoRoot);
 	const teamId = await teamIdFor(token, defaultApiCall, signal);
 	const otherIdentity = identity === "user" ? "bot" : "user";
 	const otherTeamId = await (async () => {
+		if (otherIdentity === "user" && cfg.userTokenCommand) return undefined;
 		try {
-			const otherToken = resolveToken(otherIdentity, cfg, process.env, repoRoot);
+			const otherToken = await resolveCredential(otherIdentity, cfg, process.env, repoRoot);
 			return await teamIdFor(otherToken, defaultApiCall, signal);
 		} catch {
 			// Other identity's token can't be resolved/authenticated - best-effort
@@ -99,14 +101,14 @@ async function resolveCall(
 
 /**
  * slack_cache_refresh's identity pick: user token when present, else bot (spec "Cache" section).
- * Pure and network-free - resolveToken only reads env/.env - so it's unit-testable without a
- * transport seam.
+ * Pure and network-free - command configuration counts as a user credential without executing it.
  */
 export function pickCacheRefreshIdentity(
 	cfg: SlackConfig,
 	env: Record<string, string | undefined>,
 	repoRoot: string,
 ): "user" | "bot" {
+	if (cfg.userTokenCommand) return "user";
 	try {
 		resolveToken("user", cfg, env, repoRoot);
 		return "user";

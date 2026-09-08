@@ -24,7 +24,9 @@ All keys live under `quiver.slack`:
 | `enabled` | boolean | `false` | master switch; anything other than resolved `true` registers zero tools |
 | `cachePath` | string | per-OS user cache dir, keyed by workspace | name->ID cache file location; absolute or repo-root-relative |
 | `policyPath` | string | none (no injection) | repo policy file injected into the system prompt every turn; absolute or repo-root-relative; no env-var override - see [Repo policy injection](#repo-policy-injection) |
-| `userTokenEnv` | string | `SLACK_USER_TOKEN` | env var name holding the user token |
+| `userTokenEnv` | string | `SLACK_USER_TOKEN` | env var name holding the user token when `userTokenCommand` is unset |
+| `userTokenCommand` | non-empty string array | unset | executable argv that prints the current user token to stdout on each user-identity tool call |
+| `userTokenCommandTimeoutSeconds` | positive finite number | `10` | timeout in seconds for the user credential command |
 | `botTokenEnv` | string | `SLACK_BOT_TOKEN` | env var name holding the bot token |
 | `uploadThresholdChars` | number | `4000` | link-collapsed length above which an announce `thread_body` becomes a threaded file upload |
 
@@ -33,7 +35,7 @@ All keys live under `quiver.slack`:
 Per key, highest rung wins:
 
 1. **Process env overrides**: `PI_QUIVER_SLACK_ENABLED`, `PI_QUIVER_SLACK_CACHE_PATH`, `PI_QUIVER_SLACK_USER_TOKEN_ENV`, `PI_QUIVER_SLACK_BOT_TOKEN_ENV`, `PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS`.
-2. Repo `.pi/settings.json`, `quiver.slack.{...}`.
+2. Repo `.pi/settings.json`, `quiver.slack.{...}`; this project layer also honors `userTokenCommand` and `userTokenCommandTimeoutSeconds`.
 3. Pi-home `settings.json`, same shape.
 4. Defaults (table above).
 
@@ -51,8 +53,8 @@ Two independent identities: **user** (a real person's token; needed for
 API - accepts only user tokens, never bot tokens) and **bot** (an app
 identity, selected on every mutating tool via `as: "user" | "bot"`).
 
-Token *values* never live in `settings.json`. They resolve, per identity,
-from:
+Token *values* never live in `settings.json`. By default, each identity
+resolves per call from:
 
 1. `process.env[<configured env var name>]`.
 2. Repo-root `.env` file: one entry per line, optional leading whitespace,
@@ -64,10 +66,40 @@ from:
    if a worktree *does* have a `.env`, it fully shadows the primary one even
    if it lacks the needed key.
 
+Token values resolved from process env or `.env` are never logged or echoed
+back in tool output or errors.
+
+`userTokenCommand` replaces that ladder for the user identity. It is an argv
+array, not a shell string - for example `["my-slack-token-manager", "get"]` - so
+shell parsing and expansion never occur. Pi executes it on every user-identity
+Slack tool invocation, trims stdout, and uses the result as the user token. The
+command uses the `userTokenCommandTimeoutSeconds` timeout (10 seconds by
+default) and a fixed 64 KiB output cap. Empty output,
+nonzero exit, launch failure, and timeout are sanitized errors: stdout,
+stderr, and token values are never included. An explicit command never falls
+back to a stale process-env or `.env` token. Bot resolution remains on its
+env/`.env` ladder.
+
+For 1Password CLI, use `op read` to supply the token without storing its value
+in settings:
+
+```jsonc
+{
+  "userTokenCommand": ["op", "read", "op://<vault-id>/<item-id>/<field-id>"],
+  "userTokenCommandTimeoutSeconds": 60
+}
+```
+
+Set these keys under `quiver.slack`. Replace the placeholders with your vault,
+item, and token field IDs; use the immutable item ID so renaming the item
+won't break the reference. Authenticate `op` before using Slack tools. The
+example increases the timeout to 60 seconds because `op` may show an
+interactive 1Password authorization dialog; increase it further if needed.
+
 There is no fallback between identities - a missing user token is never
-covered by a present bot token. A missing token is a hard per-call error
-naming the empty env var. Token values are never logged or echoed back in
-tool output or errors.
+covered by a present bot token. A missing token is a hard per-call error.
+Slack configuration is captured at `session_start`, so adding or changing
+`userTokenCommand` or `userTokenCommandTimeoutSeconds` requires restarting pi.
 
 ## Repo policy injection
 
@@ -126,7 +158,9 @@ workspace (keyed by team ID from `auth.test`):
   `team_mismatch` instead of silently mixing two workspaces' caches. Any
   failure resolving or authenticating the unused identity's token (missing,
   expired, rate-limited, transport error, ...) never fails the acting
-  identity's call - the check is simply skipped.
+  identity's call - the check is simply skipped. Bot calls also skip this check
+  when `userTokenCommand` is configured, avoiding a credential-helper prompt
+  for an unused identity.
 - **Miss path**: a cache miss triggers a live, paginated `conversations.list`
   / `users.list` scan (the list APIs have no name filter) up to 100 pages;
   exhaustion without a match errors `name_not_found`. A hit is written back
