@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { extractText, getDocumentProxy } from "unpdf";
 
 // --- Types ---
@@ -159,7 +159,7 @@ export function soffArgs(src: string, profileDir: string, outDir: string): strin
 	return [
 		"--headless", "--invisible", "--nocrashreport", "--nodefault", "--nofirststartwizard",
 		"--nolockcheck", "--nologo", "--norestore", "--quickstart=no",
-		`-env:UserInstallation=file://${profileDir}`,
+		`-env:UserInstallation=${pathToFileURL(profileDir).href}`,
 		"--convert-to", "pdf", "--outdir", outDir, src,
 	];
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseConfig, classifyInput, applyGate, withMarker, pagesToMarkdown, DEGRADED_MARKER, soffArgs, warmArgs, convertArgs, runCapped, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, pythonConvertArgs, resolveBackend, getBackend, resetBackendCacheForTests, runPipeline, probeArgs, PROBE_PROGRAM, convertDocument, convertOffice } from "../lib/doc-to-md-core.ts";
 import type { Backend, CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 
@@ -72,10 +72,20 @@ test("convertArgs: pins version + runs the script with the pdf path", () => {
 test("soffArgs: headless flags + isolated profile + convert-to pdf", () => {
 	const a = soffArgs("/in/deck.pptx", "/tmp/prof", "/tmp/out");
 	assert.ok(a.includes("--headless") && a.includes("--convert-to") && a.includes("pdf"));
-	assert.ok(a.includes("-env:UserInstallation=file:///tmp/prof"));
+	assert.ok(a.includes(`-env:UserInstallation=${pathToFileURL("/tmp/prof").href}`));
 	assert.equal(a[a.length - 1], "/in/deck.pptx");
 	const oi = a.indexOf("--outdir");
 	assert.equal(a[oi + 1], "/tmp/out");
+});
+
+test("soffArgs: profile dir with a space is percent-encoded into a valid file URI", () => {
+	const a = soffArgs("/in/deck.pptx", "/tmp/pro f", "/tmp/out");
+	assert.ok(a.includes("-env:UserInstallation=file:///tmp/pro%20f"));
+});
+
+test("soffArgs: windows drive-path profile dir yields a valid file URI (win32 only)", { skip: process.platform !== "win32" }, () => {
+	const a = soffArgs("C:\\in\\deck.pptx", "C:\\Users\\x\\prof", "C:\\Users\\x\\out");
+	assert.ok(a.includes("-env:UserInstallation=file:///C:/Users/x/prof"));
 });
 
 test("runCapped: captures stdout + exit code", async () => {
