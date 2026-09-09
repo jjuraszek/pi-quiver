@@ -21,9 +21,27 @@ const excelPids = (): Set<string> => {
 };
 const linksResolve = (mdPath: string) => { const md = readFileSync(mdPath, "utf8"); for (const m of md.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) assert.ok(statSync(resolve(dirname(mdPath), m[1])).isFile(), m[1]); return md; };
 const T = { timeout: 300_000, skip: !HAS_UV && "uv not on PATH" } as const;
+const SCRIPT = fileURLToPath(new URL("../scripts/doc_to_md.py", import.meta.url));
 let tmp: string;
 beforeEach(() => { resetBackendCacheForTests(); tmp = mkdtempSync(join(tmpdir(), "quiver-py-")); });
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+test("primary image rewrites accept Windows forward-slash source paths", { skip: !HAS_UV && "uv not on PATH" }, () => {
+	const program = [
+		"import importlib.util, json",
+		`spec = importlib.util.spec_from_file_location("doc_to_md", ${JSON.stringify(SCRIPT)})`,
+		"module = importlib.util.module_from_spec(spec)",
+		"spec.loader.exec_module(module)",
+		"source = 'C:' + chr(92) + 'tmp' + chr(92) + 'pdf-0003-02.png'",
+		"sources = module.image_source_map(source, 'p1/img1.png', 'pdf-0003-02.png')",
+		"print(json.dumps(module.rewrite_image_destinations('![](C:/tmp/pdf-0003-02.png)', sources)))",
+	].join("; ");
+	const result = spawnSync("uv", ["run", "--python", "3.14", "python", "-c", program], {
+		encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+	});
+	assert.strictEqual(result.status, 0, result.stderr);
+	assert.strictEqual(JSON.parse(result.stdout), "![](p1/img1.png)");
+});
 
 test("info: multipage.pdf", T, async () => {
 	const r = await inspectDocument(opts(fx("multipage.pdf"), { info: true }));

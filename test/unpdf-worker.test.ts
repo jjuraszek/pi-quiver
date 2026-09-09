@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WORKER = fileURLToPath(new URL("../lib/unpdf-worker.ts", import.meta.url));
 const PDF = fileURLToPath(new URL("../test/fixtures/sample.pdf", import.meta.url));
@@ -78,7 +78,7 @@ test("unpdf-worker pdf-text: pages [1] never requests a stalled page 2", () => {
 	writeFileSync(pageLog, "");
 	const env = { ...process.env, STALL_PAGE: "2", PAGE_LOG: pageLog };
 	try {
-		const selected = spawnSync(process.execPath, ["--import", STALL_PAGE_HOOK, WORKER, "pdf-text"], {
+		const selected = spawnSync(process.execPath, ["--import", pathToFileURL(STALL_PAGE_HOOK).href, WORKER, "pdf-text"], {
 			input: JSON.stringify({ path: MULTIPAGE_PDF, pages: [1] }), encoding: "utf8", env, timeout: 10_000,
 		});
 		assert.strictEqual(selected.status, 0, selected.stderr);
@@ -88,7 +88,7 @@ test("unpdf-worker pdf-text: pages [1] never requests a stalled page 2", () => {
 		assert.deepStrictEqual(selectedOut.failedPages, []);
 		assert.strictEqual(readFileSync(pageLog, "utf8"), "1\n");
 
-		const stalled = spawnSync(process.execPath, ["--import", STALL_PAGE_HOOK, WORKER, "pdf-text"], {
+		const stalled = spawnSync(process.execPath, ["--import", pathToFileURL(STALL_PAGE_HOOK).href, WORKER, "pdf-text"], {
 			input: JSON.stringify({ path: MULTIPAGE_PDF, pages: [1, 2] }), encoding: "utf8", env, timeout: 3_000, killSignal: "SIGKILL",
 		});
 		assert.strictEqual((stalled.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");

@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolveOptions, TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
-import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, convertOffice, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
+import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAME, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, convertOffice, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
@@ -35,8 +35,9 @@ test("soffArgs: headless flags + isolated profile + convert-to pdf", () => {
 });
 
 test("soffArgs: profile dir with a space is percent-encoded into a valid file URI", () => {
-	const a = soffArgs("/in/deck.pptx", "/tmp/pro f", "/tmp/out");
-	assert.ok(a.includes("-env:UserInstallation=file:///tmp/pro%20f"));
+	const profileDir = join(tmpdir(), "pro f");
+	const a = soffArgs(join(tmpdir(), "deck.pptx"), profileDir, tmpdir());
+	assert.ok(a.includes(`-env:UserInstallation=${pathToFileURL(profileDir).href}`));
 });
 
 test("soffArgs: windows drive-path profile dir yields a valid file URI (win32 only)", { skip: process.platform !== "win32" }, () => {
@@ -183,12 +184,17 @@ function fakeDeps(script: Record<string, CR | CR[]>, over: Partial<ResolverDeps>
 			if (Array.isArray(hit)) return hit.length > 1 ? hit.shift()! : hit[0];
 			return hit;
 		},
-		cacheRoot: "/cache", platform: "linux", pid: 42,
+		cacheRoot: FAKE_CACHE_ROOT, platform: process.platform, pid: 42,
 		rename: (a, b) => { renames.push([a, b]); }, rmrf: (p) => { rms.push(p); }, now: () => 0,
 		calls, renames, rms, ...over,
 	};
 }
 const CFG = { pymupdfVersion: TUNABLE_DEFAULTS.pymupdfVersion, warmTimeoutMs: TUNABLE_DEFAULTS.warmTimeoutMs };
+const FAKE_CACHE_ROOT = join(tmpdir(), "pi-quiver-test-cache");
+const FAKE_VENV_DIR = join(FAKE_CACHE_ROOT, VENV_DIR_NAME);
+const FAKE_VENV_EXE = venvPython(FAKE_VENV_DIR, process.platform);
+const FAKE_VENV_TMP_DIR = join(FAKE_CACHE_ROOT, `${VENV_DIR_NAME}.tmp-42`);
+const FAKE_VENV_TMP_EXE = venvPython(FAKE_VENV_TMP_DIR, process.platform);
 
 test("resolver: injected env is threaded into the run seam", async () => {
 	const seenEnvs: (NodeJS.ProcessEnv | undefined)[] = [];
@@ -228,60 +234,57 @@ test("resolver: all candidates package-less -> bootstrap from first eligible; ve
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
 		python: ok("PY 3 13\nPDF no\nXLSX no\n"),
-		"/cache/doc-to-md-venv-v2/bin/python": enoent(),
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok(""), // pip install
+		[FAKE_VENV_EXE]: enoent(),
+		[FAKE_VENV_TMP_EXE]: ok(""), // pip install
 	});
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: "/cache/doc-to-md-venv-v2/bin/python", pdf: true, xlsx: true });
-	assert.deepEqual(d.renames, [["/cache/doc-to-md-venv-v2.tmp-42", "/cache/doc-to-md-venv-v2"]]);
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(d.renames, [[FAKE_VENV_TMP_DIR, FAKE_VENV_DIR]]);
 	// python (second candidate) still probed before bootstrap chose python3
 	assert.ok(d.calls.includes("python"));
 });
 
 test("resolver: cached venv wins over bootstrap, loses to importable system python", async () => {
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
-	const cachedOnly = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), [venvExe]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, cachedOnly), { kind: "venv", exe: venvExe, pdf: true, xlsx: true });
-	const sysWins = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\n"), [venvExe]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
+	const cachedOnly = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, cachedOnly), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	const sysWins = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
 	assert.deepEqual(await resolveBackend(CFG, sysWins), { kind: "python", exe: "python3", pdf: true, xlsx: true });
 });
 
 test("resolver: broken cached venv is removed and re-bootstrapped", async () => {
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
 	// First rename attempt fails because the stale broken venvDir is still present; the winner probe finds it still
 	// broken, so venvDir is rmrf'd and the rename is retried.
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[venvExe]: fail("dyld: missing"),
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok(""),
+		[FAKE_VENV_EXE]: fail("dyld: missing"),
+		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: (() => { let n = 0; return () => { n++; if (n === 1) throw new Error("EEXIST"); }; })() });
 	const r = await resolveBackend(CFG, d);
 	assert.equal(r.kind, "venv");
-	assert.ok(d.rms.includes("/cache/doc-to-md-venv-v2"));
+	assert.ok(d.rms.includes(FAKE_VENV_DIR));
 });
 
 test("resolver: winner publishes after our build starts — first rename fails, healthy winner adopted, never rmrf'd", async () => {
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
 		// cached probe + recheck: absent (no winner yet); post-rename-failure probe: winner has published
-		[venvExe]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")],
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok(""),
+		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")],
+		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: () => { throw new Error("EEXIST"); } });
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: venvExe, pdf: true, xlsx: true });
-	assert.deepEqual(d.rms, ["/cache/doc-to-md-venv-v2.tmp-42"]); // only our tmp cleaned up, winner's venvDir untouched
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(d.rms, [FAKE_VENV_TMP_DIR]); // only our tmp cleaned up, winner's venvDir untouched
 });
 
 test("resolver: bootstrap pip failure -> none with closed-list reason", async () => {
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": fail("No matching distribution"),
+		[FAKE_VENV_TMP_EXE]: fail("No matching distribution"),
 	});
 	const r = await resolveBackend(CFG, d);
 	assert.equal(r.kind, "none");
 	assert.ok(r.kind === "none" && /python 3\.12 found but venv bootstrap failed: .*No matching distribution.* - install python3-venv, or uv/.test(r.reason));
-	assert.ok(d.rms.includes("/cache/doc-to-md-venv-v2.tmp-42"));
+	assert.ok(d.rms.includes(FAKE_VENV_TMP_DIR));
 });
 
 test("resolver: nothing available -> none with install hint", async () => {
@@ -296,23 +299,21 @@ test("resolver: uv present-but-failed and no python -> uv warm-up reason", async
 });
 
 test("resolver: rename race — competing publish wins, winner probed", async () => {
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[venvExe]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; pre-rmrf recheck: absent; post-race probe: winner
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok(""),
+		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; pre-rmrf recheck: absent; post-race probe: winner
+		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: () => { throw new Error("EEXIST"); } });
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: venvExe, pdf: true, xlsx: true });
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
 });
 
 test("resolver: competing venv published between probe and bootstrap is adopted, not deleted", async () => {
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[venvExe]: [enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; recheck: winner appeared
+		[FAKE_VENV_EXE]: [enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; recheck: winner appeared
 	});
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "venv", exe: venvExe, pdf: true, xlsx: true });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
 	assert.deepEqual(d.rms, []); // never deleted the winner
 	assert.deepEqual(d.renames, []); // never bootstrapped
 });
@@ -345,11 +346,11 @@ test("getBackend: concurrent first calls bootstrap the venv once", async () => {
 	resetBackendCacheForTests();
 	const d = fakeDeps({
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		"/cache/doc-to-md-venv-v2/bin/python": enoent(),
-		"/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok(""),
+		[FAKE_VENV_EXE]: enoent(),
+		[FAKE_VENV_TMP_EXE]: ok(""),
 	});
 	const [a, b] = await Promise.all([getBackend(CFG, d), getBackend(CFG, d)]);
-	const expected = { kind: "venv", exe: "/cache/doc-to-md-venv-v2/bin/python", pdf: true, xlsx: true };
+	const expected = { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true };
 	assert.deepEqual(a, expected);
 	assert.deepEqual(b, expected);
 	assert.equal(d.renames.length, 1);
@@ -476,13 +477,11 @@ test("resolver: uv elapsed time bounds discovery before fake bootstrap stages ca
 test("resolver: bootstrap stays within its absolute simulated deadline", async () => {
 	let t = 0;
 	const timeouts: { left: number; timeout: number }[] = [];
-	const venvExe = "/cache/doc-to-md-venv-v2/bin/python";
-	const tmpExe = "/cache/doc-to-md-venv-v2.tmp-42/bin/python";
 	const d = fakeDeps({
 		uv: fail("warm failed"),
 		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[venvExe]: [enoent(), enoent()],
-		[tmpExe]: ok("PY 3 12\nPDF yes\nXLSX yes\n"),
+		[FAKE_VENV_EXE]: [enoent(), enoent()],
+		[FAKE_VENV_TMP_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n"),
 	}, { now: () => t });
 	const wrapped: ResolverDeps = {
 		...d,
@@ -492,13 +491,13 @@ test("resolver: bootstrap stays within its absolute simulated deadline", async (
 			if (cmd === "uv") t += 1000;
 			else if (cmd === "python3" && args.includes("-c")) t += 500;
 			else if (cmd === "python3" && args.join(" ").includes("-m venv")) t += 1500;
-			else if (cmd === tmpExe) t += 1500;
+			else if (cmd === FAKE_VENV_TMP_EXE) t += 1500;
 			return d.run(cmd, args, opts);
 		},
 	};
 	const t0 = t;
 	const backend = await resolveBackend({ ...CFG, warmTimeoutMs: 5000 }, wrapped);
-	assert.deepEqual(backend, { kind: "venv", exe: venvExe, pdf: true, xlsx: true });
+	assert.deepEqual(backend, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
 	assert.ok(t - t0 <= 5000 + KILL_GRACE_MS, `simulated elapsed ${t - t0}ms`);
 	assert.ok(timeouts.every(({ left, timeout }) => timeout <= left), JSON.stringify(timeouts));
 });
@@ -509,14 +508,14 @@ test("resolver: python with PDF but not XLSX is a valid python backend with xlsx
 });
 
 test("resolver: bootstrap installs the full package set into doc-to-md-venv-v2 and removes the legacy pymupdf-venv", async () => {
-	const d = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), "/cache/doc-to-md-venv-v2.tmp-42/bin/python": ok("") });
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), [FAKE_VENV_TMP_EXE]: ok("") });
 	const seenArgs: string[][] = [];
 	const wrapped: ResolverDeps = { ...d, run: async (cmd, args, opts) => { seenArgs.push(args); return d.run(cmd, args, opts); } };
 	const b = await resolveBackend(CFG, wrapped);
-	assert.deepEqual(b, { kind: "venv", exe: "/cache/doc-to-md-venv-v2/bin/python", pdf: true, xlsx: true });
+	assert.deepEqual(b, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
 	assert.ok(seenArgs.some((a) => a.join(" ") === "-m pip install pymupdf4llm==1.27.2.3 openpyxl==3.1.5 xlrd==2.0.2 pillow==12.3.0"));
-	assert.deepEqual(d.renames, [["/cache/doc-to-md-venv-v2.tmp-42", "/cache/doc-to-md-venv-v2"]]);
-	assert.ok(d.rms.includes("/cache/pymupdf-venv"));
+	assert.deepEqual(d.renames, [[FAKE_VENV_TMP_DIR, FAKE_VENV_DIR]]);
+	assert.ok(d.rms.includes(join(FAKE_CACHE_ROOT, LEGACY_VENV_DIR_NAME)));
 });
 
 const MULTIPAGE = fileURLToPath(new URL("../test/fixtures/multipage.pdf", import.meta.url));
