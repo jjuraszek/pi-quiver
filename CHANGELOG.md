@@ -8,6 +8,30 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v5.3.0 - 2026-09-09
+
+- doc_to_md: results are now a bundle on disk (`<stem>.md` + `images/`, temp dir
+  or `outputDir`) plus a bounded handle (paths, page count, outline,
+  diagnostics) - Markdown is never returned inline; `read` the `Saved-To` file.
+  The former 32KB inline/spill size gate is gone (#13).
+- doc_to_md: `info` mode (page count, metadata, TOC or sheet inventory),
+  optional 1-based `pages` selection, canonical `--- end of page.page_number=N ---`
+  separators on every tier, images always extracted with relative links.
+- doc_to_md: three terminable child tiers - pymupdf4llm -> PyMuPDF per-page text
+  (degraded, marked) -> unpdf worker only when no Python backend; each spawn is
+  tree-killed on its own timeout; backend discovery bounded by one absolute
+  `warmTimeoutMs`; managed venv moves to `doc-to-md-venv-v2` with openpyxl,
+  xlrd and pillow pinned alongside pymupdf4llm.
+- doc_to_md: direct `.xlsx`/`.xls` conversion to per-worksheet matrices
+  (formulas + cached values, merged/hidden/truncation disclosed, sheet images).
+- doc_to_md: one option descriptor table drives the tool schema, the new
+  `quiver.docToMd` settings block (per-call > settings > deprecated
+  `PI_DOC_TO_MD_*` env > default) and the CLI (`pi-quiver doc-to-md [flags]`,
+  `--help`, exit codes 0/1/2). `scripts/pdf_to_md.py` replaced by
+  `scripts/doc_to_md.py`; `unpdf` bumped to ^1.8.1.
+- Tests: synthetic PDF/DOCX/PPTX/XLSX/XLS fixtures, uv/soffice-gated integration
+  suite; CI installs uv and LibreOffice.
+
 ## v5.2.4 - 2026-09-08
 
 - doc_to_md: build the LibreOffice `-env:UserInstallation` value with
