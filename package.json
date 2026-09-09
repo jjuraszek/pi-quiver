@@ -22,6 +22,8 @@
     "pdf",
     "docx",
     "pptx",
+    "xlsx",
+    "xls",
     "cli"
   ],
   "engines": {
@@ -34,7 +36,7 @@
     "extensions",
     "lib",
     "dist",
-    "scripts/pdf_to_md.py",
+    "scripts/doc_to_md.py",
     "types/**/*.d.ts",
     "README.md",
     "CHANGELOG.md"
@@ -44,7 +46,7 @@
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "npx -y tsc --noEmit",
     "test:all": "npm run check:agents-core && npm run test && npm run typecheck",
-    "build": "esbuild bin/pi-quiver.ts --bundle --packages=external --format=esm --platform=node --outfile=dist/bin/pi-quiver.js",
+    "build": "esbuild bin/pi-quiver.ts lib/unpdf-worker.ts --bundle --packages=external --format=esm --platform=node --outdir=dist --outbase=.",
     "prepack": "npm run build"
   },
   "pi": {
@@ -82,7 +84,7 @@
     "jsdom": "^26.0.0",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2",
-    "unpdf": "^1.6.0"
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.84.2",

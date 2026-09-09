@@ -1,5 +1,7 @@
 # Spec: doc_to_md — PDF/DOCX/PPTX to Markdown via pymupdf4llm (uv) with pure-JS fallback
 
+> **Superseded by:** [doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md](./2026-09-09-gh-13-selective-image-linked-excel-conversion.md) - "Non-Goals: No spreadsheets", the single pymupdf4llm -> unpdf fallback ladder, and the inline-result contract
+
 - **Date:** 2026-06-15
 - **Package:** pi-essentials (new extension `doc_to_md.ts`, second extension alongside `fetch.ts`)
 - **Branch / worktree:** `doc-to-md` @ `.worktrees/doc-to-md`

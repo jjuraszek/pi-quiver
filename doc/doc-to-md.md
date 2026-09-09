@@ -1,70 +1,151 @@
-# doc_to_md - local document -> Markdown
+# doc_to_md - local document -> Markdown bundle
 
-`doc_to_md` takes a **local file path** (`.pdf`, `.docx`, `.pptx`) and returns Markdown. For remote documents, `fetch` the URL first (it saves binaries to a temp path), then pass that path here.
+`doc_to_md` takes a local `.pdf`, `.docx`, `.pptx`, `.xlsx`, or `.xls` path, writes a Markdown bundle on disk, and returns a concise handle - never inline Markdown. For remote documents, `fetch` the URL first, then pass its saved path here.
 
 ## Backend ladder
 
-High-fidelity conversion via `pymupdf4llm` is resolved once per process, trying four rungs in order:
+The backend is resolved once per process. Every conversion tier is a fresh child process, so a stuck MuPDF or PDF.js call can be killed.
 
-1. **`uv`** - arms-length subprocess via `uv run --with pymupdf4llm==<pin> --python 3.14`. Pinned and isolated: `uv` fetches the wheel (and, if needed, Python 3.14) into its own cache on first use.
-2. **System Python** - `python3`, then `python`, probed on `PATH`. Any interpreter >= 3.12 with `pymupdf4llm` already importable is used as-is, unpinned (whatever version is installed).
-3. **Managed venv** - built once at `<per-OS cache dir>/pi-quiver/pymupdf-venv` from the first eligible system Python (>= 3.12, package or not), pinned to the same `pymupdf4llm==<pin>` as the `uv` rung. Bootstrapped atomically (built in a tmp dir, published via rename) so a crash mid-build never leaves a broken venv; once published it is reused indefinitely - there is no invalidation, so bumping the pin does not retroactively upgrade an existing venv.
-4. **`unpdf` (degraded)** - pure-JS fallback (bundled PDF.js) when no rung above resolves. Output is plain text with page breaks - **no faithful tables/headings**. Degraded results are marked in the output (`[Note: degraded extraction via unpdf ...]`) and carry a closed-list `Fallback-Reason:` line (uv absent/failed, no capable Python, or venv bootstrap failure).
+1. **`uv`** - `uv run --with pymupdf4llm==1.27.2.3 --with openpyxl==3.1.5 --with xlrd==2.0.2 --with pillow==12.3.0 --python 3.14 python scripts/doc_to_md.py <mode>`. This preferred rung supplies PDF and Excel capabilities.
+2. **System Python** - `python3`, then `python`, from `PATH`, if Python is >= 3.12. The capability probe requires `pymupdf4llm >= 1.27.0` for PDF and independently checks `openpyxl`, `xlrd`, and `PIL` for Excel. A capable system install is used as-is.
+3. **Managed venv** - a bare eligible system Python can bootstrap the pinned package set at `<per-OS cache dir>/pi-quiver/doc-to-md-venv-v2`. It builds in a sibling temporary directory and publishes with rename. A successfully published legacy `pymupdf-venv` is removed. A cached venv is reused.
+4. **PyMuPDF text** - if a Python backend exists but `pymupdf4llm` primary conversion fails, `scripts/doc_to_md.py pdf-fallback` uses `pymupdf` text extraction. The resulting bundle is degraded: layout and tables are not preserved.
+5. **`unpdf` worker** - if no Python PDF backend resolves, a separate `unpdf-worker` child extracts text. It is also degraded and does not extract images.
 
-Per-OS cache dir for the managed venv:
+The probe prints exactly:
+
+```text
+PY <version> PDF <yes|no> XLSX <yes|no>
+```
+
+Its current implementation emits major and minor version as separate fields, for example `PY 3 14`, followed by the `PDF` and `XLSX` capability lines. Python available only through Windows `py.exe` is not detected; install `uv` or expose `python`/`python3` on `PATH`.
 
 | Platform | Cache dir |
 |---|---|
 | `win32` | `%LOCALAPPDATA%\pi-quiver` |
 | `darwin` | `~/Library/Caches/pi-quiver` |
-| other | `$XDG_CACHE_HOME/pi-quiver` (falls back to `~/.cache/pi-quiver`) |
+| other | `$XDG_CACHE_HOME/pi-quiver`, else `~/.cache/pi-quiver` |
 
-**Known limitation:** on Windows, a Python exposed only through the `py` launcher (`py.exe`, no `python`/`python3` on `PATH`) is not detected - the candidates probed are `python3` and `python` only. Install `uv`, or expose `python`/`python3` directly.
+## Office documents
 
-## Office documents (`.docx`, `.pptx`)
+`.docx` and `.pptx` inputs are converted to PDF by headless LibreOffice (`soffice`) with an isolated per-call profile, then use the PDF pipeline. `soffice` must be on `PATH`; Office conversion otherwise fails. Requested page bounds apply after `soffice` produces the PDF.
 
-Converted to PDF by headless LibreOffice (`soffice`, isolated per-call profile), then fed through the same PDF pipeline. `soffice` must be on `PATH` for office inputs - otherwise the tool errors (there is no JS fallback for office->PDF). Spreadsheets and other formats are out of scope (spreadsheets paginate badly via PDF).
+Excel does not go through LibreOffice. `.xlsx` uses `openpyxl`; `.xls` uses `xlrd`. Both require a Python backend. Workbooks become a sheet inventory followed by per-worksheet matrices, including merged and hidden disclosures. `.xlsx` includes formulas and cached values; `.xls` reports formulas and images unavailable. `.xlsm`, sheet/range selection, and chart rendering are out of scope.
 
-## Size gate
+## Bundle and handle
 
-Identical to `fetch` - Markdown <= 32 KB and <= 1000 lines is inlined; larger output spills to `${TMPDIR}/pi-doc-to-md/<stamp>-<basename>-<hash>.md` with a 60-line preview + a grep/read-slice hint.
+A bundle root contains `<stem>.md` and `images/`. `--output-dir` selects the root; otherwise a per-call temporary root is created. The caller owns a temporary bundle: the tool never deletes a bundle it produced.
 
-## Configuration (environment variables)
+A call owns `<stem>.md.lock` for its duration. Child page images stage in `images/.stage-<lockId>/p<N>/`; a child writes `.done` only after that page is complete. Node publishes completed page files as `images/<stem>-p<N>-<n>.<ext>`, discards incomplete page staging directories, and atomically publishes `<stem>.md` by writing a temporary Markdown file then renaming it. Excel images stage as `s<idx>-<n>.<ext>` and publish as `<stem>-s<idx>-<n>.<ext>`. On overwrite, only owned-name files and files linked from the prior Markdown are removed.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `PI_DOC_TO_MD_PYMUPDF_VERSION` | `1.27.2.3` | `pymupdf4llm` version pin passed to `uv --with` (digits/dots only) |
-| `PI_DOC_TO_MD_WARM_TIMEOUT_MS` | `120000` | Warm/install call budget - covers the cold wheel (+ managed Python) download |
-| `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` | `60000` | Per-document conversion budget (also bounds the `unpdf` fallback) |
-| `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` | `120000` | LibreOffice `.docx`/`.pptx` -> PDF budget |
+Every selected PDF/Office page ends with `--- end of page.page_number=N ---`.
 
-`uv` still pins **Python 3.14** (not configurable); the system-Python and managed-venv rungs accept any Python >= 3.12 already on `PATH`. `PI_DOC_TO_MD_PYMUPDF_VERSION` also drives the managed venv's `pip install pymupdf4llm==<pin>`, so both the `uv` and venv rungs stay on the same pin.
+A conversion handle has this portable shape:
 
-## Runtime dependencies
+```text
+Saved-To: /abs/out/manual.md
+Images-Dir: /abs/out/images
+Type: pdf   Engine: pymupdf4llm   Tier: primary
+Page-Count: 42   Pages: 3-5   Images: 4   Size: 18.2KB / 412 lines
+Degraded: ... (conditional)
+Fallback-Reason: ... (conditional)
+Failed-Pages: ...    Empty-Pages: ... (conditional)
+Notes: ... (conditional)
+Outline: (conditional)
+  L12  # Installation
+  L87  ## Wiring
+  (+N more)
+```
 
-`unpdf` (shipped in the npm package, installed automatically on `pi install`). `uv` and LibreOffice (`soffice`) are optional system binaries detected at runtime: without `uv`, PDFs fall through to the system-Python or managed-venv rungs, landing on the `unpdf` fallback only when no Python >= 3.12 is available; without `soffice`, office inputs error while PDFs are unaffected. See the README's [Prerequisites](../README.md#prerequisites) for the consolidated list.
+`Saved-To` is always present. `Images-Dir` appears when images were written. `Degraded:`, `Fallback-Reason:`, `Failed-Pages:`/`Empty-Pages:`, `Notes:`, `Outline:`, its `L<n>` entries, and `(+N more)` are conditional. `--info` writes no bundle and returns an info handle:
+
+```text
+Type: pdf   Page-Count: 42   Backend: uv
+Title: Installation Manual   Author: ...
+TOC:
+  L1 Installation (p3)
+  L2 Wiring (p12)
+  (+N more)
+```
+
+For Excel, the info handle is:
+
+```text
+Type: xlsx   Sheets: 3
+  Data  rows=120 cols=9
+```
+
+## Child contract
+
+The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, or `xlsx`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
+
+`pdf-fallback` receives `keepPages`: an object mapping page numbers to primary-tier image filenames already published. It preserves those images while extracting fallback text rather than duplicating them.
+
+## Configuration
+
+Set tunables under `quiver.docToMd` in global agent settings or project `.pi/settings.json`. Precedence is per-call > `quiver.docToMd` > `PI_DOC_TO_MD_*` env (deprecated) > default.
+
+| Key | Default | CLI flag | Meaning |
+|---|---|---|---|
+| `primaryTimeoutMs` | `60000` | `--primary-timeout` | pymupdf4llm tier; also unpdf tier. |
+| `fallbackTimeoutMs` | `30000` | `--fallback-timeout` | PyMuPDF text tier; also PDF info. |
+| `sofficeTimeoutMs` | `120000` | `--soffice-timeout` | DOCX/PPTX -> PDF via LibreOffice. |
+| `excelTimeoutMs` | `60000` | `--excel-timeout` | Excel child, both `openpyxl` loads, and Excel info. |
+| `warmTimeoutMs` | `120000` | `--warm-timeout` | Absolute first-call backend discovery/bootstrap deadline. |
+| `pymupdfVersion` | `1.27.2.3` | `--pymupdf-version` | pymupdf4llm pin; must be >= `1.27.0`. |
+| `imageDpi` | `150` | `--image-dpi` | Render DPI for page images. |
+| `imageFormat` | `png` | `--image-format` | Rendered image format: `png` or `jpg`. |
+| `maxCellsPerSheet` | `50000` | `--max-cells-per-sheet` | Rows x columns budget per worksheet. |
+| `maxOutputBytes` | `20000000` | `--max-output-bytes` | Child stdout cap in bytes. |
+| `outlineMaxEntries` | `40` | `--outline-max-entries` | Outline, TOC, or sheet inventory cap in the handle. |
+
+Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + KILL_GRACE_MS`); `KILL_GRACE_MS` is 2000 ms. There is no cap on image count, image bytes or workbook memory - deliberately; the per-tier timeouts and `maxOutputBytes` are the bounds.
+
+Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primaryTimeoutMs`, `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` -> `sofficeTimeoutMs`, `PI_DOC_TO_MD_WARM_TIMEOUT_MS` -> `warmTimeoutMs`, and `PI_DOC_TO_MD_PYMUPDF_VERSION` -> `pymupdfVersion`.
+
+`warmTimeoutMs` is an absolute discovery deadline, including all attempted backend probes and bootstrap work. Every child runs through a capped runner. Timeout or output-cap termination tree-kills the process group on POSIX and uses `taskkill /T` on Windows; its grace period is `KILL_GRACE_MS` (2000 ms). This boundary exists because MuPDF and PDF.js can spin uninterruptibly.
 
 ## CLI (`pi-quiver doc-to-md`)
 
-`npx -y pi-quiver@latest doc-to-md <path>` runs the same `convertDocument` core as the pi tool and prints `output` to stdout (tool output plus one trailing newline). See [README - Claude Code support](../README.md#claude-code-support) for what's exposed.
+`npx -y pi-quiver@latest doc-to-md [flags] <path>` runs the same core and prints the same handle. `pi-quiver doc-to-md --help` lists every flag.
 
-Exit codes:
-
-| code | meaning |
+| Flag | Meaning |
 |---|---|
-| `0` | converted - includes degraded output via the `unpdf` fallback; check for the degraded marker / `Fallback-Reason:` |
-| `1` | conversion failed: missing/unreadable file, unsupported extension, LibreOffice missing for `.docx`/`.pptx` |
-| `2` | usage error: missing `<path>`, unknown flag, extra argument |
+| `<path>` | Local `.pdf`, `.docx`, `.pptx`, `.xlsx`, or `.xls` file. |
+| `--info` | Inspect page count, metadata, TOC, or sheet inventory; no bundle. |
+| `--pages <spec>` | Inclusive 1-based PDF/Office pages, such as `12-15` or `3,7,10-12`; default all. |
+| `--output-dir <dir>` | Bundle root for `<stem>.md` and `images/`; default a per-call temp directory. |
+| `--overwrite` | Replace an existing completed bundle. |
+| `--primary-timeout <n>` | pymupdf4llm and unpdf deadline. |
+| `--fallback-timeout <n>` | PyMuPDF text and PDF-info deadline. |
+| `--soffice-timeout <n>` | LibreOffice deadline. |
+| `--excel-timeout <n>` | Excel and Excel-info deadline. |
+| `--warm-timeout <n>` | Backend discovery/bootstrap deadline. |
+| `--pymupdf-version <version>` | pymupdf4llm pin, >= `1.27.0`. |
+| `--image-dpi <n>` | Page image render DPI. |
+| `--image-format <png\|jpg>` | Rendered image format. |
+| `--max-cells-per-sheet <n>` | Worksheet cells budget. |
+| `--max-output-bytes <n>` | Child stdout cap. |
+| `--outline-max-entries <n>` | Handle outline/TOC/inventory cap. |
 
-## Manual smoke (not CI)
+| Code | Meaning |
+|---|---|
+| `0` | Converted or inspected, including degraded fallback. |
+| `1` | Runtime error. |
+| `2` | Usage error. |
 
-CI pins the `unpdf` rung via a scrubbed `PATH`/cache environment; the other three rungs are not exercised in CI and need manual verification when touched:
+## Manual smoke
 
-- `uv` path: with `uv` on `PATH`, convert a PDF and confirm `Engine: pymupdf4llm` with no `Fallback-Reason:`.
-- System-Python path: with `uv` off `PATH` but a `python3`/`python` >= 3.12 that already has `pymupdf4llm` importable, confirm the same clean conversion without a venv bootstrap.
-- Managed-venv bootstrap: on a machine with neither `uv` nor `pymupdf4llm` pre-installed but a bare Python >= 3.12, run a conversion and confirm the one-time venv build at the per-OS cache dir, then a second run reusing it without rebuilding.
-- `pi -e ./extensions/doc_to_md.ts -p "convert test/fixtures/sample.pdf"` against a local checkout, to sanity-check the pi tool path end to end.
+CI installs `uv` and LibreOffice on Ubuntu and runs the Python suite when they are available. Smoke the external routes when changing them:
+
+| Check | Command / expected result |
+|---|---|
+| Info | `node bin/pi-quiver.ts doc-to-md --info test/fixtures/multipage.pdf` returns page count and TOC, with no `Saved-To`. |
+| Selected pages and images | `node bin/pi-quiver.ts doc-to-md --pages 3-5 test/fixtures/multipage.pdf` returns only pages 3-5; inspect its bundle for separators and page images. |
+| Forced fallback | `node bin/pi-quiver.ts doc-to-md --primary-timeout 1 test/fixtures/multipage.pdf` reports `Engine: pymupdf-text`, `Tier: fallback`, `Degraded:`, and `Fallback-Reason:`. |
+| XLSX | `node bin/pi-quiver.ts doc-to-md test/fixtures/workbook.xlsx` returns `Engine: openpyxl   Tier: excel`; inspect matrix, formulas, merged/hidden disclosures, and images. |
+| XLS | `node bin/pi-quiver.ts doc-to-md test/fixtures/legacy.xls` reports `Engine: xlrd   Tier: excel` and unavailable formulas/images. |
 
 ## Licensing note
 
-`pymupdf4llm`/PyMuPDF are **AGPL-3.0**. This package ships none of their code - `uv` downloads the wheel from PyPI onto your machine at runtime, and it runs as a **separate subprocess** (never imported or linked into this TypeScript). The arms-length process boundary keeps pi-quiver's MIT license intact; the AGPL governs PyMuPDF itself, whose source is public. This holds only while the boundary stays subprocess-only (no vendoring/importing the wheel).
+`pymupdf4llm`/PyMuPDF are AGPL-3.0. pi-quiver ships none of their code: the packages are installed at runtime and run only as separate subprocesses. `openpyxl` is MIT, `xlrd` is BSD, and `pillow` is MIT-CMU. The subprocess boundary must remain intact: vendoring or importing the AGPL packages into TypeScript would change the licensing analysis.

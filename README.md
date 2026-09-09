@@ -16,7 +16,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 ## Why pi-quiver exists
 
-`fetch` and `doc_to_md` bring real web pages, GitHub issues/PRs, and local PDF/DOCX/PPTX files into context - and every result is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint, so a single call can never flood the window. Ingestion is what makes data-driven work possible; the gate is what keeps it safe.
+`fetch` brings real web pages and GitHub issues/PRs into context and is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint. `doc_to_md` converts local PDF/DOCX/PPTX/XLSX/XLS files into a Markdown bundle on disk and returns only a concise handle. Ingestion is what makes data-driven work possible; bounded tool results keep it safe.
 
 `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting with repo-policy injection, `@name` mention resolution, cached emails, and per-call unfurl control.
 
@@ -29,19 +29,21 @@ Four independent extensions for the [pi coding agent](https://github.com/earendi
 - [pi-condense](https://github.com/jjuraszek/pi-condense) - context economy (prune context, keep it recoverable)
 - [pi-gauntlet](https://github.com/jjuraszek/pi-gauntlet) - process (the gated brainstorm->ship workflow)
 
-No code dependency between them. pi-quiver is call-level: it gates the size of what comes *in*. [pi-condense](https://github.com/jjuraszek/pi-condense) is loop-level: it prunes what's already *in context* once a tool call is done. Different problem, same discipline.
+No code dependency between them. pi-quiver is call-level: `fetch` gates the size of what comes *in*, while `doc_to_md` writes a bundle and returns its handle. [pi-condense](https://github.com/jjuraszek/pi-condense) is loop-level: it prunes what's already *in context* once a tool call is done. Different problem, same discipline.
 
 ## Mental model
 
-Every ingestion extension here is context-safe by construction, not by convention: the size check runs on every call, there's no flag to forget. `fetch` and `doc_to_md` bring real sources in; `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in.
+Every ingestion extension here is context-safe by construction, not by convention: `fetch` size-gates every call, while `doc_to_md` always writes a bundle and returns a handle instead of inline Markdown. `fetch` and `doc_to_md` bring real sources in; `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in.
 
 ```mermaid
 flowchart LR
-    S[web page / PDF / doc] --> T["fetch / doc_to_md"]
+    S[web page] --> T[fetch]
     T --> E[extract main content]
     E --> G{"over 32KB or 1000 lines?"}
     G -->|no| I[return inline to context]
     G -->|yes| F[spill to temp file<br/>return preview + grep/read hint]
+    D[local PDF / Office / Excel] --> B[doc_to_md]
+    B --> H[Markdown bundle on disk<br/>return handle]
 ```
 
 ## Quick example
@@ -62,8 +64,8 @@ A 300 KB changelog page never touches your context window - you get a preview an
 
 | Extension | Tool | What it does |
 | --- | --- | --- |
-| `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `doc_to_md`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
-| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX to Markdown. High-fidelity via `pymupdf4llm`, resolved per process (`uv` -> system Python >= 3.12 with the package -> one-time managed venv in the user cache dir); degraded pure-JS fallback (`unpdf`) otherwise. DOCX/PPTX convert via LibreOffice first. Behavior lives in `lib/doc-to-md-core.ts`; also exposed as the `pi-quiver doc-to-md` CLI (see [Claude Code support](#claude-code-support)). |
+| `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `fetch`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk (`<stem>.md` + `images/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` mode inspects first; `pages` selects 1-based pages; every page ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> per-worksheet matrices with formulas/cached values/merged/hidden. Settings under `quiver.docToMd`. |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty/Herdr tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -91,7 +93,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 ## When NOT to use
 
 - You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
-- You need spreadsheet conversion - `doc_to_md` explicitly excludes spreadsheets (they paginate badly via PDF).
+- You need `.xlsm`, sheet/range selection or chart rendering - out of scope.
 - You want automatic session naming, a custom header, fast mode, or stall recovery without opting in - all stay off until you flip the config.
 - You need *mid-stream* stall recovery in JSON, RPC, or print runs - only the pre-first-event tier arms there; mid-stream silence falls through to pi's transport timeout.
 
@@ -131,7 +133,7 @@ The npm package's bundled JS deps install automatically on `pi install`. A few *
 | Prerequisite | Needed by | If absent |
 | --- | --- | --- |
 | `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo/actions-run/actions-job routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
-| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF conversion (preferred route) | Falls back to a system Python >= 3.12 with `pymupdf4llm` (or a one-time managed venv it bootstraps); only when no capable Python exists does it degrade to `unpdf`. |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF and Excel conversion (preferred route), with `pymupdf4llm`, `openpyxl`, `xlrd`, and `pillow` | Falls back to a system Python >= 3.12 or one-time managed venv; PDF degrades to `unpdf` only when no capable Python exists. Excel requires the Python backend (no JS fallback). |
 | LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
 
 None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
@@ -262,6 +264,30 @@ Operational notes:
 
 Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `PI_QUIVER_SLACK_CACHE_PATH`, `PI_QUIVER_SLACK_USER_TOKEN_ENV`, `PI_QUIVER_SLACK_BOT_TOKEN_ENV`, and `PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS` - applied on top of the resolved `settings.json` layers, same override rung the extension's config resolver defines. Tokens themselves are resolved per call: process env first, then the repo's `.env` file (or the primary checkout's, for a worktree with none) - never a fallback across identities. Full reference incl. cache layering, the announce protocol, and the `search.messages`/`conversations.replies` throttle caveats: [doc/slack.md](doc/slack.md).
 
+### doc_to_md settings
+
+`doc_to_md` is always registered. Configure tunables in `quiver.docToMd`; per-call > `quiver.docToMd` > `PI_DOC_TO_MD_*` env (deprecated) > default. The result is a handle; `read` the `Saved-To` file (offset/limit) for the Markdown, images live under `Images-Dir`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `primaryTimeoutMs` | `60000` | pymupdf4llm tier and unpdf tier deadline. |
+| `fallbackTimeoutMs` | `30000` | PyMuPDF text tier and PDF info deadline. |
+| `sofficeTimeoutMs` | `120000` | DOCX/PPTX -> PDF deadline. |
+| `excelTimeoutMs` | `60000` | Excel child and Excel info deadline. |
+| `warmTimeoutMs` | `120000` | Absolute first-call backend discovery/bootstrap deadline. |
+| `pymupdfVersion` | `1.27.2.3` | pymupdf4llm pin, minimum `1.27.0`. |
+| `imageDpi` | `150` | Render DPI for page images. |
+| `imageFormat` | `png` | Rendered image format: `png` or `jpg`; embedded images retain their extension. |
+| `maxCellsPerSheet` | `50000` | Rows x columns budget per worksheet. |
+| `maxOutputBytes` | `20000000` | Child stdout cap in bytes. |
+| `outlineMaxEntries` | `40` | Heading outline, TOC, or sheet inventory entries in the handle. |
+
+A bundle is `<outputDir>/<stem>.md` plus `<outputDir>/images/`; without `outputDir`, the tool creates a per-call temp root. A conversion owns `<stem>.md.lock` until it atomically publishes the Markdown. An existing `<stem>.md` fails the call unless `overwrite` is set; `overwrite` replaces that Markdown and the images it owns (`<stem>-p<N>-<n>.*` / `<stem>-s<idx>-<n>.*`), nothing else. Temp bundles are caller-owned - the tool never deletes a bundle it produced.
+
+Excel needs a Python backend with openpyxl, xlrd and pillow - otherwise the call fails with `Remedy: install uv, or pip install openpyxl xlrd pillow`.
+
+Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + KILL_GRACE_MS`). There is no cap on image count, image bytes or workbook memory - deliberately; the per-tier timeouts and `maxOutputBytes` are the bounds.
+
 ### Migrating from flat keys
 
 The flat top-level form (`"fastMode": ...` etc. directly under `settings.json`)
@@ -288,9 +314,9 @@ flat form to fall back to.
 
 ## Claude Code support
 
-`fetch`'s core (`lib/fetch-core.ts`) is also published as a CLI, so Claude Code can use the same routing, size gate, and spill behavior as pi's native tool - without pi ever seeing Claude-only files.
+`fetch` and `doc_to_md` cores are also published through the CLI, so Claude Code can use the same routing or bundle-and-handle behavior as pi's native tools - without pi ever seeing Claude-only files.
 
-**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill runs `npx -y pi-quiver@latest doc-to-md <path>` via Bash - same backend ladder, size gate, and degraded-fallback marking as the pi tool. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes.
+**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill runs `npx -y pi-quiver@latest doc-to-md [flags] <path>` with full flag parity and the same handle output. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes and flags.
 
 **Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
 

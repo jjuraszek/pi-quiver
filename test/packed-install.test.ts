@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,16 +30,18 @@ test("packed tarball installs and the bin runs", { timeout: 120_000 }, () => {
 			assert.strictEqual(e.status, 2);
 			assert.match(String(e.stderr), /Usage:/);
 		}
-		// doc-to-md from the installed tarball: scrubbed PATH + cache env -> deterministic degraded unpdf,
-		// proving the bundled CLI runs end-to-end from the installed package (exit 0, formatter output).
-		// Script-path resolution is pinned by the findPackageRoot unit test; this scrubbed run never touches pdf_to_md.py.
-		const fixture = join(ROOT, "test", "fixtures", "sample.pdf");
+		// doc-to-md from the installed tarball: scrubbed PATH + cache env -> unpdf worker tier, proving the bundled
+		// CLI and the bundled dist/lib/unpdf-worker.js resolve end-to-end from the installed package.
+		const fixture = join(ROOT, "test", "fixtures", "multipage.pdf");
+		const outDir = join(workDir, "out");
 		const scrub = { ...process.env, PATH: dirname(process.execPath), HOME: workDir, XDG_CACHE_HOME: join(workDir, "xdg"), LOCALAPPDATA: join(workDir, "lad") };
-		const out = execFileSync(bin, ["doc-to-md", fixture], {
-			stdio: "pipe", shell: process.platform === "win32", timeout: 60_000, env: scrub,
-		});
-		assert.match(String(out), /Engine: unpdf \(degraded fallback\)/);
-		assert.match(String(out), /uv not found; no python >= 3\.12 on PATH/);
+		const out = String(execFileSync(bin, ["doc-to-md", "--pages", "1", "--output-dir", outDir, fixture], { stdio: "pipe", shell: process.platform === "win32", timeout: 60_000, env: scrub }));
+		assert.match(out, /^Saved-To: .*multipage\.md$/m);
+		assert.match(out, /Tier: unpdf/);
+		assert.ok(existsSync(join(outDir, "multipage.md")));
+		// bundle purity: the CLI bundle must not pull the pi runtime or typebox
+		const bundle = readFileSync(join(workDir, "node_modules", "pi-quiver", "dist", "bin", "pi-quiver.js"), "utf8");
+		assert.ok(!bundle.includes("@earendil-works") && !bundle.includes("@sinclair/typebox"));
 	} finally {
 		rmSync(workDir, { recursive: true, force: true });
 	}

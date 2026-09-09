@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      - uses: astral-sh/setup-uv@v6
+      - name: Install LibreOffice (ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-impress libreoffice-calc
       - name: Install devDependencies
         run: npm install
       - name: Tests + typecheck

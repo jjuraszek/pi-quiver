@@ -1,25 +1,33 @@
 ---
 name: doc-to-md
-description: Convert a local PDF, DOCX, or PPTX file to Markdown via the quiver doc-to-md CLI - use for reading document files instead of raw text extraction. High fidelity via pymupdf4llm when uv or Python 3.12+ is available; explicit degraded fallback otherwise. Invoke via Bash.
+description: Convert a local PDF, DOCX, PPTX, XLSX, or XLS file to a Markdown bundle on disk; a handle is returned. Invoke via Bash.
 ---
 
 # Convert a document to Markdown
 
-Run:
+PDF/DOCX/PPTX/XLSX/XLS -> Markdown bundle on disk; handle returned.
 
 ```bash
-npx -y pi-quiver@latest doc-to-md <path>
+npx -y pi-quiver@latest doc-to-md --info <path>                       # page count, TOC or sheet inventory first
+npx -y pi-quiver@latest doc-to-md <path>                              # whole document
+npx -y pi-quiver@latest doc-to-md --pages 12-15 --output-dir ./out <path>
+npx -y pi-quiver@latest doc-to-md <workbook.xlsx>                     # per-sheet matrices, formulas + cached values
+npx -y pi-quiver@latest doc-to-md --primary-timeout 180000 <path>     # stubborn PDF
 ```
 
-One positional argument: a local `.pdf`, `.docx`, or `.pptx` path (for URLs, fetch first, then pass the saved temp path). No flags.
+A handle looks like:
 
-Behavior:
+```text
+Saved-To: /abs/out/manual.md
+Images-Dir: /abs/out/images
+Type: pdf   Engine: pymupdf4llm   Tier: primary
+Page-Count: 42   Pages: 3-5   Images: 4   Size: 18.2KB / 412 lines
+Outline:
+  L12  # Installation
+```
 
-- High-fidelity conversion (headings, tables, reading order) runs through pymupdf4llm, resolved automatically: `uv` if installed, else a system Python >= 3.12 that already has `pymupdf4llm`, else a one-time managed venv bootstrapped into the user cache dir (first such call downloads ~40MB).
-- No uv and no Python 3.12+ -> conversion still succeeds but **degraded** (pure-JS text extraction): the output is explicitly marked `[Note: degraded extraction via unpdf ...]` with a `Fallback-Reason:` line. Tables/headings are not preserved - treat structure with suspicion. On Windows, Python exposed only through the `py` launcher is not detected (known limitation) - install `uv` or expose `python`/`python3`.
-- `.docx`/`.pptx` require LibreOffice (`soffice` on PATH); without it the command fails with an actionable install message. PDFs are unaffected.
-- Output over 32KB or 1000 lines is written to a temp file; stdout then carries `Saved-To: <path>` plus a 60-line preview. Read slices of that file (offset/limit) or grep it.
+Then `read` the `Saved-To` file (offset/limit); images live under `Images-Dir` when the handle reports it.
 
-Exit codes: `0` = converted (including degraded output - check for the degraded marker), `1` = conversion failed (missing file, unsupported extension, LibreOffice missing for office formats), `2` = usage error.
+Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` usage error.
 
-Requires Node.js (the `npx` runner); `uv`, Python, and LibreOffice are optional runtime enhancers.
+`npx -y pi-quiver@latest doc-to-md --help` lists every flag.

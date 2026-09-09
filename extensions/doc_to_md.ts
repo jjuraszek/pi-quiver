@@ -1,85 +1,75 @@
 /**
- * doc_to_md Extension
- *
- * Registers a `doc_to_md` tool that converts a local PDF, DOCX, or PPTX file
- * to Markdown. Primary engine: pymupdf4llm via ephemeral `uv run --with`
- * (warm-once per process, no repo venv). Fallback: unpdf pure-JS text
- * extraction (degraded, explicitly marked). DOCX/PPTX convert to PDF first
- * via headless soffice, then feed the PDF pipeline. Output over 32 KB or
- * 1000 lines is spilled to a temp .md file with a 60-line preview; smaller
- * content is returned inline.
+ * doc_to_md Extension - converts a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk
+ * (<stem>.md + images/) and returns a bounded handle; `info: true` inspects without converting.
+ * Schema and settings shape derive from the core's option descriptors (single source of truth).
  */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { formatSize, keyHint } from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
-import { convertDocument, parseConfig, type DocToMdDetails } from "../lib/doc-to-md-core.ts";
+import { Type, type TObject, type TSchema } from "@sinclair/typebox";
+import { resolveConfig } from "../lib/extension-config.ts";
+import {
+	DOC_TO_MD_OPTIONS, type DocToMdDetails, type OptionDescriptor, type PerCallInput, type Tunables,
+	coerceDocToMdSettings, convertDocument, inspectDocument, resolveOptions,
+} from "../lib/doc-to-md-core.ts";
+import { resolve } from "node:path";
+
+function schemaFor(d: OptionDescriptor): TSchema {
+	const desc = { description: d.help };
+	switch (d.type) {
+		case "bool": return Type.Boolean(desc);
+		case "int": return Type.Integer({ ...desc, minimum: 1 });
+		case "enum": return Type.Union(d.enumValues!.map((v) => Type.Literal(v)), desc);
+		default: return Type.String(desc);
+	}
+}
+
+function buildSchema(): TObject {
+	const props: Record<string, TSchema> = {};
+	for (const d of DOC_TO_MD_OPTIONS) props[d.key] = d.key === "path" ? schemaFor(d) : Type.Optional(schemaFor(d));
+	return Type.Object(props);
+}
 
 export default function docToMdExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "doc_to_md",
-		label: "Convert doc to Markdown",
+		label: "Convert doc to Markdown bundle",
 		description:
-			"Convert a local PDF/DOCX/PPTX file to Markdown. High-fidelity conversion via pymupdf4llm, resolved per process: uv (pinned, isolated) when available, else a system Python >= 3.12 with pymupdf4llm already installed, else a one-time managed venv bootstrapped into the user cache dir; falls back to a degraded pure-JS text extractor (unpdf) when no capable Python exists or conversion fails. DOCX/PPTX require LibreOffice (soffice) for the office->PDF step. Output over 32KB or 1000 lines is written to a temp .md file with a preview instead of inlined - grep it or read with offset/limit. A degraded result (marked in the output) means the fallback ran: tables and headings are NOT faithfully preserved, treat structure with suspicion. Input must be a local file path (use fetch first for URLs).",
-		promptSnippet: "Convert a local PDF/DOCX/PPTX to Markdown",
-		parameters: Type.Object({
-			path: Type.String({ description: "Local path to a .pdf, .docx, or .pptx file" }),
-		}),
+			"Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk and return a handle (Saved-To, Images-Dir, Page-Count, Outline, diagnostics) - the Markdown itself is never inlined; read the Saved-To file (offset/limit) for content. `info: true` returns page count, metadata and TOC (or the sheet inventory) without converting - use it to pick `pages`. `pages` selects inclusive 1-based pages (PDF/DOCX/PPTX); every page ends with `--- end of page.page_number=N ---`. Images are always extracted into images/ with relative links. Primary engine pymupdf4llm, fallback PyMuPDF text (degraded, marked), pure-JS unpdf only when no Python backend exists. Excel yields per-worksheet matrices with formulas, cached values, merged/hidden disclosure. DOCX/PPTX need LibreOffice (soffice). Use `outputDir` for a durable bundle; without it the bundle lands in a per-call temp dir. Input must be a local file path (use fetch first for URLs).",
+		promptSnippet: "Convert a local PDF/DOCX/PPTX/XLSX to a Markdown bundle (handle returned; read Saved-To)",
+		parameters: buildSchema(),
 
-		async execute(_toolCallId, params, signal) {
-			const cfg = parseConfig(process.env);
-			const { output, details } = await convertDocument(params.path, cfg, signal);
-			return { content: [{ type: "text" as const, text: output }], details };
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const settings = resolveConfig<Partial<Tunables>>(ctx.cwd, "docToMd", {}, (raw) => coerceDocToMdSettings(raw, (m) => console.warn(m)), (m) => console.warn(m));
+			const p = params as unknown as PerCallInput;
+			const perCall: PerCallInput = { ...p, path: resolve(ctx.cwd, p.path), ...(p.outputDir ? { outputDir: resolve(ctx.cwd, p.outputDir) } : {}) };
+			const o = resolveOptions(perCall, settings, process.env);
+			const r = o.info ? await inspectDocument(o, signal) : await convertDocument(o, signal);
+			return { content: [{ type: "text" as const, text: r.output }], details: r.details };
 		},
 
-		renderCall(args, theme, _context) {
-			let text = theme.fg("toolTitle", theme.bold("doc_to_md "));
-			text += theme.fg("accent", args.path ?? "");
+		renderCall(args, theme) {
+			const p = args as unknown as PerCallInput;
+			let text = theme.fg("toolTitle", theme.bold(p.info ? "doc_to_md --info " : "doc_to_md "));
+			text += theme.fg("accent", p.path ?? "");
+			if (p.pages) text += theme.fg("dim", ` pages ${p.pages}`);
 			return new Text(text, 0, 0);
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
-			if (isPartial) {
-				return new Text(theme.fg("warning", "Converting..."), 0, 0);
-			}
-
-			const details = result.details as DocToMdDetails | undefined;
+			if (isPartial) return new Text(theme.fg("warning", "Converting..."), 0, 0);
 			const content = result.content[0];
 			const fullText = content?.type === "text" ? content.text : "";
-
-			if (context.isError) {
-				const firstLine = fullText.split("\n")[0] || "doc_to_md failed";
-				return new Text(theme.fg("error", firstLine), 0, 0);
-			}
-
+			if (context.isError) return new Text(theme.fg("error", fullText.split("\n")[0] || "doc_to_md failed"), 0, 0);
+			const d = result.details as Partial<DocToMdDetails> | undefined;
 			const sep = theme.fg("dim", " · ");
-			const parts: string[] = [];
-			parts.push(theme.fg("muted", details?.inputType ?? "?"));
-			parts.push(
-				details?.degraded
-					? theme.fg("warning", "unpdf (degraded)")
-					: theme.fg("muted", "pymupdf4llm"),
-			);
-			parts.push(theme.fg("dim", formatSize(details?.bytes ?? 0)));
-			if (details?.spilled) parts.push(theme.fg("warning", "→ file"));
-
+			const parts = [theme.fg("muted", d?.type ?? "?")];
+			if (d?.engine) parts.push(d.degraded ? theme.fg("warning", `${d.engine} (degraded)`) : theme.fg("muted", d.engine));
+			if (d?.pages !== undefined) parts.push(theme.fg("dim", d.pages ? `${d.pages.length} pages` : "all pages"));
+			if (d?.imageCount !== undefined) parts.push(theme.fg("dim", `${d.imageCount} images`));
 			let text = parts.join(sep);
-
-			if (!expanded) {
-				const lineCount = details?.lines ?? (fullText ? fullText.split("\n").length : 0);
-				if (lineCount > 0) {
-					text += sep + theme.fg("dim", `${lineCount} lines`);
-				}
-				text += " " + theme.fg("dim", `(${keyHint("app.tools.expand", "to expand")})`);
-				return new Text(text, 0, 0);
-			}
-
-			if (fullText) {
-				for (const line of fullText.split("\n")) {
-					text += `\n${theme.fg("toolOutput", line)}`;
-				}
-			}
+			if (!expanded) return new Text(`${text} ${theme.fg("dim", `(${keyHint("app.tools.expand", "to expand")})`)}`, 0, 0);
+			for (const line of fullText.split("\n")) text += `\n${theme.fg("toolOutput", line)}`;
 			return new Text(text, 0, 0);
 		},
 	});

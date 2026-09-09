@@ -1,5 +1,7 @@
 # doc_to_md: Python/venv backends, core extraction, CLI subcommand, Claude Code skill
 
+> **Superseded by:** [doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md](./2026-09-09-gh-13-selective-image-linked-excel-conversion.md) - "Out of scope: any change to scripts/pdf_to_md.py behavior" boundary, the flagless `doc-to-md <path>` CLI contract, and the inline/spill size gate
+
 ## Problem
 
 `doc_to_md` today has exactly two rungs: `uv run --with pymupdf4llm==<pin>` for
