@@ -186,7 +186,7 @@ a new setting is registered there or it warns as unknown.
 ```text
 Warning: pi-quiver settings (/Users/x/.pi/agent/settings.json): unknown or misplaced keys - unknown ones fall back to defaults
   "providerStallWatchdog" at top level - move under "quiver"
-  "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries
+  "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries, activityHook
 ```
 
 Worked mixed-shape example: global `settings.json` has flat
@@ -218,7 +218,8 @@ not a pi-quiver setting and is never nested):
       "firstEventMs": 20000,
       "warningMs": 120000,
       "recoveryMs": 240000,
-      "maxStallRetries": 3
+      "maxStallRetries": 3,
+      "activityHook": "local-runtime"
     }
   },
   "retry": {
@@ -236,11 +237,35 @@ not a pi-quiver setting and is never nested):
 | `warningMs` | `120000` | mid-stream, `ctx.mode === "tui"` only | Silence since the last non-empty text/thinking/toolcall delta; notifies. |
 | `recoveryMs` | `240000` | mid-stream, `ctx.mode === "tui"` only | Same clock; aborts and converts. Must be `> warningMs`. |
 | `maxStallRetries` | layered `retry.maxRetries`, else `3` | shared by both tiers | Watchdog aborts that may convert to a retryable error before stopping. |
+| `activityHook` | unset | requests claimed by the named adapter; pre-first-event in every mode, mid-stream in TUI | Opt into bounded activity checks instead of the standard deadlines. |
 
 `providerStallWatchdog` is OFF by default. Once enabled it arms in two tiers per provider request:
 
 - **Pre-first-event (`firstEventMs`).** Armed at every provider request, in every mode and from every origin - including extension-triggered turns that never emit `before_agent_start` - and cleared by the first assistant `message_start`. On expiry the request is aborted and, budget permitting, converted to a retryable error, so an unresponsive request recovers in ~22s (20s detection + Pi's 2s backoff) instead of the ~240s it took when only the mid-stream tier existed.
 - **Mid-stream (`warningMs` / `recoveryMs`).** Armed from the first assistant `message_start` onward, and only when `ctx.mode === "tui"`. Aborting mid-generation discards billed output tokens and an unattended run has nobody to read the warning, so headless mid-stream silence deliberately falls through to the transport timeout instead.
+
+`activityHook` selects a session-scoped activity adapter by name. The watchdog emits `pi-quiver:provider-stall-watchdog:activity-hook` at request setup with `{ adapter, model, signal, register }`. A matching adapter must call `register(check)` synchronously; `check(signal)` returns `"active"`, `"inactive"`, or `"unknown"` (or a promise of one). The event `signal` is the provider request signal; each check receives a separate signal that aborts at its 5s deadline. No matching adapter leaves the standard watchdog deadlines unchanged. Duplicate or asynchronous registration is rejected rather than resolved by extension load order.
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  ACTIVITY_HOOK_EVENT,
+  type ActivityHookRegistration,
+} from "pi-quiver/extensions/provider-stall-watchdog.ts";
+
+export default function localActivityAdapter(pi: ExtensionAPI) {
+  pi.events.on(ACTIVITY_HOOK_EVENT, (event) => {
+    const registration = event as ActivityHookRegistration;
+    if (registration.adapter !== "local-runtime" || registration.model.provider !== "local") return;
+    registration.register(async (signal): Promise<"unknown"> => {
+      // Query locally maintained provider state, honoring signal.
+      return "unknown";
+    });
+  });
+}
+```
+
+Checks start after 2m without a real provider event and repeat every 2m while they report `active`. A first `inactive`, `unknown`, thrown, rejected, or timed-out check keeps the independent 4m fallback. After an `active` extension, `inactive` or `unknown` recovers immediately. Real provider progress starts a new timer epoch. An independent ceiling prevents one inactivity window from exceeding 10m. Locally maintained adapters may use provider-specific status hooks, including LM Studio hooks; pi-quiver contains no provider-specific process or response parsing.
 
 **Raise `firstEventMs` if your provider is legitimately slow to first event.** Queueing gateways, throttled endpoints, and busy single-slot local model servers can hold the connection for well over 20s before their first stream event; every false abort re-uploads the whole context and spends one stall retry.
 
