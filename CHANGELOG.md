@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- provider-stall-watchdog: per-model threshold overrides via a `models` map on `quiver.providerStallWatchdog` - glob keys like `lmstudio/*` override `firstEventMs`/`warningMs`/`recoveryMs` for matching models, so slow local servers get patience without raising the global defaults (#18).
+
 ## v6.2.0 - 2026-09-15
 
 - `slack_thread` flattens Block Kit blocks in its default rendering (blocks joined by ` / `, `[<type>]` for unknown types) and gains an opt-in `raw: true` mode returning thread messages as a pure JSON array for `slack_update` round-trips; both modes go through the existing size gate. (#21)
@@ -31,7 +35,6 @@ via OIDC trusted publishing. The release helper at
 - doc_to_md (Excel): the Markdown opens with a `## Sheets` inventory (kind, size, hidden, chart/image counts, rendered view, CSV link); every non-empty worksheet's full content is exported to `sheets/<stem>-s<idx>-<slug>.csv`; the in-Markdown preview is capped at 100 rows x 50 columns and, when truncated, followed by a per-column profile (type, non-empty, min/max, distinct). Chartsheets and embedded charts are listed with type, title, and series refs.
 - doc_to_md (Excel): sheets carrying charts or images get a rendered view (`images/<stem>-s<idx>.<fmt>`) when LibreOffice is on `PATH` - one PDF page per sheet via `calc_pdf_Export` `SinglePageSheets`, rasterized by a new PyMuPDF `render-pages` child under a 16 Mpx budget. Any soffice or render failure degrades to `Rendered view: unavailable (<reason>)` plus a handle note; the conversion never fails. `.xls` keeps inventory/CSV/preview but has no visual detection.
 - doc_to_md: handle prints `Sheets-Dir` when CSVs were written; `info` lists chartsheets with kind and chart/image counts. Bundle overwrite now removes only this stem's owned-pattern files in `images/` and `sheets/`.
-
 ## v5.5.0 - 2026-09-10
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
