@@ -58,6 +58,6 @@ test("marketplace allowlist entries exist and contain SKILL.md", () => {
 	assert.strictEqual(mp.plugins.length, 1);
 	for (const rel of mp.plugins[0].skills) {
 		const skill = readFileSync(new URL(`../${rel}/SKILL.md`, import.meta.url), "utf8");
-		assert.match(skill, /^---\nname: /);
+		assert.match(skill.replace(/\r\n/g, "\n"), /^---\nname: /);
 	}
 });

@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- doc_to_md: rewrite primary-PDF image links correctly on Windows.
+
 ## v5.3.0 - 2026-09-09
 
 - doc_to_md: results are now a bundle on disk (`<stem>.md` + `images/`, temp dir

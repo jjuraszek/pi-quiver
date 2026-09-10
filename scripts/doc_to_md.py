@@ -21,6 +21,12 @@ HTML_IMAGE_RE = re.compile(
 )
 
 
+def image_source_map(source, target, filename):
+    real = os.path.realpath(source)
+    return {source: target, source.replace("\\", "/"): target,
+            real: target, real.replace("\\", "/"): target, filename: target}
+
+
 def rewrite_image_destinations(md, sources):
     def markdown(match):
         dest = match.group(2) if match.group(2) is not None else match.group(3)
@@ -106,7 +112,7 @@ def mode_pdf_primary(o):
                     dest = f"img{i}{os.path.splitext(f)[1].lower()}"
                     source = os.path.join(tmp, f)
                     target = f"p{n}/{dest}"
-                    sources.update({source: target, os.path.realpath(source): target, f: target})
+                    sources.update(image_source_map(source, target, f))
                     os.replace(source, os.path.join(d, dest))
                 md = rewrite_image_destinations(md, sources)
             if not md.strip():

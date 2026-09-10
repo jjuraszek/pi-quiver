@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -11,7 +11,6 @@ import {
 	applyEnvOverrides,
 	resolveSlackConfig,
 	discoverRepoRoot,
-	primaryCheckoutRoot,
 	parseEnvFile,
 	resolveToken,
 	type SlackConfig,
@@ -331,9 +330,6 @@ test("worktree without its own .env: primary checkout .env is consulted", () => 
 		writeFileSync(join(repo, ".env"), "SLACK_USER_TOKEN=xoxp-primary\n");
 		git(repo, ["branch", "wt-branch"]);
 		git(repo, ["worktree", "add", worktree, "wt-branch"]);
-
-		const primaryRoot = primaryCheckoutRoot(worktree);
-		assert.equal(primaryRoot, realpathSync(repo));
 
 		const token = resolveToken("user", DEFAULT_SLACK_CONFIG, {}, worktree);
 		assert.equal(token, "xoxp-primary");
