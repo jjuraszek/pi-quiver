@@ -8,9 +8,12 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## v5.4.0 - 2026-09-10
+## Unreleased
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
+
+## v5.4.0 - 2026-09-10
+
 - Settings: one condensed `pi-quiver settings` warning (each distinct message
   once per process) lists flat legacy keys in use, unknown `quiver.<block>`
   names, and unknown fields inside
