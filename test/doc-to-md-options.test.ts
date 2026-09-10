@@ -52,12 +52,11 @@ test("resolveOptions: bad per-call values are UsageErrors", () => {
 	assert.throws(() => resolveOptions({ path: "a.pdf", pymupdfVersion: "1.26.0" }, {}, {}), UsageError);
 });
 
-test("coerceDocToMdSettings: unknown and ill-typed keys are dropped with a warning; intents rejected", () => {
+test("coerceDocToMdSettings: unknown and intent keys are dropped silently, ill-typed keys warn", () => {
 	const warnings: string[] = [];
 	const patch = coerceDocToMdSettings({ primaryTimeoutMs: 100, bogus: 1, imageDpi: "high", pages: "1-2", imageFormat: "jpg" }, (m) => warnings.push(m));
 	assert.deepStrictEqual(patch, { primaryTimeoutMs: 100, imageFormat: "jpg" });
-	assert.strictEqual(warnings.length, 3);
-	assert.ok(warnings.some((w) => w.includes("bogus")) && warnings.some((w) => w.includes("imageDpi")) && warnings.some((w) => w.includes("pages")));
+	assert.deepStrictEqual(warnings, ["pi-quiver: quiver.docToMd.imageDpi must be a positive integer; ignored."]);
 	assert.strictEqual(coerceDocToMdSettings(null), undefined);
 	assert.strictEqual(coerceDocToMdSettings([1]), undefined);
 });

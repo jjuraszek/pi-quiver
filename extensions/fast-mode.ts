@@ -65,7 +65,7 @@ const STATUS_KEY = "fast-mode";
 const BETA_HEADER = "anthropic-beta";
 
 type Config = { enabled: boolean };
-const DEFAULT_CONFIG: Config = { enabled: false };
+export const DEFAULT_CONFIG: Config = { enabled: false };
 
 export function coerce(raw: unknown): Partial<Config> | undefined {
 	if (raw === undefined) return undefined;
@@ -189,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 	const readFlag = (): boolean => pi.getFlag("fast") === true;
 
 	const resolveState = (ctx: ExtensionContext): boolean => {
-		const config = resolveConfig(ctx.cwd, "fastMode", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning")).enabled;
+		const config = resolveConfig(ctx.cwd, "fastMode", DEFAULT_CONFIG, coerce, (m) => ctx.hasUI ? ctx.ui.notify(m, "warning") : console.warn(m)).enabled;
 		enabled = resolveEnabled({ config, flag: readFlag(), live: liveOverride });
 		return enabled;
 	};

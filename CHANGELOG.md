@@ -11,6 +11,18 @@ via OIDC trusted publishing. The release helper at
 ## Unreleased
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
+- Settings: one condensed `pi-quiver settings` warning (each distinct message
+  once per process) lists flat legacy keys in use, unknown `quiver.<block>`
+  names, and unknown fields inside
+  known blocks, with accepted names inline; unknown keys fall back to defaults.
+  Replaces the separate non-object-`quiver` and flat+nested-duplicate sentences;
+  a flat legacy key alone now warns (still honoured). Accepted names are the
+  exported `QUIVER_CONFIG_KEYS` registry in `lib/extension-config.ts` (#14).
+- Settings warnings from `fast-mode`, `session-name`, and `slack` reach stderr
+  when no UI is bound (print/json modes) instead of being dropped by the no-op
+  headless `notify`.
+- doc_to_md: the coercer no longer warns about unknown `quiver.docToMd` keys (the
+  settings lint does); the `pi-quiver` CLI reader warns about them itself.
 
 ## v5.3.0 - 2026-09-09
 

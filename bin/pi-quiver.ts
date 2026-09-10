@@ -65,6 +65,10 @@ export function readCliSettings(cwd: string, env: NodeJS.ProcessEnv, warn: (m: s
 		let raw: unknown;
 		try { raw = (JSON.parse(readFileSync(file, "utf8")) as { quiver?: { docToMd?: unknown } }).quiver?.docToMd; } catch { warn(`pi-quiver: ${file} is not valid JSON; ignored.`); continue; }
 		if (raw === undefined) continue;
+		if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+			const unknown = Object.keys(raw).filter((k) => !DOC_TO_MD_OPTIONS.some((o) => o.key === k && o.settable));
+			if (unknown.length > 0) warn(`pi-quiver: quiver.docToMd in ${file} has keys that are not tunable settings; ignored: ${unknown.join(", ")}`);
+		}
 		const patch = coerceDocToMdSettings(raw, warn);
 		if (patch) Object.assign(out, patch); else warn(`pi-quiver: "docToMd" in ${file} has an unrecognized value; ignored.`);
 	}

@@ -53,11 +53,13 @@ test("readCliSettings: agent dir from PI_CODING_AGENT_DIR (tilde expanded, empty
 	const tmp = mkdtempSync(join(tmpdir(), "quiver-cli-set-"));
 	try {
 		mkdirSync(join(tmp, "agent")); writeFileSync(join(tmp, "agent", "settings.json"), JSON.stringify({ quiver: { docToMd: { primaryTimeoutMs: 111, imageDpi: 72 } } }));
-		mkdirSync(join(tmp, "proj", ".pi"), { recursive: true }); writeFileSync(join(tmp, "proj", ".pi", "settings.json"), JSON.stringify({ quiver: { docToMd: { primaryTimeoutMs: 222, bogus: 1 } } }));
+		mkdirSync(join(tmp, "proj", ".pi"), { recursive: true }); writeFileSync(join(tmp, "proj", ".pi", "settings.json"), JSON.stringify({ quiver: { docToMd: { primaryTimeoutMs: 222, bogus: 1, bogus2: 2 } } }));
 		const warnings: string[] = [];
 		const s = readCliSettings(join(tmp, "proj"), { PI_CODING_AGENT_DIR: join(tmp, "agent") }, (m) => warnings.push(m));
 		assert.deepStrictEqual(s, { primaryTimeoutMs: 222, imageDpi: 72 });
-		assert.ok(warnings.some((w) => w.includes("bogus")));
+		const unknownWarnings = warnings.filter((w) => w.includes("not tunable"));
+		assert.strictEqual(unknownWarnings.length, 1);
+		assert.deepStrictEqual(unknownWarnings[0].split("ignored: ")[1].split(", "), ["bogus", "bogus2"]);
 		const home = readCliSettings(join(tmp, "proj"), { PI_CODING_AGENT_DIR: "", HOME: tmp }, () => {});
 		assert.deepStrictEqual(home, { primaryTimeoutMs: 222 }); // ~/.pi/agent/settings.json absent -> project only
 		const tilde = readCliSettings(join(tmp, "proj"), { PI_CODING_AGENT_DIR: "~/agent", HOME: tmp }, () => {});

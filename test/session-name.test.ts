@@ -258,14 +258,16 @@ function extensionHarness(
 	writeFileSync(
 		join(cwd, ".pi", "settings.json"),
 		JSON.stringify({
-			sessionAutoName: {
-				enabled: true,
-				ghosttyTab: false,
-				rules: ["Lead with the ticket id"],
-				deny: ["grid strong"],
-				revisitFirstTurn: 10,
-				revisitEveryTurns: 100,
-				...settingsOverride,
+			quiver: {
+				sessionAutoName: {
+					enabled: true,
+					ghosttyTab: false,
+					rules: ["Lead with the ticket id"],
+					deny: ["grid strong"],
+					revisitFirstTurn: 10,
+					revisitEveryTurns: 100,
+					...settingsOverride,
+				},
 			},
 		}),
 	);

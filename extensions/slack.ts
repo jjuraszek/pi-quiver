@@ -200,7 +200,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 	let registered = false;
 
 	pi.on("session_start", async (_event, ctx) => {
-		const cfg = resolveSlackConfig(ctx.cwd, process.env, (m) => ctx.ui.notify(m, "warning"));
+		const cfg = resolveSlackConfig(ctx.cwd, process.env, (m) => ctx.hasUI ? ctx.ui.notify(m, "warning") : console.warn(m));
 		if (cfg.enabled !== true) return;
 		if (registered) return;
 		registered = true;

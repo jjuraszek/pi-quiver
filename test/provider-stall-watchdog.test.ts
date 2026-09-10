@@ -116,8 +116,8 @@ function withSettings(
 
 test("settings layers let valid project values repair invalid global shape and fields", () => {
 	withSettings(
-		{ providerStallWatchdog: "on" },
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		{ quiver: { providerStallWatchdog: "on" } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
 		(cwd) => {
 			assert.deepEqual(resolveWatchdogConfig(cwd), {
 				ok: true,
@@ -127,8 +127,8 @@ test("settings layers let valid project values repair invalid global shape and f
 	);
 
 	withSettings(
-		{ providerStallWatchdog: { enabled: "bad", warningMs: "bad", recoveryMs: -1 } },
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		{ quiver: { providerStallWatchdog: { enabled: "bad", warningMs: "bad", recoveryMs: -1 } } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
 		(cwd) => {
 			assert.equal(resolveWatchdogConfig(cwd).ok, true);
 		},
@@ -137,7 +137,7 @@ test("settings layers let valid project values repair invalid global shape and f
 
 test("maxStallRetries defaults to layered retry.maxRetries and explicit config wins", () => {
 	withSettings(
-		{ retry: { maxRetries: 5 }, providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		{ retry: { maxRetries: 5 }, quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
 		{},
 		(cwd) => {
 			assert.deepEqual(resolveWatchdogConfig(cwd), {
@@ -149,7 +149,7 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 
 	withSettings(
 		{ retry: { maxRetries: 5 } },
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 }, retry: { maxRetries: 7 } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 } }, retry: { maxRetries: 7 } },
 		(cwd) => {
 			const result = resolveWatchdogConfig(cwd);
 			assert.equal(result.ok, true);
@@ -159,7 +159,7 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 
 	withSettings(
 		{ retry: { maxRetries: 0 } },
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
 		(cwd) => {
 			const result = resolveWatchdogConfig(cwd);
 			assert.equal(result.ok, true);
@@ -169,7 +169,7 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 
 	withSettings(
 		{},
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } } },
 		(cwd) => {
 			const result = resolveWatchdogConfig(cwd);
 			assert.equal(result.ok, true, "maxStallRetries: 0 means detect and fail fast, never auto-retry");
@@ -180,13 +180,25 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 
 test("settings layers let invalid project values override valid global values and fail closed", () => {
 	withSettings(
-		{ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } },
-		{ providerStallWatchdog: { recoveryMs: "bad" } },
+		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
+		{ quiver: { providerStallWatchdog: { recoveryMs: "bad" } } },
 		(cwd) => {
 			const result = resolveWatchdogConfig(cwd);
 			assert.equal(result.ok, false);
 		},
 	);
+});
+
+test("unknown watchdog field is reported by the settings lint and the default firstEventMs still applies", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, timeoutMs: 720_000 } } }, (cwd) => {
+		const warnings: string[] = [];
+		assert.deepEqual(resolveWatchdogConfig(cwd, (m) => warnings.push(m)), {
+			ok: true,
+			config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 },
+		});
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0].includes(`"quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries`));
+	});
 });
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -244,7 +256,7 @@ function messageStart(role: "assistant" | "user" | "toolResult" = "assistant") {
 const ABORT_STUCK_NOTICE = "The stalled request did not stop within 10s of being aborted; the provider connection is unresponsive. No automatic retry will run - the turn will not end until the HTTP idle timeout expires.";
 
 test("semantic deltas reset the mid-stream silence clock", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart());
@@ -258,7 +270,7 @@ test("semantic deltas reset the mid-stream silence clock", () => {
 });
 
 test("warning status formats configured warning and remaining recovery thresholds", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 30_000, recoveryMs: 90_000 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 30_000, recoveryMs: 90_000 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart());
@@ -267,7 +279,7 @@ test("warning status formats configured warning and remaining recovery threshold
 	});
 });
 
-test("config warnings: flat+nested providerStallWatchdog reaches announce with type warning", () => {
+test("config warnings: flat providerStallWatchdog reaches announce via the settings lint", () => {
 	withSettings(
 		{},
 		{
@@ -277,8 +289,8 @@ test("config warnings: flat+nested providerStallWatchdog reaches announce with t
 		(cwd) => {
 			const h = watchdogHarness("tui", cwd);
 			h.emit("before_provider_request");
-			const hit = h.notifications.find(([text]) => text.includes('"providerStallWatchdog" is set both flat and under "quiver"'));
-			assert.ok(hit, "duplicate settings warning reaches announce");
+			const hit = h.notifications.find(([text]) => text.includes('"providerStallWatchdog" at top level - move under "quiver"'));
+			assert.ok(hit, "flat settings lint reaches announce");
 			assert.equal(hit![1], "warning");
 		},
 	);
@@ -306,7 +318,7 @@ test("resolveRetryMaxRetries: quiver.retry is never consulted", () => {
 });
 
 function withEnabledWatchdog(assertion: (cwd: string) => void): void {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } }, assertion);
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } }, assertion);
 }
 
 test("every mode arms the first-event deadline with no preceding input or before_agent_start; only TUI arms mid-stream", () => {
@@ -379,7 +391,7 @@ test("agent_end clears an armed warning and disarms its captured callbacks", () 
 });
 
 test("semantic progress permits a later warning, and terminal events clean only assistant requests", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 100 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 100 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(10);
 		h.emit("message_update", semantic("text_delta", "x"));
@@ -398,7 +410,7 @@ test("semantic progress permits a later warning, and terminal events clean only 
 // Pins the invariant that makes the unconditional `clearTimers(); schedule(ctx);` in message_update
 // load-bearing: a fired warning timer is gone, so only a full re-arm can produce a second warning.
 test("a second silence window after semantic progress emits a second warning notification", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 100 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 100 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart());
@@ -462,13 +474,13 @@ test("shutdown invalidates captured timer callbacks", () => {
 });
 
 test("shutdown clears invalid-config disablement for the next session", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		const originalWarn = console.warn;
 		console.warn = () => {};
 		try {
 			h.emit("before_provider_request");
-			writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } }));
+			writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } }));
 			h.emit("session_shutdown");
 			h.emit("before_provider_request");
 			h.emit("message_start", messageStart());
@@ -485,7 +497,7 @@ test("config is resolved once per session and re-read after shutdown", () => {
 		const originalWarn = console.warn; let warnings = 0; console.warn = () => { warnings += 1; };
 		try {
 			h.emit("before_provider_request");
-			writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } }));
+			writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ quiver: { providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } } }));
 			h.emit("before_provider_request");
 		} finally { console.warn = originalWarn; }
 		assert.equal(warnings, 0, "settings.json is not re-read mid-session");
@@ -515,7 +527,7 @@ test("first recovery marks ownership, consumes retry, notifies, then synchronous
 });
 
 test("default recovery notice formats elapsed consistently", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(240_000);
 		assert.deepEqual(h.notifications, [
@@ -538,7 +550,7 @@ test("only watchdog-owned first abort is rewritten; external abort disarms delay
 });
 
 test("watchdog-first ownership survives a later Esc and an exhausted budget stops converting", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 1 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 1 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(20); h.abortCurrentSignal();
 		assert.equal((h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }) as any)?.message.stopReason, "error");
@@ -550,7 +562,7 @@ test("watchdog-first ownership survives a later Esc and an exhausted budget stop
 });
 
 test("consecutive stalls convert until maxStallRetries is exhausted", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20, maxStallRetries: 2 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		for (const expected of ["(1/2)", "(2/2)"]) {
 			h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(20);
@@ -590,7 +602,7 @@ test("settlement only resets retry and reports an unavailable continuation", () 
 });
 
 test("invalid config disables once without timers", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 20, recoveryMs: 10 } } }, (cwd) => {
 		for (const [mode, expectedWarnings] of [["tui", 0], ["print", 1]] as const) {
 			const h = watchdogHarness(mode, cwd);
 			const originalWarn = console.warn; let warnings = 0; console.warn = () => { warnings += 1; };
@@ -631,7 +643,7 @@ async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = t
 	const contexts: any[] = []; const starts = scripts.map(() => deferred<void>()); const editor: string[] = []; const notifications: string[] = []; let toolCalls = 0;
 	try {
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ providerStallWatchdog: { enabled: true, firstEventMs: 20, warningMs: 10, recoveryMs: 20, ...(opts.maxStallRetries === undefined ? {} : { maxStallRetries: opts.maxStallRetries }) } }));
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 20, warningMs: 10, recoveryMs: 20, ...(opts.maxStallRetries === undefined ? {} : { maxStallRetries: opts.maxStallRetries }) } } }));
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const runtime = await ModelRuntime.create({ modelsPath: null });
 		runtime.registerProvider("watchdog-test", { apiKey: "test-key", baseUrl: "https://watchdog.test", api: "watchdog-test", models: [{ id: "watchdog-test-model", name: "Watchdog test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 1_024 }], streamSimple(model, context, options) {
@@ -754,7 +766,7 @@ test("installed runtime arms for an extension-origin turn that never emits befor
 });
 
 test("a request with no assistant message_start aborts at firstEventMs", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		assert.equal(h.timers.size, 1, "only the first-event deadline is armed before the first stream event");
@@ -767,7 +779,7 @@ test("a request with no assistant message_start aborts at firstEventMs", () => {
 });
 
 test("an assistant message_start swaps the first-event deadline for the mid-stream pair, permanently", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart());
@@ -782,7 +794,7 @@ test("an assistant message_start swaps the first-event deadline for the mid-stre
 });
 
 test("a non-assistant message_start leaves the first-event deadline armed", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart("user"));
@@ -794,7 +806,7 @@ test("a non-assistant message_start leaves the first-event deadline armed", () =
 });
 
 test("an early first-event callback reschedules for the remaining silence", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 10, warningMs: 20, recoveryMs: 30 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 10, warningMs: 20, recoveryMs: 30 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		const [handle, timer] = [...h.timers.entries()][0];
@@ -808,7 +820,7 @@ test("an early first-event callback reschedules for the remaining silence", () =
 });
 
 test("a later request in the same run re-arms the first-event deadline after an earlier stream started", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.emit("message_start", messageStart());
@@ -820,7 +832,7 @@ test("a later request in the same run re-arms the first-event deadline after an 
 });
 
 test("deltas before the first assistant message_start do not reset the first-event deadline", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 10, warningMs: 20, recoveryMs: 30 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 10, warningMs: 20, recoveryMs: 30 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(9);
@@ -831,7 +843,7 @@ test("deltas before the first assistant message_start do not reset the first-eve
 });
 
 test("an abort that never yields message_end escalates after the grace period", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -852,7 +864,7 @@ test("an abort that never yields message_end escalates after the grace period", 
 });
 
 test("post-abort stream events push the abort grace deadline out without re-entering the stall cycle", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -869,7 +881,7 @@ test("post-abort stream events push the abort grace deadline out without re-ente
 });
 
 test("a post-abort stream event followed by silence escalates one grace period later", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -886,7 +898,7 @@ test("a post-abort stream event followed by silence escalates one grace period l
 });
 
 test("a non-assistant message_start after the abort does not count as connection liveness", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -898,7 +910,7 @@ test("a non-assistant message_start after the abort does not count as connection
 });
 
 test("an aborted final message's own message_start does not stop its message_end from converting", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -920,7 +932,7 @@ test("an aborted final message's own message_start does not stop its message_end
 });
 
 test("the abort grace deadline is armed on the exhausted path and cleared by message_end", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -934,7 +946,7 @@ test("the abort grace deadline is armed on the exhausted path and cleared by mes
 });
 
 test("an exhausted-path abort that never yields message_end escalates after the grace period", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20, maxStallRetries: 0 } } }, (cwd) => {
 		const h = watchdogHarness("tui", cwd);
 		h.emit("before_provider_request");
 		h.advance(5);
@@ -949,7 +961,7 @@ test("an exhausted-path abort that never yields message_end escalates after the 
 });
 
 test("an rpc abort reaches the bound notify and stays off stderr", () => {
-	withSettings({}, { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } }, (cwd) => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, (cwd) => {
 		const h = watchdogHarness("rpc", cwd);
 		const originalWarn = console.warn;
 		const warnings: string[] = [];

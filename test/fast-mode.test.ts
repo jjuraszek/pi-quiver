@@ -270,6 +270,7 @@ function harness(opts: { flag?: boolean; oauth?: boolean; model?: any; authFails
 	};
 	const ctx: any = {
 		cwd: "/nonexistent-fast-mode-test",
+		hasUI: true,
 		model,
 		ui: {
 			setStatus: (_k: string, t?: string) => { status = t; },
@@ -549,11 +550,31 @@ test("integration: malformed fastMode settings surface one warning notify", asyn
 		const h = harness();
 		h.ctx.cwd = projectDir;
 		await h.hooks.get("session_start")!({}, h.ctx);
-		const warning = h.getNotifications().find((n) => n.msg.includes('"fastMode"'));
+		const warning = h.getNotifications().find((n) => n.msg.includes("unrecognized value"));
 		assert.ok(warning, "malformed fastMode warns");
 		assert.equal(warning!.level, "warning");
 		assert.ok(warning!.msg.includes(join(projectDir, ".pi", "settings.json")));
 	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+	}
+});
+
+test("integration: without a UI, settings warnings go to console.warn, never notify", async () => {
+	const projectDir = mkdtempSync(join(tmpdir(), "fast-mode-headless-warn-"));
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ fastMode: "bogus" }));
+	const originalWarn = console.warn;
+	const stderr: string[] = [];
+	console.warn = (m: unknown) => { stderr.push(String(m)); };
+	try {
+		const h = harness();
+		h.ctx.cwd = projectDir;
+		h.ctx.hasUI = false;
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.ok(stderr.some((m) => m.includes(`"fastMode" in ${join(projectDir, ".pi", "settings.json")} has an unrecognized value`)));
+		assert.equal(h.getNotifications().length, 0);
+	} finally {
+		console.warn = originalWarn;
 		rmSync(projectDir, { recursive: true, force: true });
 	}
 });
