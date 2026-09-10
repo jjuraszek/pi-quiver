@@ -186,7 +186,7 @@ a new setting is registered there or it warns as unknown.
 ```text
 Warning: pi-quiver settings (/Users/x/.pi/agent/settings.json): unknown or misplaced keys - unknown ones fall back to defaults
   "providerStallWatchdog" at top level - move under "quiver"
-  "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries
+  "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries, models
 ```
 
 Worked mixed-shape example: global `settings.json` has flat
@@ -218,7 +218,10 @@ not a pi-quiver setting and is never nested):
       "firstEventMs": 20000,
       "warningMs": 120000,
       "recoveryMs": 240000,
-      "maxStallRetries": 3
+      "maxStallRetries": 3,
+      "models": {
+        "lmstudio/*": { "firstEventMs": 600000, "recoveryMs": 600000 }
+      }
     }
   },
   "retry": {
@@ -236,13 +239,16 @@ not a pi-quiver setting and is never nested):
 | `warningMs` | `120000` | mid-stream, `ctx.mode === "tui"` only | Silence since the last non-empty text/thinking/toolcall delta; notifies. |
 | `recoveryMs` | `240000` | mid-stream, `ctx.mode === "tui"` only | Same clock; aborts and converts. Must be `> warningMs`. |
 | `maxStallRetries` | layered `retry.maxRetries`, else `3` | shared by both tiers | Watchdog aborts that may convert to a retryable error before stopping. |
+| `models` | `{}` | per-model overrides of the three thresholds | Glob keys match `provider/model` (case-insensitive, `*` matches any run of characters, first match wins); each entry may override `firstEventMs`, `warningMs`, and/or `recoveryMs`. |
 
 `providerStallWatchdog` is OFF by default. Once enabled it arms in two tiers per provider request:
 
 - **Pre-first-event (`firstEventMs`).** Armed at every provider request, in every mode and from every origin - including extension-triggered turns that never emit `before_agent_start` - and cleared by the first assistant `message_start`. On expiry the request is aborted and, budget permitting, converted to a retryable error, so an unresponsive request recovers in ~22s (20s detection + Pi's 2s backoff) instead of the ~240s it took when only the mid-stream tier existed.
 - **Mid-stream (`warningMs` / `recoveryMs`).** Armed from the first assistant `message_start` onward, and only when `ctx.mode === "tui"`. Aborting mid-generation discards billed output tokens and an unattended run has nobody to read the warning, so headless mid-stream silence deliberately falls through to the transport timeout instead.
 
-**Raise `firstEventMs` if your provider is legitimately slow to first event.** Queueing gateways, throttled endpoints, and busy single-slot local model servers can hold the connection for well over 20s before their first stream event; every false abort re-uploads the whole context and spends one stall retry.
+`models` retunes the three thresholds per model. A request's effective thresholds are the base knobs overlaid with the first entry whose glob matches its `provider/model` label - `"lmstudio/*"` covers a whole local server, `"openai/gpt-5.4"` one remote model. An override that would leave the merged `warningMs >= recoveryMs` is invalid and fails closed at startup like any other invalid watchdog config.
+
+**Raise `firstEventMs` if your provider is legitimately slow to first event** - per model via `models` when only one provider is slow. Queueing gateways, throttled endpoints, and busy single-slot local model servers can hold the connection for well over 20s before their first stream event; every false abort re-uploads the whole context and spends one stall retry.
 
 **Leave pi's own `httpIdleTimeoutMs` (default `300000`) at its default.** It is the transport backstop, and a single value drives undici's `headersTimeout` *and* `bodyTimeout` - lowering it to get fast pre-stream failure also truncates legitimate mid-stream gaps. `firstEventMs` is the knob for pre-stream silence.
 

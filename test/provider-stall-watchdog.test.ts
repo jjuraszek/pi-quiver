@@ -17,8 +17,10 @@ import providerStallWatchdog, {
 	coerce,
 	createProviderStallWatchdog,
 	resolveWatchdogConfig,
+	thresholdsFor,
 	validateConfig,
 	type ConfigCandidate,
+	type WatchdogConfig,
 } from "../extensions/provider-stall-watchdog.ts";
 
 test("coerce: boolean shorthand toggles enabled", () => {
@@ -35,8 +37,8 @@ test("coerce preserves recognized values without type filtering", () => {
 			expected: { blockIsObject: true, enabled: true, warningMs: "bad" },
 		},
 		{
-			raw: { enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
-			expected: { blockIsObject: true, enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
+			raw: { enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many", models: { "lmstudio/*": { firstEventMs: 600_000 } } },
+			expected: { blockIsObject: true, enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many", models: { "lmstudio/*": { firstEventMs: 600_000 } } },
 		},
 	];
 
@@ -45,13 +47,13 @@ test("coerce preserves recognized values without type filtering", () => {
 
 test("validateConfig accepts a complete valid candidate", () => {
 	assert.deepEqual(
-		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 }),
-		{ ok: true, config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 } },
+		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, models: { "lmstudio/*": { firstEventMs: 600_000, recoveryMs: 600_000 } } }),
+		{ ok: true, config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, models: { "lmstudio/*": { firstEventMs: 600_000, recoveryMs: 600_000 } } } },
 	);
 });
 
 test("validateConfig fails closed for invalid values", () => {
-	const valid = { blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 };
+	const valid = { blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, models: {} };
 	const cases: Array<{ name: string; candidate: ConfigCandidate }> = [
 		{ name: "non-object block", candidate: { ...valid, blockIsObject: false } },
 		{ name: "enabled wrong type", candidate: { ...valid, enabled: "true" } },
@@ -70,6 +72,14 @@ test("validateConfig fails closed for invalid values", () => {
 		{ name: "negative maxStallRetries", candidate: { ...valid, maxStallRetries: -1 } },
 		{ name: "fractional maxStallRetries", candidate: { ...valid, maxStallRetries: 1.5 } },
 		{ name: "maxStallRetries wrong type", candidate: { ...valid, maxStallRetries: "3" } },
+		{ name: "models wrong type", candidate: { ...valid, models: "lmstudio/*" } },
+		{ name: "models array", candidate: { ...valid, models: [] } },
+		{ name: "models entry not an object", candidate: { ...valid, models: { "lmstudio/*": 600_000 } } },
+		{ name: "models entry unknown key", candidate: { ...valid, models: { "lmstudio/*": { timeoutMs: 600_000 } } } },
+		{ name: "models entry zero delay", candidate: { ...valid, models: { "lmstudio/*": { firstEventMs: 0 } } } },
+		{ name: "models entry fractional delay", candidate: { ...valid, models: { "lmstudio/*": { firstEventMs: 1.5 } } } },
+		{ name: "models entry wrong delay type", candidate: { ...valid, models: { "lmstudio/*": { firstEventMs: "600000" } } } },
+		{ name: "models entry breaks merged warning/recovery order", candidate: { ...valid, models: { "lmstudio/*": { warningMs: 240_000 } } } },
 		{ name: "zero firstEvent", candidate: { ...valid, firstEventMs: 0 } },
 		{ name: "negative firstEvent", candidate: { ...valid, firstEventMs: -1 } },
 		{ name: "fractional firstEvent", candidate: { ...valid, firstEventMs: 1.5 } },
@@ -86,8 +96,8 @@ test("validateConfig fails closed for invalid values", () => {
 
 test("validateConfig accepts Node's maximum timer delay", () => {
 	assert.deepEqual(
-		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: MAX_TIMER_MS, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 0 }),
-		{ ok: true, config: { enabled: true, firstEventMs: MAX_TIMER_MS, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 0 } },
+		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: MAX_TIMER_MS, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 0, models: {} }),
+		{ ok: true, config: { enabled: true, firstEventMs: MAX_TIMER_MS, warningMs: 1, recoveryMs: MAX_TIMER_MS, maxStallRetries: 0, models: {} } },
 	);
 });
 
@@ -121,7 +131,7 @@ test("settings layers let valid project values repair invalid global shape and f
 		(cwd) => {
 			assert.deepEqual(resolveWatchdogConfig(cwd), {
 				ok: true,
-				config: { enabled: true, firstEventMs: 20_000, warningMs: 10, recoveryMs: 20, maxStallRetries: 3 },
+				config: { enabled: true, firstEventMs: 20_000, warningMs: 10, recoveryMs: 20, maxStallRetries: 3, models: {} },
 			});
 		},
 	);
@@ -142,7 +152,7 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 		(cwd) => {
 			assert.deepEqual(resolveWatchdogConfig(cwd), {
 				ok: true,
-				config: { enabled: true, firstEventMs: 20_000, warningMs: 10, recoveryMs: 20, maxStallRetries: 5 },
+				config: { enabled: true, firstEventMs: 20_000, warningMs: 10, recoveryMs: 20, maxStallRetries: 5, models: {} },
 			});
 		},
 	);
@@ -194,10 +204,10 @@ test("unknown watchdog field is reported by the settings lint and the default fi
 		const warnings: string[] = [];
 		assert.deepEqual(resolveWatchdogConfig(cwd, (m) => warnings.push(m)), {
 			ok: true,
-			config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 },
+			config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, models: {} },
 		});
 		assert.equal(warnings.length, 1);
-		assert.ok(warnings[0].includes(`"quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries`));
+		assert.ok(warnings[0].includes(`"quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries, models`));
 	});
 });
 
@@ -215,6 +225,7 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 	const ctx = {
 		mode,
 		cwd,
+		model: { provider: "other", id: "test-model" },
 		hasUI: mode === "tui" || mode === "rpc",
 		signal: controller.signal,
 		ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), notify: (text: string, type?: string) => notifications.push([text, type]) },
@@ -228,7 +239,9 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 			return handle;
 		},
 		clearTimeout: (handle) => { timers.delete(handle as number); },
-	})({ on: (event: string, handler: Handler) => handlers.set(event, handler) } as never);
+	})({
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+	} as never);
 	return {
 		emit: (event: string, payload: Record<string, unknown> = {}) => handlers.get(event)?.({ type: event, ...payload }, ctx),
 		advance: (ms: number) => { now += ms; for (;;) { const due = [...timers.entries()].filter(([, timer]) => timer.at <= now).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; timers.delete(due[0]); due[1].callback(); } },
@@ -239,6 +252,7 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 			return previous;
 		},
 		abortCurrentSignal: () => controller.abort(),
+		useModel: (provider = "other", id = "test-model") => { ctx.model = { provider, id }; },
 		get now() { return now; },
 		get aborts() { return aborts; },
 		timers, statuses, notifications,
@@ -254,6 +268,67 @@ function messageStart(role: "assistant" | "user" | "toolResult" = "assistant") {
 }
 
 const ABORT_STUCK_NOTICE = "The stalled request did not stop within 10s of being aborted; the provider connection is unresponsive. No automatic retry will run - the turn will not end until the HTTP idle timeout expires.";
+
+test("thresholdsFor matches globs case-insensitively against provider/id, first match wins", () => {
+	const config: WatchdogConfig = {
+		enabled: true,
+		firstEventMs: 20_000,
+		warningMs: 120_000,
+		recoveryMs: 240_000,
+		maxStallRetries: 3,
+		models: { "LMStudio/*": { firstEventMs: 600_000 }, "openai/gpt-5.4": { warningMs: 300_000, recoveryMs: 600_000 } },
+	};
+	assert.deepEqual(thresholdsFor(config, { provider: "lmstudio", id: "qwen3-30b" }), { firstEventMs: 600_000, warningMs: 120_000, recoveryMs: 240_000 });
+	assert.deepEqual(thresholdsFor(config, { provider: "openai", id: "gpt-5.4" }), { firstEventMs: 20_000, warningMs: 300_000, recoveryMs: 600_000 });
+	assert.deepEqual(thresholdsFor(config, { provider: "openai", id: "gpt-5x4" }), { firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000 }, ". in a pattern is literal, not a regex wildcard");
+	assert.deepEqual(thresholdsFor(config, undefined), { firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000 });
+});
+
+test("models override delays the first-event deadline for matching models only", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, models: { "lmstudio/*": { firstEventMs: 100 } } } } }, (cwd) => {
+		const local = watchdogHarness("tui", cwd);
+		local.useModel("lmstudio", "qwen3-30b");
+		local.emit("before_provider_request");
+		local.advance(50);
+		assert.equal(local.aborts, 0, "the base 20s default no longer applies to a matching model");
+		local.advance(50);
+		assert.equal(local.aborts, 1);
+		assert.deepEqual(local.notifications.at(-1), ["Provider sent no response for 100ms; stopping and retrying the request.", undefined]);
+
+		const remote = watchdogHarness("tui", cwd);
+		remote.useModel("openai", "gpt-5.4");
+		remote.emit("before_provider_request");
+		remote.advance(19_999);
+		assert.equal(remote.aborts, 0);
+		remote.advance(1);
+		assert.equal(remote.aborts, 1, "non-matching models keep the base deadline");
+	});
+});
+
+test("models override uses the first matching pattern", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, models: { "lmstudio/*": { firstEventMs: 100 }, "lmstudio/qwen3-30b": { firstEventMs: 50 } } } } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.useModel("lmstudio", "qwen3-30b");
+		h.emit("before_provider_request");
+		h.advance(50);
+		assert.equal(h.aborts, 0, "the first matching pattern wins over a more specific later one");
+		h.advance(50);
+		assert.equal(h.aborts, 1);
+	});
+});
+
+test("models override retunes the mid-stream warning and recovery pair", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, models: { "lmstudio/*": { warningMs: 30_000, recoveryMs: 90_000 } } } } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.useModel("lmstudio", "qwen3-30b");
+		h.emit("before_provider_request");
+		h.emit("message_start", messageStart());
+		h.advance(30_000);
+		assert.deepEqual(h.notifications.at(-1), ["No model progress for 30s; aborting and asking Pi to retry in 1m (Esc aborts now)", "warning"]);
+		h.advance(60_000);
+		assert.equal(h.aborts, 1);
+	});
+});
 
 test("semantic deltas reset the mid-stream silence clock", () => {
 	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } } }, (cwd) => {
