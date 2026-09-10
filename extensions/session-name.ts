@@ -64,7 +64,7 @@ type Config = {
 	revisitFirstTurn: number;
 	revisitEveryTurns: number;
 };
-const DEFAULT_CONFIG: Config = {
+export const DEFAULT_CONFIG: Config = {
 	enabled: false,
 	ghosttyTab: true,
 	herdrTab: true,
@@ -105,7 +105,7 @@ export function coerce(raw: unknown): Partial<Config> | undefined {
 }
 
 function loadConfig(ctx: ExtensionContext): Config {
-	return resolveConfig(ctx.cwd, "sessionAutoName", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning"));
+	return resolveConfig(ctx.cwd, "sessionAutoName", DEFAULT_CONFIG, coerce, (m) => ctx.hasUI ? ctx.ui.notify(m, "warning") : console.warn(m));
 }
 
 type ContentBlock = { type?: string; text?: string };

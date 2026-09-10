@@ -105,13 +105,13 @@ function coerceValue(d: OptionDescriptor, raw: unknown, fromString = false): { o
 	}
 }
 
-/** Single validation boundary for `quiver.docToMd`: unknown/ill-typed/intent keys are dropped with one warning each. */
+/** Type-validation boundary for `quiver.docToMd`: ill-typed keys are dropped with one warning each; unknown/intent keys are skipped (the settings lint reports them). */
 export function coerceDocToMdSettings(raw: unknown, warn: (message: string) => void = console.warn): Partial<Tunables> | undefined {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
 		const d = DOC_TO_MD_OPTIONS.find((o) => o.key === k);
-		if (!d || !d.settable) { warn(`pi-quiver: quiver.docToMd.${k} is not a tunable setting; ignored.`); continue; }
+		if (!d || !d.settable) continue;
 		const c = coerceValue(d, v);
 		if (!c.ok) { warn(`pi-quiver: quiver.docToMd.${k} ${c.reason}; ignored.`); continue; }
 		out[k] = c.value;

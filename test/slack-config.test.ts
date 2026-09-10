@@ -160,12 +160,13 @@ test("malformed number env warns once, rung skipped", () => {
 
 // --- 9: unknown subkey dropped silently ---
 
-test("unknown subkey is dropped silently, no warning", () => {
+test("unknown subkey is dropped from the config and reported by the settings lint", () => {
 	withSettings({}, { quiver: { slack: { enabled: true, bogus: 1 } } }, (cwd) => {
 		const warnings: string[] = [];
 		const cfg = resolveSlackConfig(cwd, NO_ENV, (m) => warnings.push(m));
 		assert.equal(cfg.enabled, true);
-		assert.equal(warnings.length, 0);
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0].includes(`"quiver.slack.bogus" - unknown; accepted: enabled, cachePath, policyPath, userTokenEnv, botTokenEnv, uploadThresholdChars`));
 	});
 });
 

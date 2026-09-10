@@ -66,7 +66,7 @@ docs in the same logical change and note it in both CHANGELOGs.
 extensions/                               # one top-level file = one pi extension entry point
                                           # (fetch, doc_to_md, session-name [Ghostty/Herdr tab rename], sword-header,
                                           #  fast-mode, provider-stall-watchdog, slack)
-lib/extension-config.ts                   # shared getAgentDir()-based settings.json resolution
+lib/extension-config.ts                   # shared getAgentDir()-based settings.json resolution + QUIVER_CONFIG_KEYS registry and condensed settings lint
 lib/fetch-core.ts                         # fetch data plane (fetchUrl); extensions/fetch.ts and bin/pi-quiver.ts are thin adapters over it
 lib/doc-to-md-core.ts                     # doc_to_md data plane (convertDocument/inspectDocument); extensions/doc_to_md.ts and bin/pi-quiver.ts are thin adapters over it
 lib/doc-to-md-options.ts                  # pi-free option descriptors, defaults, validation, help, and settings resolution
@@ -95,7 +95,7 @@ prompts/release.md                        # /release prompt template
 
 ## Workflow
 
-- **Adding an extension:** drop `extensions/<name>.ts` exporting `default function (pi: ExtensionAPI)` - no manifest edit needed, the `./extensions` directory entry discovers it. Document it in `README.md`, add a `CHANGELOG.md` entry. Only extension entry points belong at the top level of `extensions/`: pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have already run. `test/layout.test.ts` enforces this.
+- **Adding an extension:** drop `extensions/<name>.ts` exporting `default function (pi: ExtensionAPI)` - no manifest edit needed, the `./extensions` directory entry discovers it. Document it in `README.md`, add a `CHANGELOG.md` entry. Only extension entry points belong at the top level of `extensions/`: pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have already run. `test/layout.test.ts` enforces this. A new settings key (block or field) is registered in `QUIVER_CONFIG_KEYS` in `lib/extension-config.ts`, or the lint reports it as unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
 - **Test + typecheck before committing.** `npm run test:all` runs the unit tests (`node --test "test/*.test.ts"`) then the typecheck (`npx -y tsc --noEmit`, flags live in `tsconfig.json`). The peer deps (`@earendil-works/*`, `@sinclair/typebox`) and type packages are in `devDependencies`, so a plain install wires everything up:
 
   ```bash

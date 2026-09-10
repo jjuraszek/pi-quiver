@@ -18,7 +18,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { resolveConfig } from "../lib/extension-config.ts";
 
 type Config = { enabled: boolean };
-const DEFAULT_CONFIG: Config = { enabled: false };
+export const DEFAULT_CONFIG: Config = { enabled: false };
 
 export function coerce(raw: unknown): Partial<Config> | undefined {
 	if (raw === undefined) return undefined;

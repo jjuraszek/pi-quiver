@@ -173,6 +173,22 @@ legacy keys, frozen at `fastMode`, `sessionAutoName`, `swordHeader`, and
 `providerStallWatchdog` - never extended to new settings (see [Migrating from
 flat keys](#migrating-from-flat-keys)).
 
+pi-quiver lints the whole `quiver` object in both files each time a setting is
+resolved and emits **one** condensed warning (TUI: a `Warning:` block in the
+chat; headless: stderr) listing every flat legacy key in use, every unknown
+`quiver.<block>`, and every unknown field inside a known block, with the
+accepted names inline. Unknown keys fall back to their defaults. Each distinct
+message fires once per pi process; a clean file emits nothing. A wrong value
+type (`"fastMode": "yes"`) is a separate per-key `unrecognized value` warning.
+The accepted names live in `QUIVER_CONFIG_KEYS` in `lib/extension-config.ts` -
+a new setting is registered there or it warns as unknown.
+
+```text
+Warning: pi-quiver settings (/Users/x/.pi/agent/settings.json): unknown or misplaced keys - unknown ones fall back to defaults
+  "providerStallWatchdog" at top level - move under "quiver"
+  "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries
+```
+
 Worked mixed-shape example: global `settings.json` has flat
 `"fastMode": false`, project `.pi/settings.json` has
 `"quiver": { "fastMode": { "enabled": true } }`. The project layer's
@@ -304,13 +320,12 @@ existing keys under `"quiver": { ... }` and delete the flat copies:
 { "quiver": { "fastMode": true } }
 ```
 
-Until you delete the flat copy, having both set is not an error - the
-duplicate resolves per the precedence above (nested wins within a layer) -
-but it emits a warning notification, deduped per process (each unique
-message fires at most once per pi process - in practice once per interactive
-session) until the flat entry is removed. Every new pi-quiver setting introduced after this change
-(for example a future `slack` key) is nested-only from day one: it has no
-flat form to fall back to.
+A flat copy keeps resolving (nested wins within a layer, project layer wins
+across layers) but every flat legacy key in use is listed in the condensed
+settings warning above (`"fastMode" at top level - move under "quiver"`) until
+it is moved. Every new pi-quiver setting introduced after this change (for
+example `slack`) is nested-only from day one: it has no flat form to fall back
+to, and a flat `slack` block is ignored without a warning.
 
 ## Claude Code support
 
