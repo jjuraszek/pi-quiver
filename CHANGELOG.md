@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v5.5.0 - 2026-09-10
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
 - slack: optionally resolve the user token through a credential command on every user-identity tool call, with a configurable timeout in seconds, allowing running pi sessions to use replaced credentials without leaking secrets on command failure or falling back to stale env tokens.
