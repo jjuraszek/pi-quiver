@@ -13,6 +13,7 @@ import {
 	discoverRepoRoot,
 	parseEnvFile,
 	resolveToken,
+	resolveCredential,
 	type SlackConfig,
 } from "../lib/slack-core.ts";
 
@@ -109,6 +110,34 @@ test("PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS overrides", () => {
 	});
 });
 
+test("userTokenCommand config accepts a non-empty argv array", () => {
+	withSettings({}, { quiver: { slack: { userTokenCommand: ["credential-helper", "get"] } } }, (cwd) => {
+		assert.deepEqual(resolveSlackConfig(cwd, NO_ENV).userTokenCommand, ["credential-helper", "get"]);
+	});
+});
+
+test("userTokenCommandTimeoutSeconds defaults to 10 and accepts positive finite seconds", () => {
+	assert.equal(DEFAULT_SLACK_CONFIG.userTokenCommandTimeoutSeconds, 10);
+	withSettings({}, { quiver: { slack: { userTokenCommandTimeoutSeconds: 60 } } }, (cwd) => {
+		assert.equal(resolveSlackConfig(cwd, NO_ENV).userTokenCommandTimeoutSeconds, 60);
+	});
+});
+
+test("userTokenCommandTimeoutSeconds rejects invalid timer delays with a warning", () => {
+	for (const invalid of [0, -1, 2_147_483.648, Number.POSITIVE_INFINITY, Number.NaN, "60"]) {
+		const warnings: string[] = [];
+		assert.equal(coerce({ userTokenCommandTimeoutSeconds: invalid }, (message) => warnings.push(message))?.userTokenCommandTimeoutSeconds, undefined);
+		assert.deepEqual(warnings, ["pi-quiver: quiver.slack.userTokenCommandTimeoutSeconds must be a positive finite number no greater than 2147483.647; ignored."]);
+	}
+});
+
+test("userTokenCommand config rejects shell strings and empty argv arrays", () => {
+	assert.equal(coerce({ userTokenCommand: "credential-helper get" })?.userTokenCommand, undefined);
+	assert.equal(coerce({ userTokenCommand: [] })?.userTokenCommand, undefined);
+	assert.equal(coerce({ userTokenCommand: [""] })?.userTokenCommand, undefined);
+	assert.equal(coerce({ userTokenCommand: ["credential-helper", 1] })?.userTokenCommand, undefined);
+});
+
 test("PI_QUIVER_SLACK_CACHE_PATH / USER_TOKEN_ENV / BOT_TOKEN_ENV override", () => {
 	withSettings({}, {}, (cwd) => {
 		const cfg = resolveSlackConfig(cwd, {
@@ -165,7 +194,7 @@ test("unknown subkey is dropped from the config and reported by the settings lin
 		const cfg = resolveSlackConfig(cwd, NO_ENV, (m) => warnings.push(m));
 		assert.equal(cfg.enabled, true);
 		assert.equal(warnings.length, 1);
-		assert.ok(warnings[0].includes(`"quiver.slack.bogus" - unknown; accepted: enabled, cachePath, policyPath, userTokenEnv, botTokenEnv, uploadThresholdChars`));
+		assert.ok(warnings[0].includes(`"quiver.slack.bogus" - unknown; accepted: enabled, cachePath, policyPath, userTokenEnv, userTokenCommand, userTokenCommandTimeoutSeconds, botTokenEnv, uploadThresholdChars`));
 	});
 });
 
@@ -433,6 +462,129 @@ test("worktree's own .env fully shadows the primary checkout's .env (file-level,
 	} finally {
 		rmSync(worktreeParent, { recursive: true, force: true });
 		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
+test("user credential command is executed for every resolution so running sessions see replacements", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const tokenFile = join(dir, "token");
+		const helper = join(dir, "helper.mjs");
+		writeFileSync(helper, 'import { readFileSync } from "node:fs"; process.stdout.write(readFileSync(process.argv[2], "utf8"));');
+		writeFileSync(tokenFile, "xoxp-first\n");
+		const cfg = { ...DEFAULT_SLACK_CONFIG, userTokenCommand: [process.execPath, helper, tokenFile] };
+		assert.equal(await resolveCredential("user", cfg, { SLACK_USER_TOKEN: "xoxp-stale" }, dir), "xoxp-first");
+		writeFileSync(tokenFile, "xoxp-replacement\n");
+		assert.equal(await resolveCredential("user", cfg, { SLACK_USER_TOKEN: "xoxp-stale" }, dir), "xoxp-replacement");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("explicit user credential command does not fall back to stale env when output is empty", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const cfg = { ...DEFAULT_SLACK_CONFIG, userTokenCommand: [process.execPath, "-e", ""] };
+		await assert.rejects(resolveCredential("user", cfg, { SLACK_USER_TOKEN: "xoxp-stale" }, dir), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "missing_token");
+			assert.doesNotMatch(err.message, /xoxp-stale/);
+			return true;
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("credential command errors are sanitized and never expose stdout, stderr, or stale env tokens", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const cfg = {
+			...DEFAULT_SLACK_CONFIG,
+			userTokenCommand: [process.execPath, "-e", 'process.stdout.write("xoxp-command-secret"); process.stderr.write("expired xoxp-error-secret"); process.exit(7)'],
+		};
+		await assert.rejects(resolveCredential("user", cfg, { SLACK_USER_TOKEN: "xoxp-stale-secret" }, dir), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "credential_command_failed");
+			assert.match(err.message, /status 7/);
+			assert.doesNotMatch(err.message, /xoxp|expired/);
+			return true;
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("credential command uses the configured timeout in seconds", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const cfg = {
+			...DEFAULT_SLACK_CONFIG,
+			userTokenCommand: [process.execPath, "-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+			userTokenCommandTimeoutSeconds: 0.05,
+		};
+		const startedAt = Date.now();
+		await assert.rejects(resolveCredential("user", cfg, {}, dir), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "credential_command_failed");
+			assert.match(err.message, /timed out/);
+			return true;
+		});
+		assert.ok(Date.now() - startedAt < 2_000);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("credential command rounds fractional milliseconds up to a valid timeout", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const cfg = {
+			...DEFAULT_SLACK_CONFIG,
+			userTokenCommand: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+			userTokenCommandTimeoutSeconds: 0.0005,
+		};
+		await assert.rejects(resolveCredential("user", cfg, {}, dir), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "credential_command_failed");
+			assert.match(err.message, /timed out after 1ms/);
+			return true;
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("credential command terminated by SIGTERM is a failure, not a timeout", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const cfg = {
+			...DEFAULT_SLACK_CONFIG,
+			userTokenCommand: [process.execPath, "-e", 'process.kill(process.pid, "SIGTERM")'],
+		};
+		await assert.rejects(resolveCredential("user", cfg, {}, dir), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "credential_command_failed");
+			assert.doesNotMatch(err.message, /timed out/);
+			return true;
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("bot credential resolution ignores userTokenCommand and keeps the env workflow", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-command-"));
+	try {
+		const marker = join(dir, "called");
+		const cfg = {
+			...DEFAULT_SLACK_CONFIG,
+			userTokenCommand: [process.execPath, "-e", 'require("node:fs").writeFileSync(process.argv[1], "yes")', marker],
+		};
+		assert.equal(await resolveCredential("bot", cfg, { SLACK_BOT_TOKEN: "xoxb-env" }, dir), "xoxb-env");
+		assert.equal(existsSync(marker), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -704,6 +856,16 @@ test("renderToolResult: collapsed success shows only the first line; expanded sh
 
 // --- 20: pickCacheRefreshIdentity (slack_cache_refresh's user-else-bot pick) ---
 
+test("pickCacheRefreshIdentity: configured user credential command -> user without executing it", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-pick-"));
+	try {
+		const cfg = { ...DEFAULT_SLACK_CONFIG, userTokenCommand: ["does-not-exist"] };
+		assert.equal(pickCacheRefreshIdentity(cfg, {}, dir), "user");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("pickCacheRefreshIdentity: user token present -> user", () => {
 	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-pick-"));
 	try {
@@ -832,6 +994,95 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 		globalThis.fetch = original;
 	}
 }
+
+test("bot tool calls do not execute userTokenCommand for the team cross-check", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-bot-command-"));
+	const marker = join(dir, "called");
+	const cacheFile = join(dir, "cache.json");
+	writeMentionCache(cacheFile);
+	const command = [
+		process.execPath,
+		"-e",
+		'require("node:fs").writeFileSync(process.argv[1], "yes"); process.stdout.write("dummy-user")',
+		marker,
+	];
+	try {
+		await withEnvToken("SLACK_BOT_TOKEN", "dummy-bot", async () => {
+			await withSettingsAsync(
+				{},
+				{ quiver: { slack: { enabled: true, cachePath: cacheFile, userTokenCommand: command } } },
+				async (cwd) => {
+					await withFakeFetch(
+						{
+							"auth.test": () => ({ ok: true, team_id: "T1" }),
+							"chat.postMessage": () => ({ ok: true, ts: "1111.1" }),
+							"chat.getPermalink": () => ({ ok: true, permalink: "https://x.slack.com/archives/C123/p11111" }),
+						},
+						async () => {
+							const { api, defs, handlers } = makeMockApi();
+							slackExtension(api);
+							await handlers.session_start({}, makeFakeCtx(cwd));
+							const post = defs.find((definition) => definition.name === "slack_post")!;
+							await post.execute(
+								"tc1",
+								{ as: "bot", channel: "C12345678", text: "hello" },
+								new AbortController().signal,
+								() => {},
+								undefined as never,
+							);
+						},
+					);
+				},
+			);
+		});
+		assert.equal(existsSync(marker), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("native tool calls re-run userTokenCommand so an active session sees token replacement", async () => {
+	const credentialDir = mkdtempSync(join(tmpdir(), "quiver-slack-native-command-"));
+	const tokenFile = join(credentialDir, "token");
+	const helper = join(credentialDir, "helper.mjs");
+	writeFileSync(helper, 'import { readFileSync } from "node:fs"; process.stdout.write(readFileSync(process.argv[2], "utf8"));');
+	writeFileSync(tokenFile, "dummy-one\n");
+	const authorizations: string[] = [];
+	const originalFetch = globalThis.fetch;
+	const previousToken = process.env.SLACK_USER_TOKEN;
+	process.env.SLACK_USER_TOKEN = "dummy-stale-env";
+	globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+		authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+		const method = new URL(String(url)).pathname.replace(/^\/api\//, "");
+		if (method === "auth.test") return Response.json({ ok: true, team_id: "T1" });
+		if (method === "search.messages") {
+			return Response.json({ ok: true, messages: { matches: [], total: 0, paging: { page: 1, pages: 1 } } });
+		}
+		throw new Error(`unscripted Slack API call in test: ${method}`);
+	}) as typeof fetch;
+	try {
+		await withSettingsAsync(
+			{},
+			{ quiver: { slack: { enabled: true, userTokenCommand: [process.execPath, helper, tokenFile] } } },
+			async (cwd) => {
+				const { api, defs, handlers } = makeMockApi();
+				slackExtension(api);
+				await handlers.session_start({}, makeFakeCtx(cwd));
+				const search = defs.find((definition) => definition.name === "slack_search")!;
+				await search.execute("tc1", { query: "first" }, new AbortController().signal, () => {}, undefined as never);
+				writeFileSync(tokenFile, "dummy-two\n");
+				await search.execute("tc2", { query: "second" }, new AbortController().signal, () => {}, undefined as never);
+			},
+		);
+		assert.deepEqual(authorizations, ["Bearer dummy-one", "Bearer dummy-one", "Bearer dummy-two", "Bearer dummy-two"]);
+		assert.doesNotMatch(authorizations.join(" "), /dummy-stale-env/);
+	} finally {
+		globalThis.fetch = originalFetch;
+		if (previousToken === undefined) delete process.env.SLACK_USER_TOKEN;
+		else process.env.SLACK_USER_TOKEN = previousToken;
+		rmSync(credentialDir, { recursive: true, force: true });
+	}
+});
 
 async function withEnvToken(envVar: string, value: string, fn: () => Promise<void>): Promise<void> {
 	const previous = process.env[envVar];

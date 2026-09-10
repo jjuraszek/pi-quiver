@@ -11,6 +11,7 @@ via OIDC trusted publishing. The release helper at
 ## Unreleased
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
+- slack: optionally resolve the user token through a credential command on every user-identity tool call, with a configurable timeout in seconds, allowing running pi sessions to use replaced credentials without leaking secrets on command failure or falling back to stale env tokens.
 
 ## v5.4.0 - 2026-09-10
 
