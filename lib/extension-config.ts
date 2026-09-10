@@ -46,7 +46,7 @@ export const QUIVER_CONFIG_KEYS: Record<string, readonly string[]> = {
 	fastMode: ["enabled"],
 	sessionAutoName: ["enabled", "ghosttyTab", "herdrTab", "rules", "deny", "revisitFirstTurn", "revisitEveryTurns"],
 	swordHeader: ["enabled"],
-	providerStallWatchdog: ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries"],
+	providerStallWatchdog: ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries", "activityHook"],
 	slack: ["enabled", "cachePath", "policyPath", "userTokenEnv", "userTokenCommand", "userTokenCommandTimeoutSeconds", "botTokenEnv", "uploadThresholdChars"],
 	docToMd: DOC_TO_MD_OPTIONS.filter((o) => o.settable).map((o) => o.key),
 };

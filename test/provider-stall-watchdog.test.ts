@@ -10,12 +10,17 @@ import {
 	SessionManager,
 	SettingsManager,
 	createAgentSession,
+	createEventBus,
 	defineTool,
+	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import providerStallWatchdog, {
+	ACTIVITY_HOOK_EVENT,
 	MAX_TIMER_MS,
 	coerce,
 	createProviderStallWatchdog,
+	type ActivityHookCheck,
+	type ActivityHookRegistration,
 	resolveWatchdogConfig,
 	validateConfig,
 	type ConfigCandidate,
@@ -35,8 +40,8 @@ test("coerce preserves recognized values without type filtering", () => {
 			expected: { blockIsObject: true, enabled: true, warningMs: "bad" },
 		},
 		{
-			raw: { enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
-			expected: { blockIsObject: true, enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many" },
+			raw: { enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many", activityHook: "yes" },
+			expected: { blockIsObject: true, enabled: "yes", firstEventMs: 0, warningMs: null, recoveryMs: Infinity, maxStallRetries: "many", activityHook: "yes" },
 		},
 	];
 
@@ -45,8 +50,8 @@ test("coerce preserves recognized values without type filtering", () => {
 
 test("validateConfig accepts a complete valid candidate", () => {
 	assert.deepEqual(
-		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 }),
-		{ ok: true, config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 } },
+		validateConfig({ blockIsObject: true, enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, activityHook: "local-runtime" }),
+		{ ok: true, config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3, activityHook: "local-runtime" } },
 	);
 });
 
@@ -70,6 +75,8 @@ test("validateConfig fails closed for invalid values", () => {
 		{ name: "negative maxStallRetries", candidate: { ...valid, maxStallRetries: -1 } },
 		{ name: "fractional maxStallRetries", candidate: { ...valid, maxStallRetries: 1.5 } },
 		{ name: "maxStallRetries wrong type", candidate: { ...valid, maxStallRetries: "3" } },
+		{ name: "activityHook wrong type", candidate: { ...valid, activityHook: true } },
+		{ name: "activityHook empty", candidate: { ...valid, activityHook: "" } },
 		{ name: "zero firstEvent", candidate: { ...valid, firstEventMs: 0 } },
 		{ name: "negative firstEvent", candidate: { ...valid, firstEventMs: -1 } },
 		{ name: "fractional firstEvent", candidate: { ...valid, firstEventMs: 1.5 } },
@@ -135,6 +142,29 @@ test("settings layers let valid project values repair invalid global shape and f
 	);
 });
 
+async function withSettingsAsync(
+	globalSettings: unknown,
+	projectSettings: unknown,
+	assertion: (cwd: string) => Promise<void>,
+): Promise<void> {
+	const root = mkdtempSync(join(tmpdir(), "provider-stall-watchdog-"));
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "project");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalSettings));
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(projectSettings));
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		await assertion(cwd);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
 test("maxStallRetries defaults to layered retry.maxRetries and explicit config wins", () => {
 	withSettings(
 		{ retry: { maxRetries: 5 }, quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
@@ -197,13 +227,19 @@ test("unknown watchdog field is reported by the settings lint and the default fi
 			config: { enabled: true, firstEventMs: 20_000, warningMs: 120_000, recoveryMs: 240_000, maxStallRetries: 3 },
 		});
 		assert.equal(warnings.length, 1);
-		assert.ok(warnings[0].includes(`"quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries`));
+		assert.ok(warnings[0].includes(`"quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries, activityHook`));
 	});
 });
 
 type Handler = (event: any, ctx: any) => unknown;
 
-function watchdogHarness(mode = "tui", cwd = process.cwd()) {
+function watchdogHarness(
+	mode = "tui",
+	cwd = process.cwd(),
+	activityCheck?: ActivityHookCheck,
+	registerCount = 1,
+	events?: ReturnType<typeof createEventBus>,
+) {
 	let now = 0;
 	let nextTimer = 0;
 	const timers = new Map<number, { at: number; delayMs: number; callback: () => void }>();
@@ -215,11 +251,16 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 	const ctx = {
 		mode,
 		cwd,
+		model: { provider: "other", id: "test-model" },
 		hasUI: mode === "tui" || mode === "rpc",
 		signal: controller.signal,
 		ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), notify: (text: string, type?: string) => notifications.push([text, type]) },
 		abort: () => { aborts += 1; controller.abort(); },
 	};
+	const eventHandlers: Array<(event: ActivityHookRegistration) => void> = [];
+	if (activityCheck) {
+		for (let i = 0; i < registerCount; i += 1) eventHandlers.push((event) => event.register(activityCheck));
+	}
 	createProviderStallWatchdog({
 		now: () => now,
 		setTimeout: (callback, delayMs) => {
@@ -228,7 +269,16 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 			return handle;
 		},
 		clearTimeout: (handle) => { timers.delete(handle as number); },
-	})({ on: (event: string, handler: Handler) => handlers.set(event, handler) } as never);
+	})({
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		events: events ?? {
+			emit: (event: string, data: ActivityHookRegistration) => {
+				if (event === ACTIVITY_HOOK_EVENT) for (const handler of eventHandlers) {
+					try { handler(data); } catch { /* Pi's EventBus reports listener errors without rethrowing. */ }
+				}
+			},
+		},
+	} as never);
 	return {
 		emit: (event: string, payload: Record<string, unknown> = {}) => handlers.get(event)?.({ type: event, ...payload }, ctx),
 		advance: (ms: number) => { now += ms; for (;;) { const due = [...timers.entries()].filter(([, timer]) => timer.at <= now).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; timers.delete(due[0]); due[1].callback(); } },
@@ -239,6 +289,7 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 			return previous;
 		},
 		abortCurrentSignal: () => controller.abort(),
+		useModel: (provider = "other", id = "test-model") => { ctx.model = { provider, id }; },
 		get now() { return now; },
 		get aborts() { return aborts; },
 		timers, statuses, notifications,
@@ -254,6 +305,167 @@ function messageStart(role: "assistant" | "user" | "toolResult" = "assistant") {
 }
 
 const ABORT_STUCK_NOTICE = "The stalled request did not stop within 10s of being aborted; the provider connection is unresponsive. No automatic retry will run - the turn will not end until the HTTP idle timeout expires.";
+const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("documented activity adapter registers through Pi's event bus and reports active", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		const events = createEventBus();
+		let dispatches = 0;
+		let checks = 0;
+		const localActivityAdapter = (pi: ExtensionAPI) => {
+			pi.events.on(ACTIVITY_HOOK_EVENT, (event) => {
+				const registration = event as ActivityHookRegistration;
+				if (registration.adapter !== "local-runtime" || registration.model.provider !== "local") return;
+				dispatches += 1;
+				registration.register(async (_signal): Promise<"active"> => {
+					checks += 1;
+					return "active";
+				});
+			});
+		};
+		const loader = new DefaultResourceLoader({
+			cwd,
+			agentDir: join(cwd, ".pi"),
+			settingsManager: SettingsManager.inMemory(),
+			eventBus: events,
+			extensionFactories: [localActivityAdapter],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await loader.reload();
+
+		const h = watchdogHarness("tui", cwd, undefined, 1, events);
+		h.useModel("local", "test-model");
+		h.emit("before_provider_request");
+		assert.equal(dispatches, 1, "the watchdog dispatched its public registration hook through Pi's EventBus");
+		h.advance(120_000);
+		await flushPromises();
+		assert.equal(checks, 1, "the registered adapter check ran");
+		assert.ok(h.notifications.at(-1)?.[0].includes("local-runtime reports work in progress"));
+	});
+});
+
+test("activity hook extends in 2m increments but never past the 10m inactivity ceiling", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		let checks = 0;
+		const h = watchdogHarness("tui", cwd, async (): Promise<"active"> => { checks += 1; return "active"; });
+		h.emit("before_provider_request");
+		h.advance(120_000); await flushPromises();
+		assert.ok(h.notifications.at(-1)?.[0].includes("local-runtime reports work in progress"));
+		for (let elapsed = 240_000; elapsed < 600_000; elapsed += 120_000) {
+			h.advance(120_000); await flushPromises();
+			assert.equal(h.aborts, 0, `activity remains allowed at ${elapsed / 60_000}m`);
+		}
+		h.advance(120_000); await flushPromises();
+		assert.equal(h.aborts, 1);
+		assert.equal(checks, 4, "the ceiling is independent and does not launch another check");
+	});
+});
+
+test("inactive, thrown, and rejected checks preserve the independent 4m fallback", async () => {
+	const checks: ActivityHookCheck[] = [
+		() => "inactive",
+		() => "unknown",
+		() => { throw new Error("broken adapter"); },
+		async () => { throw new Error("broken adapter"); },
+	];
+	for (const check of checks) {
+		await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+			const h = watchdogHarness("tui", cwd, check);
+			h.emit("before_provider_request");
+			h.advance(120_000); await flushPromises();
+			assert.equal(h.aborts, 0);
+			h.advance(120_000); await flushPromises();
+			assert.equal(h.aborts, 1);
+		});
+	}
+});
+
+test("a hung activity check is bounded at 5s while fallback and ceiling timers remain independent", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		let signal: AbortSignal | undefined;
+		const h = watchdogHarness("tui", cwd, (boundedSignal) => {
+			signal = boundedSignal;
+			return new Promise(() => {});
+		});
+		h.emit("before_provider_request");
+		h.advance(120_000); await flushPromises();
+		h.advance(5_000); await flushPromises();
+		assert.equal(signal?.aborted, true);
+		h.advance(115_000); await flushPromises();
+		assert.equal(h.aborts, 1, "the 4m fallback does not wait for the check");
+	});
+});
+
+test("midstream progress resets activity-check and ceiling epochs", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		const h = watchdogHarness("tui", cwd, async (): Promise<"active"> => "active");
+		h.emit("before_provider_request"); h.emit("message_start", messageStart());
+		const baseline = h.notifications.length;
+		h.advance(119_000); h.emit("message_update", semantic("text_delta", "x"));
+		h.advance(119_000); await flushPromises(); assert.equal(h.notifications.length, baseline);
+		h.advance(1_000); await flushPromises(); assert.ok(h.notifications.at(-1)?.[0].includes("deferring recovery for 2m"));
+	});
+});
+
+test("reset cancellation and stale check rejection cannot rearm recovery", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		let reject!: (error: Error) => void;
+		let signal: AbortSignal | undefined;
+		const pending = new Promise<"active">((_resolve, rejectCheck) => { reject = rejectCheck; });
+		const h = watchdogHarness("tui", cwd, (boundedSignal) => { signal = boundedSignal; return pending; });
+		h.emit("before_provider_request"); h.advance(120_000);
+		const baseline = h.notifications.length;
+		h.emit("model_select");
+		assert.equal(signal?.aborted, true);
+		reject(new Error("late")); await flushPromises();
+		assert.equal(h.notifications.length, baseline);
+		assert.equal(h.timers.size, 0);
+	});
+});
+
+test("headless first event cancels a late activity check and leaves no midstream timers", async () => {
+	await withSettingsAsync({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime" } } }, async (cwd) => {
+		for (const mode of ["print", "json", "rpc"]) {
+			let finish!: (value: "active") => void;
+			let signal: AbortSignal | undefined;
+			const pending = new Promise<"active">((resolve) => { finish = resolve; });
+			const h = watchdogHarness(mode, cwd, (boundedSignal) => { signal = boundedSignal; return pending; });
+			h.emit("before_provider_request"); h.advance(120_000);
+			h.emit("message_start", messageStart());
+			assert.equal(signal?.aborted, true);
+			finish("active"); await flushPromises();
+			h.advance(600_000); await flushPromises();
+			assert.equal(h.aborts, 0);
+			assert.equal(h.timers.size, 0);
+		}
+	});
+});
+
+test("missing and duplicate adapters fail closed to the original first-event deadline", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "missing", firstEventMs: 20, warningMs: 120, recoveryMs: 240 } } }, (cwd) => {
+		const missing = watchdogHarness("tui", cwd);
+		missing.emit("before_provider_request"); missing.advance(20);
+		assert.equal(missing.aborts, 1);
+
+		const duplicate = watchdogHarness("tui", cwd, () => "active", 2);
+		duplicate.emit("before_provider_request"); duplicate.advance(20);
+		assert.equal(duplicate.aborts, 1);
+		assert.ok(duplicate.notifications.some(([message, level]) => level === "error" && message.includes("registered more than once")));
+	});
+});
+
+test("adapter applicability is established synchronously and unhandled models retain the original deadline", () => {
+	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, activityHook: "local-runtime", firstEventMs: 20, warningMs: 120, recoveryMs: 240 } } }, (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.useModel("remote", "other-model");
+		h.emit("before_provider_request"); h.advance(20);
+		assert.equal(h.aborts, 1);
+	});
+});
 
 test("semantic deltas reset the mid-stream silence clock", () => {
 	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 120_000, recoveryMs: 240_000 } } }, (cwd) => {

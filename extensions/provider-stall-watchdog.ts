@@ -15,7 +15,19 @@ export type WatchdogConfig = {
 	warningMs: number;
 	recoveryMs: number;
 	maxStallRetries: number;
+	activityHook?: string;
 };
+
+export type ActivityHookResult = "active" | "inactive" | "unknown";
+export type ActivityHookCheck = (signal: AbortSignal) => ActivityHookResult | Promise<ActivityHookResult>;
+export type ActivityHookRegistration = {
+	adapter: string;
+	model: { provider: string; id: string };
+	signal?: AbortSignal;
+	register(check: ActivityHookCheck): void;
+};
+
+export const ACTIVITY_HOOK_EVENT = "pi-quiver:provider-stall-watchdog:activity-hook";
 
 export type WatchdogRuntime = {
 	now(): number;
@@ -30,6 +42,7 @@ export type ConfigCandidate = {
 	warningMs?: unknown;
 	recoveryMs?: unknown;
 	maxStallRetries?: unknown;
+	activityHook?: unknown;
 };
 
 export type ConfigValidation =
@@ -45,7 +58,7 @@ export function coerce(raw: unknown): ConfigCandidate | undefined {
 
 	const source = raw as Record<string, unknown>;
 	const candidate: ConfigCandidate = { blockIsObject: true };
-	for (const key of ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries"] as const) {
+	for (const key of ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries", "activityHook"] as const) {
 		if (Object.hasOwn(source, key)) candidate[key] = source[key];
 	}
 	return candidate;
@@ -59,6 +72,9 @@ export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 	if (!isTimerDelay(candidate.recoveryMs)) return { ok: false, error: "recoveryMs must be a positive timer delay" };
 	if (candidate.warningMs >= candidate.recoveryMs) return { ok: false, error: "warningMs must be less than recoveryMs" };
 	if (!isNonNegativeInteger(candidate.maxStallRetries)) return { ok: false, error: "maxStallRetries must be a non-negative integer" };
+	if (candidate.activityHook !== undefined && (typeof candidate.activityHook !== "string" || candidate.activityHook.length === 0)) {
+		return { ok: false, error: "activityHook must be a non-empty string" };
+	}
 	return {
 		ok: true,
 		config: {
@@ -67,6 +83,7 @@ export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 			warningMs: candidate.warningMs,
 			recoveryMs: candidate.recoveryMs,
 			maxStallRetries: candidate.maxStallRetries,
+			...(candidate.activityHook === undefined ? {} : { activityHook: candidate.activityHook }),
 		},
 	};
 }
@@ -110,7 +127,20 @@ const DEGRADATION_NOTICE = "The stalled request was stopped, but Pi did not star
 // undici's headersTimeout/bodyTimeout stay the backstop past this point.
 const ABORT_GRACE_MS = 10_000;
 
-type Timer = { firstEvent?: unknown; warning?: unknown; recovery?: unknown; abortGuard?: unknown };
+type Timer = {
+	firstEvent?: unknown;
+	warning?: unknown;
+	recovery?: unknown;
+	activityCheck?: unknown;
+	activityRecovery?: unknown;
+	activityCeiling?: unknown;
+	abortGuard?: unknown;
+};
+
+const ACTIVITY_CHECK_MS = 120_000;
+const ACTIVITY_RECOVERY_MS = 240_000;
+const ACTIVITY_CEILING_MS = 600_000;
+const ACTIVITY_CHECK_DEADLINE_MS = 5_000;
 
 function formatElapsed(ms: number): string {
 	if (ms % 60_000 === 0) return `${ms / 60_000}m`;
@@ -151,6 +181,10 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		let warned = false;
 		let deadlineEpoch = 0;
 		let timers: Timer = {};
+		let checkController: AbortController | undefined;
+		let activityCheck: ActivityHookCheck | undefined;
+		let activityAdapter: string | undefined;
+		let activityExtended = false;
 		let removeSignalListener: (() => void) | undefined;
 		let ui: { notify(text: string, type?: string): void } | undefined;
 		let watchdogAbortedGeneration: number | undefined;
@@ -159,9 +193,12 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		let convertedTimeout = false;
 
 		const clearTimers = () => {
-			for (const key of ["firstEvent", "warning", "recovery", "abortGuard"] as const) {
+			deadlineEpoch += 1;
+			for (const key of ["firstEvent", "warning", "recovery", "activityCheck", "activityRecovery", "activityCeiling", "abortGuard"] as const) {
 				if (timers[key] !== undefined) runtime.clearTimeout(timers[key]);
 			}
+			checkController?.abort();
+			checkController = undefined;
 			timers = {};
 		};
 		const announce = (text: string, type?: string) => {
@@ -174,7 +211,13 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			removeSignalListener = undefined;
 			activeGeneration = undefined;
 		};
-		const disarm = () => { clear(); warned = false; };
+		const disarm = () => {
+			clear();
+			warned = false;
+			activityCheck = undefined;
+			activityAdapter = undefined;
+			activityExtended = false;
+		};
 		const resetRunState = () => {
 			disarm();
 			activeRun = false;
@@ -246,6 +289,79 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			};
 			timers.firstEvent = runtime.setTimeout(run, threshold);
 		};
+		const checkActivity = (check: ActivityHookCheck): Promise<ActivityHookResult> => new Promise((resolve) => {
+			const controller = new AbortController();
+			checkController = controller;
+			let settled = false;
+			const finish = (result: ActivityHookResult) => {
+				if (settled) return;
+				settled = true;
+				runtime.clearTimeout(deadline);
+				if (checkController === controller) checkController = undefined;
+				resolve(result === "active" || result === "inactive" ? result : "unknown");
+			};
+			const deadline = runtime.setTimeout(() => {
+				controller.abort();
+				finish("unknown");
+			}, ACTIVITY_CHECK_DEADLINE_MS);
+			try {
+				Promise.resolve(check(controller.signal)).then(finish, () => finish("unknown"));
+			} catch {
+				finish("unknown");
+			}
+		});
+		const armActivityHook = (ctx: { abort(): void }) => {
+			if (activeGeneration === undefined || !config || !activityCheck || !activityAdapter) return;
+			const cfg = config;
+			const check = activityCheck;
+			const adapter = activityAdapter;
+			const capturedGeneration = activeGeneration;
+			const capturedDeadlineEpoch = ++deadlineEpoch;
+			const activityStartedAt = lastSemanticAt;
+			let nextCheckAt = activityStartedAt + ACTIVITY_CHECK_MS;
+			const abort = (elapsed: number) => abortStall(ctx, capturedGeneration, {
+				retry: () => `No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry (${stallRetriesUsed}/${cfg.maxStallRetries}) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`,
+				exhausted: () => exhaustedNotice(cfg),
+			}, `Provider inactivity timeout after ${elapsed} ms without activity`);
+			const stale = () => capturedGeneration !== activeGeneration
+				|| capturedDeadlineEpoch !== deadlineEpoch
+				|| !activeRun
+				|| activityCheck !== check
+				|| lastSemanticAt !== activityStartedAt;
+			const run = async () => {
+				if (stale()) return;
+				const status = await checkActivity(check);
+				if (stale()) return;
+				const elapsed = runtime.now() - activityStartedAt;
+				if (status === "active") {
+					activityExtended = true;
+					if (timers.activityRecovery !== undefined) {
+						runtime.clearTimeout(timers.activityRecovery);
+						timers.activityRecovery = undefined;
+					}
+					nextCheckAt = Math.min(nextCheckAt + ACTIVITY_CHECK_MS, activityStartedAt + ACTIVITY_CEILING_MS);
+					announce(`Activity adapter ${adapter} reports work in progress; deferring recovery for 2m (10m inactivity ceiling).`, "warning");
+					timers.activityCheck = runtime.setTimeout(() => void run(), Math.max(0, nextCheckAt - runtime.now()));
+					return;
+				}
+				const outcome = status === "inactive" ? "reports no activity" : "status is unavailable";
+				if (!activityExtended) {
+					announce(`Activity adapter ${adapter} ${outcome}; keeping the 4m fallback recovery deadline.`, "warning");
+					return;
+				}
+				announce(`Activity adapter ${adapter} ${outcome}; recovering now.`, "warning");
+				abort(elapsed);
+			};
+			timers.activityCheck = runtime.setTimeout(() => void run(), ACTIVITY_CHECK_MS);
+			timers.activityRecovery = runtime.setTimeout(
+				() => { if (!stale()) abort(runtime.now() - activityStartedAt); },
+				ACTIVITY_RECOVERY_MS,
+			);
+			timers.activityCeiling = runtime.setTimeout(
+				() => { if (!stale()) abort(runtime.now() - activityStartedAt); },
+				ACTIVITY_CEILING_MS,
+			);
+		};
 		const schedule = (ctx: { abort(): void }) => {
 			if (activeGeneration === undefined || !config) return;
 			const cfg = config;
@@ -302,6 +418,41 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			}
 			midStreamEnabled = ctx.mode === "tui";
 			firstEventSeen = false;
+			if (config.activityHook && ctx.model) {
+				let registered: ActivityHookCheck | undefined;
+				let registrationOpen = true;
+				let registrationFailed = false;
+				const register = (check: ActivityHookCheck) => {
+					if (!registrationOpen) throw new Error(`Activity adapter ${config!.activityHook} registered asynchronously`);
+					if (typeof check !== "function") {
+						registrationFailed = true;
+						registered = undefined;
+						throw new TypeError(`Activity adapter ${config!.activityHook} registered an invalid check`);
+					}
+					if (registered || registrationFailed) {
+						registrationFailed = true;
+						registered = undefined;
+						throw new Error(`Duplicate activity adapter registration for ${config!.activityHook}`);
+					}
+					registered = check;
+				};
+				pi.events.emit(ACTIVITY_HOOK_EVENT, {
+					adapter: config.activityHook,
+					model: ctx.model,
+					signal: ctx.signal,
+					register,
+				} satisfies ActivityHookRegistration);
+				registrationOpen = false;
+				if (registrationFailed) {
+					announce(`Activity adapter ${config.activityHook} registered more than once; using the standard watchdog deadlines.`, "error");
+				} else if (registered) {
+					activityCheck = registered;
+					activityAdapter = config.activityHook;
+					activityExtended = false;
+					armActivityHook(ctx);
+					return;
+				}
+			}
 			armFirstEvent(ctx);
 		});
 		pi.on("message_start", (event, ctx) => {
@@ -311,14 +462,16 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			if (postAbortStreamEvent()) return;
 			if (!activeRun || activeGeneration === undefined || firstEventSeen) return;
 			firstEventSeen = true;
-			if (timers.firstEvent !== undefined) {
-				runtime.clearTimeout(timers.firstEvent);
-				timers.firstEvent = undefined;
-			}
+			clearTimers();
 			if (!midStreamEnabled || !config) return;
 			lastSemanticAt = runtime.now();
 			warned = false;
-			schedule(ctx);
+			if (activityCheck) {
+				activityExtended = false;
+				armActivityHook(ctx);
+			} else {
+				schedule(ctx);
+			}
 		});
 		pi.on("message_update", (event, ctx) => {
 			if (postAbortStreamEvent()) return;
@@ -327,7 +480,12 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			lastSemanticAt = runtime.now();
 			warned = false;
 			clearTimers();
-			schedule(ctx);
+			if (activityCheck) {
+				activityExtended = false;
+				armActivityHook(ctx);
+			} else {
+				schedule(ctx);
+			}
 		});
 		pi.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
@@ -344,6 +502,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			continuationStarted = false;
 			return { message: { ...event.message, stopReason: "error", errorMessage } };
 		});
+		pi.on("model_select", () => disarm());
 		pi.on("agent_end", () => disarm());
 		pi.on("agent_settled", () => {
 			if (convertedTimeout && !continuationStarted) announce(DEGRADATION_NOTICE);

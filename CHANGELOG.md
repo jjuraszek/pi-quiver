@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- provider-stall-watchdog: add a generic session-scoped activity-adapter hook for 2m inactivity checks, with a 5s check bound, independent 4m fallback, and 10m ceiling; provider-specific adapters stay outside pi-quiver.
+
 ## v5.5.0 - 2026-09-10
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
