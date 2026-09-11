@@ -1,150 +1,101 @@
 # pi-quiver
 
-Personal pack of Pi coding-agent extensions, published to npm as `pi-quiver` like sibling pi-* packages. Each extension is a standalone default-exported function living in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch` (context-safe URL retrieval; GitHub issue/PR/repo/Actions-run/Actions-job URLs auto-routed through the `gh` CLI with HTTP fallback), `doc_to_md` (local PDF/DOCX/PPTX/XLSX/XLS -> Markdown bundle on disk, handle-only result; pymupdf4llm -> PyMuPDF text -> unpdf worker), `session-name` (manual + opt-in automatic session naming with Ghostty/Herdr tab rename, OFF by default), `sword-header` (themed ASCII startup header, OFF by default), `fast-mode` (opt-in Anthropic fast mode for Opus 4.8, OFF by default), `provider-stall-watchdog` (opt-in provider-stall recovery: a pre-first-event tier in every mode, a mid-stream tier in TUI only), and `slack` (opt-in context-safe Slack search/threads/posting: dual user/bot token identities, a workspace-keyed name cache, a transactional announce protocol). Opt-in extensions resolve their `settings.json` config via the shared `lib/extension-config.ts` (`getAgentDir()`-based global + project layering), nested under `quiver.<key>` (e.g. `quiver.slack`).
+Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`; everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
 
-<!-- agents-core:begin v2 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+<!-- agents-core:begin v3 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+## Ground Truth Before Reasoning
+
+User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
+
+Never guess Pi's API, message shapes, config, or values - read the source. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner`; its shipped `.d.ts` is API truth. Third-party APIs: never state a signature, config key, flag, or version-specific behavior from memory - verify in current docs (Context7 `resolve-library-id` then `query-docs`). If the source contradicts your assumption, the source wins; if it is missing, say so and ask - do not fabricate. Check the request's premise before acting: if the source contradicts it, say so once with evidence, then follow the user's decision.
+
+The same rule applies to state you set up yourself. Before asserting that a job, publish, CI run, or process is in some state, run the command that shows it in this turn (`gh run view`, `npm view`, `git status`). A summary of what you started is a plan, not an observation.
+
+## Authorization
+
+An instruction that names an action and its parameters is the approval for that action ("release patch", "close #12 with a comment") - do it, then report. Ask only when a parameter is ambiguous or a safety check fails; say what failed, don't fix it silently. Once the design is settled, finish the authorized work before asking - the user approves a concrete result. Reversible, read-only, and already-authorized actions need no permission. Agent-initiated writes to a tracker or to files outside the repo keep their gate.
+
 ## Communication Style
 
-Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
+**North star: sharp, human-readable, example-driven, condense.** Sharp = exact, no hedging (name the file/SHA/value). Human-readable = written like a person, not a report. Example-driven = a small before/after beats a paragraph. Condense = every sentence earns its place. One term per concept: name a thing once, reuse that name. A reply carries its substance inline - never point at tool outputs, finding numbers, or earlier turns the reader didn't see; restate in one sentence.
 
-- **Human, terse, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, `.md` files. Terse is not vague - keep it exact.
-- **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
-- **Output instead:** outcomes, decisions needing input, verification results, blockers.
-- **Bullets over prose. Short paragraphs.** No wall-of-text, no tutorial tone unless asked.
-- **Show an example when it clarifies a complex point** - a small before/after or a concrete ref beats a paragraph. Examples disambiguate, they don't pad.
-- **End on the ask, not a summary.** Diffs/outputs speak for themselves.
-- **Match the recipient's register** in human-facing artifacts (issues, PRs, chat).
-- **Prefer ASCII.** `-` not em/en-dashes, `...` not the ellipsis glyph, straight quotes. Non-ASCII only for a justified visual mark.
+| Regime | Surfaces | Format |
+|---|---|---|
+| Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
+| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references, code blocks; density still binds; optimize for unambiguous retrieval |
 
-LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, agent personas, spec docs, code comments where the *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
+**Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
+
+ASCII punctuation everywhere (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark. State what you did or will do; don't pad with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries.
 
 ## Code & Documentation Discipline
 
 - **Code is a liability.** Add only what the task requires. No premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives.
 - **No new machinery if not essential.** Reuse an existing field, channel, or code path (plus a small discriminant if needed) over a new sibling construct; new machinery must earn its place by being impossible or misleading to express with what exists.
-- **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act, cut it - this applies to documentation as much as code.
-- **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers - validate at the boundary once.
-- **Delete dead code, don't comment it out.** Branch from the deletion commit if reversibility matters.
-- **Comments only when the *why* is non-obvious.** No docstrings on self-evident params/returns. No banner/separator comments. Don't reference the current task or PR - that belongs in the commit message.
-- **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **No belt-and-suspenders.** Validate a thing once, at the boundary that owns it - not at every layer.
+- **Delete dead code, don't comment it out.** When a change supersedes code, remove the old path in the same commit. Branch from the deletion commit if reversibility matters.
+- **Comments are stock, not flow.** Record the durable why, never task context, tickets, or callers. Good: `// output is never empty for a real dispatch`. Bad: `// #12: gate on this so the classifier doesn't no-op`. No docstrings on self-evident params/returns, no banner comments.
 - **Surface, don't auto-fix.** A bug fix doesn't drag in surrounding cleanup; mention adjacent issues separately.
+- **Docs are a current contract, present tense.** No "upcoming"/"pending" in a current-state guide - planned work lives in `doc/specs/`, `doc/plans/`, or the ticket; history lives in `CHANGELOG.md` and commit bodies, never in AGENTS.md or a guide. Doc updates ride with the commit that makes them stale. Editing a doc puts the smallest unit you touch - bullet, row, heading block - in scope: its paths resolve, its commands match the source, its framing is present tense; stale content outside that unit: flag, don't fix.
+- **AGENTS.md is always-on essentials plus routing, not the manual.** Route detail to `doc/` or `README.md` and link it; add an inline pointer only when critical or high-frequency. README and AGENTS.md stay in sync where they overlap.
+- **Markdown tables use compact `|---|` separators.** Never padded columns.
 
 ## Ticket convention
 
-Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` (pi-gauntlet >= the release that ships it) - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments). Status transitions and comments are exempt - plain tracker CLI.
+Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-## Ground Truth Before Reasoning
+<!-- agents-core:end v3 -->
 
-Never guess Pi's API, message shapes, config, or values - read the source; the source wins; if it is missing, say so and ask, don't fabricate. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner` - treat its shipped `.d.ts` as API truth. Repo-specific source pointers, if any, follow.
+## Part of one platform
 
-<!-- agents-core:end v2 -->
+One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet** (process). They ship and version independently; a concept is explained in its owning repo and linked from the others, never duplicated. pi-quiver has no code coupling with any sibling. A change that alters a cross-repo contract (settings keys, tool names other skills dispatch) updates the sibling's docs in the same logical change and lands in both CHANGELOGs.
 
-## Part of one platform (cross-repo synergy)
+## Ground truth pointers
 
-This repo is one of four sibling pi extensions - **pi-quiver** (capabilities),
-**pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet**
-(process) - that compose into one governed agent workflow. They ship and version
-independently, but documentation is deliberately cross-referential: a concept is
-explained in its owning repo and *linked* from the others, never duplicated.
-
-- Only hard code dependency: pi-gauntlet -> pi-cohort (`subagent()`).
-- Real runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates
-  it into `Σ$`.
-- pi-quiver is an independent toolbox; no code coupling.
-
-When editing docs here, if a claim belongs to a sibling's concern, link the
-sibling's doc rather than restating it. When a change alters a cross-repo
-contract (dispatch shape, cost channel, settings keys), update the sibling's
-docs in the same logical change and note it in both CHANGELOGs.
-
-- **Extension API:** `node_modules/@earendil-works/pi-coding-agent/dist/**/*.d.ts` - `ExtensionAPI`, `registerTool`, tool result/`details` shapes, exported helpers like `formatSize`, `keyHint`.
-- **TUI:** `node_modules/@earendil-works/pi-tui` - `Text` and theme helpers used in `renderCall` / `renderResult`.
+- Extension API: `node_modules/@earendil-works/pi-coding-agent/dist/**/*.d.ts` - `ExtensionAPI`, `registerTool`, tool result/`details` shapes, `formatSize`, `keyHint`.
+- TUI: `node_modules/@earendil-works/pi-tui` - `Text` and theme helpers used in `renderCall` / `renderResult`.
 
 ## Layout
 
 ```
-extensions/                               # one top-level file = one pi extension entry point
-                                          # (fetch, doc_to_md, session-name [Ghostty/Herdr tab rename], sword-header,
-                                          #  fast-mode, provider-stall-watchdog, slack)
-lib/extension-config.ts                   # shared getAgentDir()-based settings.json resolution + QUIVER_CONFIG_KEYS registry and condensed settings lint
-lib/fetch-core.ts                         # fetch data plane (fetchUrl); extensions/fetch.ts and bin/pi-quiver.ts are thin adapters over it
-lib/doc-to-md-core.ts                     # doc_to_md data plane (convertDocument/inspectDocument); extensions/doc_to_md.ts and bin/pi-quiver.ts are thin adapters over it
-lib/doc-to-md-options.ts                  # pi-free option descriptors, defaults, validation, help, and settings resolution
-lib/doc-to-md-bundle.ts                   # bundle lock, staging, owned-file cleanup, and atomic publish protocol
-lib/doc-to-md-handle.ts                   # pi-free conversion and info handle shapes and formatting
-lib/unpdf-worker.ts                       # killable unpdf child, bundled to dist/lib/ for the published CLI
-lib/slack-core.ts                         # slack config/token resolution, transport, search/thread reads, mutations, announce protocol; extensions/slack.ts is a thin adapter over it
-lib/slack-cache.ts                        # slack workspace-keyed channel/user name->ID cache; sits on top of lib/slack-core.ts
-bin/pi-quiver.ts                          # pi-quiver CLI source (fetch + doc-to-md subcommands); published as esbuild-built dist/, not committed
-skills/, .claude-plugin/                  # Claude Code plugin + fetch/doc-to-md skills; invisible to pi (explicit pi.extensions manifest), excluded from the npm tarball
-test/                                     # node --test suites, one per extension, + layout.test.ts
-test/fixtures/                            # generated PDF/Office/Excel fixtures; generate.py and fake-tier.mjs support doc_to_md tests
-test/doc_to_md.python.test.ts              # uv/soffice-gated PDF, Office, Excel, bundle, and fallback coverage
-doc/slack.md                              # slack extension reference: tools, quiver.slack config, cache layering, announce protocol, manual smoke checklist
-tsconfig.json                             # single source of typecheck flags + include list
-AGENTS.core.md                            # shared-core block, byte-identical across the sibling repos
-scripts/check-agents-core.mjs             # asserts AGENTS.md embeds AGENTS.core.md verbatim (--fix rewrites)
-scripts/doc_to_md.py                      # doc_to_md Python child entry point, resolved from the package root
-package.json                              # pi.extensions = ["./extensions"]; files allowlist; bundled deps + @earendil-works peerDeps
-.github/workflows/test.yml                # unit + typecheck on ubuntu + windows, every push/PR
-.github/workflows/release.yml             # tag-triggered npm publish (OIDC + provenance)
-.agents/skills/release/SKILL.md           # release flow (tag-triggered npm model)
-.agents/skills/release/scripts/release.sh # authoritative release script (CONFIG header + shared skeleton)
-prompts/release.md                        # /release prompt template
+extensions/                 # one top-level file = one extension entry point; nothing else at top level
+lib/extension-config.ts     # getAgentDir()-based settings.json resolution + QUIVER_CONFIG_KEYS registry + lint
+lib/fetch-core.ts           # fetch data plane; extensions/fetch.ts and bin/pi-quiver.ts are thin adapters
+lib/doc-to-md-*.ts          # doc_to_md core, options, bundle protocol, handle shapes; lib/unpdf-worker.ts
+lib/slack-core.ts           # slack config/token resolution, transport, mutations, announce protocol
+lib/slack-cache.ts          # workspace-keyed channel/user name->ID cache
+bin/pi-quiver.ts            # CLI (fetch + doc-to-md); published as esbuild-built dist/, not committed
+scripts/doc_to_md.py        # doc_to_md Python child, resolved from the package root
+skills/, .claude-plugin/    # Claude Code plugin surface; invisible to pi, excluded from the npm tarball
+test/                       # node --test suites, one per extension, + layout.test.ts; fixtures/ generated
 ```
 
-## Workflow
+## Rules
 
-- **Adding an extension:** drop `extensions/<name>.ts` exporting `default function (pi: ExtensionAPI)` - no manifest edit needed, the `./extensions` directory entry discovers it. Document it in `README.md`, add a `CHANGELOG.md` entry. Only extension entry points belong at the top level of `extensions/`: pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have already run. `test/layout.test.ts` enforces this. A new settings key (block or field) is registered in `QUIVER_CONFIG_KEYS` in `lib/extension-config.ts`, or the lint reports it as unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
-- **Test + typecheck before committing.** `npm run test:all` runs the unit tests (`node --test "test/*.test.ts"`) then the typecheck (`npx -y tsc --noEmit`, flags live in `tsconfig.json`). The peer deps (`@earendil-works/*`, `@sinclair/typebox`) and type packages are in `devDependencies`, so a plain install wires everything up:
+- **Only extension entry points at the top level of `extensions/`.** Pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have run. `test/layout.test.ts` enforces it.
+- **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
+- **Opt-in extensions check `enabled` per hook and do nothing when off**; `slack` additionally gates registration at `session_start` (zero tools, hooks, or I/O when disabled). Toggling takes effect next session.
+- **A new extension** is documented in `README.md` and gets a `CHANGELOG.md` `## Unreleased` bullet in the same commit.
+- **Packaging:** `package.json` `files` ships `extensions`, `lib`, `dist`, `scripts/doc_to_md.py`; `dist/` is built at `prepack` (esbuild, `--packages=external`). `test/packed-install.test.ts` installs the packed tarball and runs the bin. Check with `npm pack --dry-run`.
 
-  ```bash
-  npm install
-  npm run test:all
-  ```
+## Testing
 
-  This is the same command the CI test + release workflows run.
-- **Publishability:** `package.json` `files` ships the `extensions` and `lib` directories plus `dist` (`test/` and `tsconfig.json` are intentionally excluded). `dist/` is built at `prepack` via the `esbuild` devDependency; the CLI bundle includes `bin/pi-quiver.ts` and its `lib` imports, while `--packages=external` leaves runtime deps such as `jsdom` and `unpdf` to resolve from the tarball's `dependencies`. It is gitignored and exists only in the published tarball. `bin` points into it: `"bin": { "pi-quiver": "dist/bin/pi-quiver.js" }`. `skills/`, `.claude-plugin/`, and the `bin/` TypeScript sources are intentionally excluded from `files` - Claude Code artifacts never ship to pi users. The bundled runtime deps (`jsdom`, `@mozilla/readability`, `turndown`, `turndown-plugin-gfm`, `unpdf`) stay in `dependencies` so they ship in the tarball; the `@earendil-works/*` + `@sinclair/typebox` peers are provided by the host pi runtime. `scripts/doc_to_md.py` is in `files` because the core loads it at runtime. Check the tarball with `npm pack --dry-run`.
-- **`doc_to_md` engines.** `lib/doc-to-md-core.ts` resolves a backend ladder once per process: `uv` -> system `python3`/`python` >= 3.12 -> a managed venv -> no-Python `unpdf` worker. The PDF primary tier is `pymupdf4llm`; a primary failure uses degraded PyMuPDF text before unpdf is considered. The Python package set is `pymupdf4llm`, `openpyxl`, `xlrd`, and `pillow`; the `PDF`/`XLSX` capability probe independently records what a system interpreter can do. Every conversion tier is a fresh child through `runCapped`: POSIX kills the process group, Windows uses `taskkill /T`, then waits `KILL_GRACE_MS`. That boundary is intentional because MuPDF/PDF.js can spin uninterruptibly. `warmTimeoutMs` is an absolute discovery/bootstrap deadline. Bundles use a lock, page staging, `.done` markers, and atomic Markdown publish. Options resolve from core descriptors; the pi adapter uses `resolveConfig` and the CLI has a pi-free settings reader. The Python child is `scripts/doc_to_md.py`, which imports `pymupdf`, never `fitz`; it resolves from the package root so bundled CLI paths work. DOCX/PPTX route through `soffice` to PDF first. Excel is TS-orchestrated in three independent children: the openpyxl/xlrd data child (Markdown + CSVs under `sheets/` + `renderPages`), an optional `soffice` export with the Calc `SinglePageSheets` filter (one PDF page per sheet), and the PyMuPDF `render-pages` child that rasterizes only the sheets with visuals; soffice absence or failure degrades the rendered views and never fails the conversion. CI installs `uv` and LibreOffice on Ubuntu for the Python suite. Known limitation: Windows setups exposing Python only via the `py` launcher are not detected (candidates are `python3`/`python`).
-- **`provider-stall-watchdog` runtime boundary.** OFF by default; once enabled the boundary is two-phase. The `firstEventMs` tier (default 20s, cleared by the first assistant `message_start`) arms for **every** provider request - every mode (`tui`/`print`/`json`/`rpc`) and every origin, including extension-triggered turns - because activation is lazy inside `before_provider_request`; config is therefore resolved once per session. The mid-stream `warningMs`/`recoveryMs` tier arms only when `ctx.mode === "tui"`, so unattended runs never abort mid-generation. Policy D offers each stall to Pi's retry loop up to `maxStallRetries` times (default = layered `retry.maxRetries`, else 3), verified with Pi 0.80.10; unavailable retry falls back to manual resubmission. See `README.md` for settings and operational behavior.
-- **`slack` runtime boundary.** OFF by default; conditional registration at `session_start` - zero tools, zero registered hooks, and zero side effects (no `.env` read, no network, no cache I/O) when disabled; toggling `quiver.slack.enabled` takes effect next session, same registration-time gate as the other opt-in extensions. When enabled and `policyPath` is set, the same gate also covers a `before_agent_start` handler that injects a `<slack-policy>` block into the system prompt every turn - it registers only inside that same enabled branch, so a disabled extension never touches it. Token resolution is per call: an explicit `userTokenCommand` argv is executed directly with a bounded timeout and no env fallback; otherwise process env then the repo's `.env` (or the primary checkout's `.env` for a worktree with none), never a fallback across the `user`/`bot` identities. The channel/user name->ID cache is workspace-keyed (by Slack team ID), with a `cachePath` config override. Announce-protocol invariants (single-headline guarantee, detail upload fallback, pending-marker recovery) live in `lib/slack-core.ts`. See `doc/slack.md`.
-- **`npm pack`/publish triggers the prepack build.** `prepack` runs `npm run build` (esbuild), regenerating `dist/bin/pi-quiver.js` before every pack/publish; `test/packed-install.test.ts` packs the tarball, installs it into a scratch dir, and runs the installed bin to guard against packaging regressions (e.g. `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` from an unbuilt `.ts` bin).
-- **Releases use the `release` skill.** See [Release model](#release-model). Tag-triggered and CI-executed; the script bumps + tags + pushes, CI publishes to npm. Never `npm publish` by hand.
-- **Smoke-test** with `pi -e ./extensions/fetch.ts -p "fetch https://example.com"` (or `pi -e npm:pi-quiver -p "..."` against the published package).
+`npm run test:all` = `node scripts/check-agents-core.mjs` + `node --test test/*.test.ts` + `npx -y tsc --noEmit` (flags in `tsconfig.json`); the same command CI runs on ubuntu + windows (`.github/workflows/test.yml`). Run with `env -u PI_CODING_AGENT_DIR` in a pi harness shell. Smoke-test with `pi -e ./extensions/fetch.ts -p "fetch https://example.com"`.
 
-## Release model
+## Release
 
-Published to **npm** as `pi-quiver`; installed with `pi install npm:pi-quiver`.
-The `pi-package` keyword lists it on the pi.dev packages gallery automatically.
-Plain semver.
+`/skill:release` owns the flow: `release.sh <level>` promotes `## Unreleased` in `CHANGELOG.md`, bumps `package.json`, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
 
-Release is **tag-triggered and CI-executed**:
+## Routing
 
-1. The `release` skill (driven by `release.sh`) proposes the semver level, bumps
-   `package.json`, commits `Release <version>`, runs `npm run test:all` as a
-   pre-flight, creates the annotated `v<version>` tag, pushes `main` + tag, then
-   monitors CI and verifies npm + pi.dev. **No local `npm publish`.**
-2. Pushing a `v[0-9]+.[0-9]+.[0-9]+` tag triggers
-   `.github/workflows/release.yml`, which installs, verifies the tag matches
-   `package.json`, runs `npm run test:all`, and runs
-   `npm publish --provenance --access public` via npm OIDC trusted publishing.
-   `.github/workflows/test.yml` runs the suite on every push + PR (ubuntu + windows).
-
-The release machinery (`release.sh`, `test.yml`, `release.yml`) is kept
-near-identical to the sibling pi-* repos; `release.sh` differs only in its
-CONFIG header (package name, repo slug, former name, test command).
-`pi-quiver` was renamed from `pi-essentials` at v3.0.0, so
-`FORMER_PACKAGE_NAME="pi-essentials"`; `sync-presets` flags stale
-`pi-essentials` pins (npm or git form) for manual migration.
-
-### Tag scheme
-
-`v<major>.<minor>.<patch>` - plain semver. `package.json` `version` mirrors the
-tag without the leading `v`.
-
-### One-off npm setup
-
-OIDC trusted publishing must be registered once on npmjs.com for the
-`pi-quiver` package (Settings -> Trusted Publishing -> GitHub Actions
-publisher for repo `jjuraszek/pi-quiver`, workflow `release.yml`). Until it
-exists, the publish step cannot authenticate (403).
+| Want to ... | Read |
+|---|---|
+| Install, extension list, settings, migration from flat keys | [`README.md`](README.md) |
+| What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
+| `fetch` routing and size gate | [`doc/fetch.md`](doc/fetch.md) |
+| `doc_to_md` backend ladder, bundle protocol, child contract, CLI | [`doc/doc-to-md.md`](doc/doc-to-md.md) |
+| `provider-stall-watchdog` tiers and retry budget | [`README.md`](README.md#opt-in-extension-config) |
+| `slack` config, tokens, cache, announce protocol, smoke checklist | [`doc/slack.md`](doc/slack.md) |
+| pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
+| Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
+| Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |

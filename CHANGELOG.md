@@ -8,6 +8,13 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `release.sh <level>` promotes the CHANGELOG `## Unreleased` section to `## vX.Y.Z - <date>` and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
+- Release skill and `/release` prompt: a user instruction naming the level is the approval - no proposal step or re-confirmation; bundled follow-ups run after `verify`.
+- AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3.
+- Added `.pi/gauntlet-overrides.md` (`tracker: github`, release path, write-gate carve-out for user-named writes).
+
 ## v6.0.0 - 2026-09-10
 
 - doc_to_md (Excel, breaking): `maxCellsPerSheet` is removed from the tool schema, CLI (`--max-cells-per-sheet`), and `quiver.docToMd` settings; a leftover key is reported by the settings lint. Sheet indices are now 0-based workbook positions covering worksheets and chartsheets, so embedded-image files move from `<stem>-s1-<n>.*` to `<stem>-s0-<n>.*` and `SheetInfo.index` is rebased.

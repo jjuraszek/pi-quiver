@@ -392,7 +392,9 @@ bash .agents/skills/release/scripts/release.sh patch        # or minor / major
 bash .agents/skills/release/scripts/release.sh --dry-run patch
 ```
 
-It bumps `package.json`, commits `Release <version>`, runs the tests, creates
-and pushes the `vX.Y.Z` tag, then monitors the publish. See
-`.agents/skills/release/SKILL.md` for the full flow (`sync-presets` migrates
-old git-tag pins to `npm:pi-quiver@<version>`).
+It promotes the `## Unreleased` CHANGELOG section to `## vX.Y.Z - <date>`,
+bumps `package.json`, commits `Release <version>`, runs the tests, creates and
+pushes the `vX.Y.Z` tag, then monitors the publish. See
+`.agents/skills/release/SKILL.md` for the full flow (`sync-presets --apply`
+rewrites same-form `npm:pi-quiver@<old>` pins; git-tag pins are reported for
+manual migration).
