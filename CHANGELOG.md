@@ -8,6 +8,13 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## v6.0.0 - 2026-09-10
+
+- doc_to_md (Excel, breaking): `maxCellsPerSheet` is removed from the tool schema, CLI (`--max-cells-per-sheet`), and `quiver.docToMd` settings; a leftover key is reported by the settings lint. Sheet indices are now 0-based workbook positions covering worksheets and chartsheets, so embedded-image files move from `<stem>-s1-<n>.*` to `<stem>-s0-<n>.*` and `SheetInfo.index` is rebased.
+- doc_to_md (Excel): the Markdown opens with a `## Sheets` inventory (kind, size, hidden, chart/image counts, rendered view, CSV link); every non-empty worksheet's full content is exported to `sheets/<stem>-s<idx>-<slug>.csv`; the in-Markdown preview is capped at 100 rows x 50 columns and, when truncated, followed by a per-column profile (type, non-empty, min/max, distinct). Chartsheets and embedded charts are listed with type, title, and series refs.
+- doc_to_md (Excel): sheets carrying charts or images get a rendered view (`images/<stem>-s<idx>.<fmt>`) when LibreOffice is on `PATH` - one PDF page per sheet via `calc_pdf_Export` `SinglePageSheets`, rasterized by a new PyMuPDF `render-pages` child under a 16 Mpx budget. Any soffice or render failure degrades to `Rendered view: unavailable (<reason>)` plus a handle note; the conversion never fails. `.xls` keeps inventory/CSV/preview but has no visual detection.
+- doc_to_md: handle prints `Sheets-Dir` when CSVs were written; `info` lists chartsheets with kind and chart/image counts. Bundle overwrite now removes only this stem's owned-pattern files in `images/` and `sheets/`.
+
 ## v5.5.0 - 2026-09-10
 
 - doc_to_md: rewrite primary-PDF image links correctly on Windows.
