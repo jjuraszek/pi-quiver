@@ -6,10 +6,20 @@ export type BackendKind = "uv" | "python" | "venv" | "none";
 
 export interface OutlineEntry { line: number; level: number; title: string; }
 export interface TocEntry { level: number; title: string; page: number; }
-export interface SheetInfo { index: number; name: string; hidden: boolean; rows: number | null; cols: number | null; hiddenRows: number; hiddenCols: number; }
+export interface SheetInfo {
+	index: number;
+	name: string;
+	kind: "worksheet" | "chartsheet";
+	hidden: boolean;
+	rows: number | null; cols: number | null;
+	hiddenRows: number; hiddenCols: number;
+	charts: number; images: number;
+	rendered: boolean;
+	csv: string | null;
+}
 
 export interface HandleData {
-	savedTo: string; imagesDir: string | null; type: InputType; engine: Engine; tier: Tier;
+	savedTo: string; imagesDir: string | null; sheetsDir: string | null; type: InputType; engine: Engine; tier: Tier;
 	pageCount: number | null; pages: number[] | null; imageCount: number; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number;
@@ -73,6 +83,7 @@ function outlineLines(entries: OutlineEntry[], total: number): string[] {
 export function formatHandle(h: HandleData): string {
 	const lines = [`Saved-To: ${h.savedTo}`];
 	if (h.imagesDir && h.imageCount > 0) lines.push(`Images-Dir: ${h.imagesDir}`);
+	if (h.sheetsDir) lines.push(`Sheets-Dir: ${h.sheetsDir}`);
 	lines.push(`Type: ${h.type}   Engine: ${h.engine}   Tier: ${h.tier}`);
 	lines.push(`Page-Count: ${h.pageCount ?? "?"}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);
 	if (h.degraded) lines.push(`Degraded: ${h.degraded}`);
@@ -90,7 +101,7 @@ export function formatInfoHandle(i: InfoData, max: number): string {
 	if (i.sheets) {
 		const lines = [`Type: ${i.type}   Sheets: ${i.sheetsTotal}`];
 		for (const s of i.sheets.slice(0, max)) {
-			const dims = `rows=${s.rows ?? "?"} cols=${s.cols ?? "?"}`;
+			const dims = `${s.kind} rows=${s.rows ?? "-"} cols=${s.cols ?? "-"} charts=${s.charts} images=${s.images}`;
 			const hidden = s.hiddenRows || s.hiddenCols ? ` hiddenRows=${s.hiddenRows} hiddenCols=${s.hiddenCols}` : "";
 			lines.push(`  ${trunc(s.name, TITLE_MAX)}  ${s.hidden ? "hidden " : ""}${dims}${hidden}`);
 		}

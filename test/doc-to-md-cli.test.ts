@@ -92,7 +92,8 @@ test("CLI subprocess: --info prints the info handle", async () => {
 
 test("CLI subprocess: --help exit 0 lists every flag", async () => {
 	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
-	for (const f of ["--info", "--pages", "--output-dir", "--overwrite", "--primary-timeout", "--fallback-timeout", "--soffice-timeout", "--excel-timeout", "--warm-timeout", "--pymupdf-version", "--image-dpi", "--image-format", "--max-cells-per-sheet", "--max-output-bytes", "--outline-max-entries"]) assert.ok(stdout.includes(f), f);
+	for (const f of ["--info", "--pages", "--output-dir", "--overwrite", "--primary-timeout", "--fallback-timeout", "--soffice-timeout", "--excel-timeout", "--warm-timeout", "--pymupdf-version", "--image-dpi", "--image-format", "--max-output-bytes", "--outline-max-entries"]) assert.ok(stdout.includes(f), f);
+	assert.ok(!stdout.includes("--max-cells-per-sheet"));
 });
 
 test("CLI subprocess: exit 2 on bad --pages, unknown flag, --info with --pages", async () => {

@@ -20,7 +20,8 @@ test("descriptors: every tunable has a flag, default and help; per-call intents 
 	assert.strictEqual(TUNABLE_DEFAULTS.pymupdfVersion, "1.27.2.3");
 	assert.strictEqual(TUNABLE_DEFAULTS.imageDpi, 150);
 	assert.strictEqual(TUNABLE_DEFAULTS.imageFormat, "png");
-	assert.strictEqual(TUNABLE_DEFAULTS.maxCellsPerSheet, 50000);
+	assert.ok(!("maxCellsPerSheet" in TUNABLE_DEFAULTS));
+	assert.ok(!DOC_TO_MD_OPTIONS.some((d) => (d.key as string) === "maxCellsPerSheet"));
 	assert.strictEqual(TUNABLE_DEFAULTS.maxOutputBytes, 20000000);
 	assert.strictEqual(TUNABLE_DEFAULTS.outlineMaxEntries, 40);
 });

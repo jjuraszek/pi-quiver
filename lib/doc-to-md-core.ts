@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Bundle, abortBundle, commitBundle, openBundle, publishSheetImages, publishStaged, rewriteImageLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type Bundle, abortBundle, commitBundle, openBundle, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
 import { type Engine, type HandleData, type InfoData, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, TUNABLE_DEFAULTS, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
@@ -28,6 +28,7 @@ export const VENV_DIR_NAME = "doc-to-md-venv-v2";
 export const LEGACY_VENV_DIR_NAME = "pymupdf-venv";
 const STDERR_CAP = 1_000_000;
 export const OUTPUT_MAX_BYTES = 20_000_000;
+export const EXCEL_PDF_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}';
 
 export interface BackendConfig { pymupdfVersion: string; warmTimeoutMs: number; }
 
@@ -59,12 +60,12 @@ export function uvChildArgs(cfg: BackendConfig, script: string, mode: string): s
 
 export function pythonChildArgs(script: string, mode: string): string[] { return [script, mode]; }
 
-export function soffArgs(src: string, profileDir: string, outDir: string): string[] {
+export function soffArgs(src: string, profileDir: string, outDir: string, filter = "pdf"): string[] {
 	return [
 		"--headless", "--invisible", "--nocrashreport", "--nodefault", "--nofirststartwizard",
 		"--nolockcheck", "--nologo", "--norestore", "--quickstart=no",
 		`-env:UserInstallation=${pathToFileURL(profileDir).href}`,
-		"--convert-to", "pdf", "--outdir", outDir, src,
+		"--convert-to", filter, "--outdir", outDir, src,
 	];
 }
 
@@ -367,35 +368,35 @@ export function resetBackendCacheForTests(): void {
 	backendPromise = null;
 }
 
-export async function convertOffice(
-	sofficeTimeoutMs: number,
-	src: string,
-	signal?: AbortSignal,
-	run: RunFn = runCapped,
-): Promise<{ pdfPath: string; cleanup: () => void }> {
+export type OfficeResult =
+	| { ok: true; pdfPath: string; cleanup: () => void }
+	| { ok: false; kind: "missing" | "timeout" | "exit" | "no-pdf"; code: number | null; timedOut: boolean; stderr: string };
+
+export async function tryConvertOffice(sofficeTimeoutMs: number, src: string, signal?: AbortSignal, run: RunFn = runCapped, filter = "pdf"): Promise<OfficeResult> {
 	const profileDir = mkdtempSync(join(tmpdir(), "pi-doc-soffice-prof-"));
 	const outDir = mkdtempSync(join(tmpdir(), "pi-doc-soffice-out-"));
-	const cleanup = () => {
-		for (const d of [profileDir, outDir]) {
-			try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
-		}
-	};
+	const cleanup = () => { for (const d of [profileDir, outDir]) try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ } };
 	try {
 		const env = { ...process.env, SAL_USE_VCLPLUGIN: "svp", OOO_DISABLE_RECOVERY: "1", SAL_NO_MOUSEGRABS: "1" };
-		const r = await run("soffice", soffArgs(src, profileDir, outDir), { timeoutMs: sofficeTimeoutMs, capBytes: OUTPUT_MAX_BYTES, env, signal });
+		const r = await run("soffice", soffArgs(src, profileDir, outDir, filter), { timeoutMs: sofficeTimeoutMs, capBytes: OUTPUT_MAX_BYTES, env, signal });
 		if (signal?.aborted) throw new Error("aborted");
-		if (r.code === null && !r.timedOut) {
-			throw new Error("LibreOffice (soffice) is required to convert .docx/.pptx but was not found on PATH. Install LibreOffice or convert the file to PDF first.");
-		}
-		if (r.timedOut || r.code !== 0) throw new Error(`soffice failed (code=${r.code} timedOut=${r.timedOut}): ${r.stderr.slice(0, 500)}`);
-		const base = basename(src).replace(/\.[^.]+$/, "");
-		const pdfPath = join(outDir, `${base}.pdf`);
+		const fail = (kind: "missing" | "timeout" | "exit" | "no-pdf"): OfficeResult => { cleanup(); return { ok: false, kind, code: r.code, timedOut: r.timedOut, stderr: r.stderr.slice(0, 500) }; };
+		if (r.code === null && !r.timedOut) return fail("missing");
+		if (r.timedOut) return fail("timeout");
+		if (r.code !== 0) return fail("exit");
+		const pdfPath = join(outDir, `${basename(src).replace(/\.[^.]+$/, "")}.pdf`);
 		const st = statSync(pdfPath, { throwIfNoEntry: false });
-		if (!st || !st.isFile() || st.size === 0) {
-			throw new Error("LibreOffice (soffice) ran but produced no usable PDF for this file. Ensure LibreOffice can open the document, or convert it to PDF manually first.");
-		}
-		return { pdfPath, cleanup };
+		if (!st || !st.isFile() || st.size === 0) return fail("no-pdf");
+		return { ok: true, pdfPath, cleanup };
 	} catch (e) { cleanup(); throw e; }
+}
+
+export async function convertOffice(sofficeTimeoutMs: number, src: string, signal?: AbortSignal, run: RunFn = runCapped): Promise<{ pdfPath: string; cleanup: () => void }> {
+	const r = await tryConvertOffice(sofficeTimeoutMs, src, signal, run);
+	if (r.ok) return r;
+	if (r.kind === "missing") throw new Error("LibreOffice (soffice) is required to convert .docx/.pptx but was not found on PATH. Install LibreOffice or convert the file to PDF first.");
+	if (r.kind === "no-pdf") throw new Error("LibreOffice (soffice) ran but produced no usable PDF for this file. Ensure LibreOffice can open the document, or convert it to PDF manually first.");
+	throw new Error(`soffice failed (code=${r.code} timedOut=${r.timedOut}): ${r.stderr}`);
 }
 
 
@@ -405,13 +406,14 @@ export const DEGRADED_TEXT = "PyMuPDF text extraction - layout/tables not preser
 export const DEGRADED_UNPDF = "unpdf text extraction - structure not preserved";
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
-export type Mode = "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text";
-export interface TierJson { markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number][]; sheets?: SheetInfo[]; }
+export type Mode = "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages";
+export interface TierJson { markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number][]; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
 	backend: (cfg: BackendConfig) => Promise<Backend>;
 	runTier: (mode: Mode, childOptions: Record<string, unknown>, bundle: Pick<Bundle, "stagingDir">, signal: AbortSignal | undefined, timeoutMs: number, backend: Backend) => Promise<TierResult>;
+	office: typeof tryConvertOffice;
 }
 
 export function resolveUnpdfWorker(candidates: string[], exists: (path: string) => boolean): string {
@@ -463,8 +465,19 @@ function detailSuffix(r: Extract<TierResult, { ok: false; reason: string }>): st
 	return r.detail ? ` (${r.detail})` : "";
 }
 
+export function reconcileRenderMarkers(md: string, renderPages: number[], fmt: string, sourceMap: Map<string, string>, reason: (idx: number) => string): string {
+	for (const idx of renderPages) {
+		const file = `s${idx}.${fmt}`;
+		const ok = sourceMap.has(file);
+		md = md.replace(`<!--rv:${idx}-->`, ok ? `Rendered view: ![Rendered view of sheet ${idx}](${file})` : `Rendered view: unavailable (${reason(idx)})`);
+		md = md.replace(`<!--rvs:${idx}-->`, ok ? "yes" : "no");
+	}
+	if (/<!--rvs?:\d+-->/.test(md)) throw new Error("internal: unresolved render marker");
+	return md;
+}
+
 export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, seams?: Partial<PipelineSeams>): Promise<ConvertOutcome> {
-	const s: PipelineSeams = { backend: (c) => getBackend(c, undefined, signal), runTier: runTierReal, ...seams };
+	const s: PipelineSeams = { backend: (c) => getBackend(c, undefined, signal), runTier: runTierReal, office: tryConvertOffice, ...seams };
 	const inputPath = resolve(o.path);
 	const st = statSync(inputPath, { throwIfNoEntry: false });
 	if (!st || !st.isFile()) throw new Error(`Not a readable file: ${o.path}`);
@@ -479,17 +492,40 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	try {
 		let pdfPath = inputPath;
 		if (type === "docx" || type === "pptx") { office = await convertOffice(o.sofficeTimeoutMs, inputPath, signal); pdfPath = office.pdfPath; }
-		const base = { path: pdfPath, pages: o.pages, stagingDir: b.stagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxCellsPerSheet: o.maxCellsPerSheet, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion };
+		const base = { path: pdfPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion };
 		let tier: Tier, engine: Engine, json: TierJson, degraded: string | null = null, fallbackReason: string | null = null;
+		let notes: string[] = [];
 		if (isExcel) {
 			const r = await s.runTier("xlsx", base, b, signal, o.excelTimeoutMs, backend);
 			if (!r.ok) {
 				if ("userError" in r) throw new Error(r.userError);
-				const remedy = r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes" ? ". Remedy: raise excelTimeoutMs or lower maxCellsPerSheet" : "";
+				const remedy = r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes" ? ". Remedy: raise excelTimeoutMs" : "";
 				throw new Error(`Excel conversion failed: ${r.reason}${detailSuffix(r)}${remedy}`);
 			}
-			publishSheetImages(b);
-			tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json;
+			publishSheetImages(b); publishSheetCsvs(b);
+			tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json; notes = [...(json.notes ?? [])];
+			const renderPages = json.renderPages ?? [];
+			let skip: string | null = null;
+			const perSheet = new Map<number, string>();
+			if (renderPages.length) {
+				const off = await s.office(o.sofficeTimeoutMs, inputPath, signal, runCapped, EXCEL_PDF_FILTER);
+				if (!off.ok) skip = off.kind === "missing" ? "LibreOffice not found" : off.kind === "timeout" ? `soffice failed: timeout after ${o.sofficeTimeoutMs}ms` : off.kind === "exit" ? `soffice failed: exit ${off.code}` : "soffice produced no PDF";
+				else {
+					try {
+						const rp = await s.runTier("render-pages", { path: off.pdfPath, sheetIndices: renderPages, expectedPages: json.sheetCount, imageDpi: o.imageDpi, imageFormat: o.imageFormat, stagingDir: b.stagingDir, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.fallbackTimeoutMs, backend);
+						if (!rp.ok) skip = `render failed: ${"userError" in rp ? rp.userError : rp.reason}`;
+						else if (rp.json.ok === false) skip = rp.json.reason ?? "render failed";
+						else {
+							publishSheetImages(b);
+							for (const f of rp.json.failed ?? []) perSheet.set(f.idx, f.reason);
+							for (const d of rp.json.rendered ?? []) if (d.dpi < o.imageDpi) notes.push(`Rendered view s${d.idx}: rendered at ${d.dpi} dpi`);
+						}
+					} finally { off.cleanup(); }
+				}
+				if (skip) notes.push(`Rendered views skipped: ${skip}`);
+				else if (perSheet.size) notes.push(`Rendered views: ${perSheet.size} of ${renderPages.length} unavailable`);
+			}
+			json = { ...json, markdown: reconcileRenderMarkers(json.markdown ?? "", renderPages, o.imageFormat, b.sourceMap, (idx) => perSheet.get(idx) ?? skip ?? "render failed") };
 		} else if (backend.kind === "none") {
 			const r = await s.runTier("pdf-text", base, b, signal, o.primaryTimeoutMs, backend);
 			if (!r.ok) throw new Error("userError" in r ? r.userError : `Conversion failed: unpdf ${r.reason}${detailSuffix(r)}`);
@@ -508,25 +544,26 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 				tier = "fallback"; engine = "pymupdf-text"; json = f.json; degraded = DEGRADED_TEXT; fallbackReason = `primary ${p.reason}`;
 			}
 		}
-		let body = rewriteImageLinks(json.markdown ?? "", b.sourceMap);
-		validateImageLinks(body, b.manifest);
+		if (!isExcel) notes = json.notes ?? [];
+		const body = rewriteLinks(json.markdown ?? "", b.sourceMap);
+		validateImageLinks(body, b.manifest, b.csvManifest);
 		const head: string[] = [];
 		if (degraded) head.push(`Degraded: ${degraded}`);
 		if (fallbackReason) head.push(`Fallback-Reason: ${fallbackReason}`);
 		if (json.failedPages?.length) head.push(`Failed pages: ${json.failedPages.map((f) => `${f.page} (${f.error})`).join("; ")}`);
 		if (json.emptyPages?.length) head.push(`Empty pages: ${json.emptyPages.join(", ")}`);
-		for (const n of json.notes ?? []) head.push(`Notes: ${n}`);
+		for (const n of notes) head.push(`Notes: ${n}`);
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes: json.notes ?? [], outline: outline.entries, outlineTotal: outline.total };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }
 }
 
 export async function inspectDocument(o: DocToMdOptions, signal?: AbortSignal, seams?: Partial<PipelineSeams>): Promise<{ output: string; details: InfoData }> {
-	const s: PipelineSeams = { backend: (c) => getBackend(c, undefined, signal), runTier: runTierReal, ...seams };
+	const s: PipelineSeams = { backend: (c) => getBackend(c, undefined, signal), runTier: runTierReal, office: tryConvertOffice, ...seams };
 	const inputPath = resolve(o.path);
 	const st = statSync(inputPath, { throwIfNoEntry: false });
 	if (!st || !st.isFile()) throw new Error(`Not a readable file: ${o.path}`);
@@ -541,7 +578,7 @@ export async function inspectDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const r = await s.runTier("info", { path, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, { stagingDir: "" }, signal, isExcel ? o.excelTimeoutMs : o.fallbackTimeoutMs, backend);
 		if (!r.ok) {
 			if ("userError" in r) throw new Error(r.userError);
-			if (isExcel && (r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes")) throw new Error(`Excel inspection failed: ${r.reason}. Remedy: raise excelTimeoutMs or lower maxCellsPerSheet${detailSuffix(r)}`);
+			if (isExcel && (r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes")) throw new Error(`Excel inspection failed: ${r.reason}. Remedy: raise excelTimeoutMs${detailSuffix(r)}`);
 			throw new Error(`Inspection failed: ${r.reason}${detailSuffix(r)}`);
 		}
 		const toc: TocEntry[] = (r.json.toc ?? []).map(([level, title, page]) => ({ level, title, page }));

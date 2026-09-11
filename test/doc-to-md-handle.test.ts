@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline, type HandleData } from "../lib/doc-to-md-handle.ts";
 
 const base: HandleData = {
-	savedTo: "/out/manual.md", imagesDir: "/out/images", type: "pdf", engine: "pymupdf4llm", tier: "primary",
+	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
 	pageCount: 42, pages: [3, 4, 5], imageCount: 4, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
 	failedPages: [], emptyPages: [], notes: [], outline: [{ line: 1, level: 1, title: "Installation" }, { line: 88, level: 2, title: "Wiring" }], outlineTotal: 2,
 };
@@ -61,8 +61,19 @@ test("scanOutline: ATX headings outside fences, line numbers 1-based, cap", () =
 test("formatInfoHandle: pdf and xlsx shapes", () => {
 	const pdf = formatInfoHandle({ type: "pdf", backend: "uv", pageCount: 42, metadata: { title: "Installation Manual", author: "Me" }, toc: [{ level: 1, title: "Installation", page: 3 }], tocTotal: 1, sheets: null, sheetsTotal: 0 }, 40);
 	assert.deepStrictEqual(pdf.split("\n"), ["Type: pdf   Page-Count: 42   Backend: uv", "Title: Installation Manual   Author: Me", "TOC:", "  L1 Installation (p3)"]);
-	const xl = formatInfoHandle({ type: "xlsx", backend: "uv", pageCount: null, metadata: {}, toc: [], tocTotal: 0, sheets: [{ index: 1, name: "Data", hidden: false, rows: 120, cols: 9, hiddenRows: 1, hiddenCols: 1 }, { index: 2, name: "Hidden", hidden: true, rows: null, cols: null, hiddenRows: 0, hiddenCols: 0 }], sheetsTotal: 2 }, 40);
-	assert.deepStrictEqual(xl.split("\n"), ["Type: xlsx   Sheets: 2", "  Data  rows=120 cols=9 hiddenRows=1 hiddenCols=1", "  Hidden  hidden rows=? cols=?"]);
+	const xl = formatInfoHandle({ type: "xlsx", backend: "uv", pageCount: null, metadata: {}, toc: [], tocTotal: 0, sheets: [
+		{ index: 0, name: "Data", kind: "worksheet", hidden: false, rows: 120, cols: 9, hiddenRows: 1, hiddenCols: 1, charts: 1, images: 2, rendered: false, csv: null },
+		{ index: 1, name: "Hidden", kind: "worksheet", hidden: true, rows: 3, cols: 2, hiddenRows: 0, hiddenCols: 0, charts: 0, images: 0, rendered: false, csv: null },
+		{ index: 2, name: "Trends", kind: "chartsheet", hidden: false, rows: null, cols: null, hiddenRows: 0, hiddenCols: 0, charts: 1, images: 0, rendered: false, csv: null },
+	], sheetsTotal: 3 }, 40);
+	assert.deepStrictEqual(xl.split("\n"), ["Type: xlsx   Sheets: 3", "  Data  worksheet rows=120 cols=9 charts=1 images=2 hiddenRows=1 hiddenCols=1", "  Hidden  hidden worksheet rows=3 cols=2 charts=0 images=0", "  Trends  chartsheet rows=- cols=- charts=1 images=0"]);
+});
+
+test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
+	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], notes: [], outline: [], outlineTotal: 0 };
+	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
+	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
+	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));
 });
 
 test("formatSize", () => {

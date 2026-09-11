@@ -16,7 +16,6 @@ export interface Tunables {
 	pymupdfVersion: string;
 	imageDpi: number;
 	imageFormat: ImageFormat;
-	maxCellsPerSheet: number;
 	maxOutputBytes: number;
 	outlineMaxEntries: number;
 }
@@ -63,14 +62,13 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir" },
 	{ key: "overwrite", flag: "--overwrite", type: "bool", default: false, settable: false, help: "Replace an existing completed <stem>.md bundle" },
 	{ key: "primaryTimeoutMs", flag: "--primary-timeout", type: "int", default: 60000, settable: true, env: "PI_DOC_TO_MD_CONVERT_TIMEOUT_MS", help: "pymupdf4llm tier; also the unpdf tier" },
-	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier; also info on PDF" },
-	{ key: "sofficeTimeoutMs", flag: "--soffice-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS", help: "DOCX/PPTX -> PDF via LibreOffice" },
+	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier; also info on PDF and Excel rendered views" },
+	{ key: "sofficeTimeoutMs", flag: "--soffice-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS", help: "DOCX/PPTX -> PDF via LibreOffice; also Excel rendered views" },
 	{ key: "excelTimeoutMs", flag: "--excel-timeout", type: "int", default: 60000, settable: true, help: "Excel child (both openpyxl loads); also info on Excel" },
 	{ key: "warmTimeoutMs", flag: "--warm-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_WARM_TIMEOUT_MS", help: "Absolute backend discovery/bootstrap deadline (first call per process)" },
 	{ key: "pymupdfVersion", flag: "--pymupdf-version", type: "version", default: "1.27.2.3", settable: true, env: "PI_DOC_TO_MD_PYMUPDF_VERSION", help: "pymupdf4llm pin (>= 1.27.0)" },
-	{ key: "imageDpi", flag: "--image-dpi", type: "int", default: 150, settable: true, help: "Render DPI for page images" },
+	{ key: "imageDpi", flag: "--image-dpi", type: "int", default: 150, settable: true, help: "Render DPI for page images and Excel rendered views" },
 	{ key: "imageFormat", flag: "--image-format", type: "enum", default: "png", settable: true, enumValues: ["png", "jpg"], help: "Rendered image format (embedded images keep their native extension)" },
-	{ key: "maxCellsPerSheet", flag: "--max-cells-per-sheet", type: "int", default: 50000, settable: true, help: "rows x cols budget per worksheet" },
 	{ key: "maxOutputBytes", flag: "--max-output-bytes", type: "int", default: 20000000, settable: true, help: "Child stdout cap in bytes" },
 	{ key: "outlineMaxEntries", flag: "--outline-max-entries", type: "int", default: 40, settable: true, help: "Heading outline / TOC / sheet inventory cap in the handle" },
 ];

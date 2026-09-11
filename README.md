@@ -65,7 +65,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | Extension | Tool | What it does |
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `fetch`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
-| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk (`<stem>.md` + `images/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` mode inspects first; `pages` selects 1-based pages; every page ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> per-worksheet matrices with formulas/cached values/merged/hidden. Settings under `quiver.docToMd`. |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk (`<stem>.md` + `images/` and spreadsheet `sheets/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` mode inspects first; `pages` selects 1-based pages; every page ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. Settings under `quiver.docToMd`. |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty/Herdr tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -93,7 +93,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 ## When NOT to use
 
 - You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
-- You need `.xlsm`, sheet/range selection or chart rendering - out of scope.
+- You need in-grid chart/image placement, `.xls` visual detection, `.xlsm`, or range selection - out of scope; chart/image association is per sheet only.
 - You want automatic session naming, a custom header, fast mode, or stall recovery without opting in - all stay off until you flip the config.
 - You need *mid-stream* stall recovery in JSON, RPC, or print runs - only the pre-first-event tier arms there; mid-stream silence falls through to pi's transport timeout.
 
@@ -289,22 +289,21 @@ Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `
 | Key | Default | Meaning |
 |---|---|---|
 | `primaryTimeoutMs` | `60000` | pymupdf4llm tier and unpdf tier deadline. |
-| `fallbackTimeoutMs` | `30000` | PyMuPDF text tier and PDF info deadline. |
-| `sofficeTimeoutMs` | `120000` | DOCX/PPTX -> PDF deadline. |
+| `fallbackTimeoutMs` | `30000` | PyMuPDF text tier, PDF info, and Excel rendered-view rasterization deadline. |
+| `sofficeTimeoutMs` | `120000` | DOCX/PPTX -> PDF deadline; also the Excel rendered-view export. |
 | `excelTimeoutMs` | `60000` | Excel child and Excel info deadline. |
 | `warmTimeoutMs` | `120000` | Absolute first-call backend discovery/bootstrap deadline. |
 | `pymupdfVersion` | `1.27.2.3` | pymupdf4llm pin, minimum `1.27.0`. |
-| `imageDpi` | `150` | Render DPI for page images. |
+| `imageDpi` | `150` | Render DPI for page images and Excel rendered views (capped by a 16 Mpx budget). |
 | `imageFormat` | `png` | Rendered image format: `png` or `jpg`; embedded images retain their extension. |
-| `maxCellsPerSheet` | `50000` | Rows x columns budget per worksheet. |
 | `maxOutputBytes` | `20000000` | Child stdout cap in bytes. |
 | `outlineMaxEntries` | `40` | Heading outline, TOC, or sheet inventory entries in the handle. |
 
-A bundle is `<outputDir>/<stem>.md` plus `<outputDir>/images/`; without `outputDir`, the tool creates a per-call temp root. A conversion owns `<stem>.md.lock` until it atomically publishes the Markdown. An existing `<stem>.md` fails the call unless `overwrite` is set; `overwrite` replaces that Markdown and the images it owns (`<stem>-p<N>-<n>.*` / `<stem>-s<idx>-<n>.*`), nothing else. Temp bundles are caller-owned - the tool never deletes a bundle it produced.
+A bundle is `<outputDir>/<stem>.md` plus `<outputDir>/images/` and, for spreadsheets with data, `<outputDir>/sheets/`; without `outputDir`, the tool creates a per-call temp root. A conversion owns `<stem>.md.lock` until it atomically publishes the Markdown. An existing `<stem>.md` fails the call unless `overwrite` is set; `overwrite` replaces that Markdown and the files it owns (`images/<stem>-p<N>-<n>.*`, `images/<stem>-s<idx>[-<n>].*`, `sheets/<stem>-s<idx>-<slug>.csv`), nothing else. Temp bundles are caller-owned - the tool never deletes a bundle it produced.
 
-Excel needs a Python backend with openpyxl, xlrd and pillow - otherwise the call fails with `Remedy: install uv, or pip install openpyxl xlrd pillow`.
+Excel needs a Python backend with openpyxl, xlrd and pillow - otherwise the call fails with `Remedy: install uv, or pip install openpyxl xlrd pillow`. The Markdown opens with a `## Sheets` table listing every sheet in workbook order (0-based `#`, `worksheet`/`chartsheet`, size, hidden, chart and image counts, rendered view, CSV link for non-empty worksheets), then one section per sheet: a `Data:` line linking the full-content CSV under `sheets/` for non-empty worksheets, chart metadata from the workbook model, embedded images, an optional rendered view, a preview of at most the first 100 rows x 50 columns, and - only when the preview is truncated - a `Columns:` profile (type, non-empty count, min/max, distinct up to 50). Sizes are the extent of non-empty cells (the `info` handle reports the raw worksheet dimensions instead, which may be larger). Rendered views (`images/<stem>-s<idx>.<fmt>`) are produced for sheets carrying charts or images when LibreOffice is on `PATH`: the workbook is exported one PDF page per sheet and rasterized under a 16 Mpx budget. Any LibreOffice or rasterization failure degrades to `Rendered view: unavailable (<reason>)` and a handle note; it never fails the conversion. Workbooks whose chartsheet drawings carry a zero-size anchor (openpyxl-authored files; Excel-authored files are unaffected) render as a degenerate page and are reported as such. `.xls` gets the inventory, CSVs and previews but no visual detection or rendering.
 
-Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + KILL_GRACE_MS`). There is no cap on image count, image bytes or workbook memory - deliberately; the per-tier timeouts and `maxOutputBytes` are the bounds.
+Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + sofficeTimeoutMs + fallbackTimeoutMs + 2 * KILL_GRACE_MS`). There is no cap on image count, image bytes, cell count or workbook memory - deliberately; the per-tier timeouts, the rendered-view pixel budget and `maxOutputBytes` are the bounds.
 
 ### Migrating from flat keys
 

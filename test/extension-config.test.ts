@@ -76,6 +76,16 @@ test("registry: every extension default-config key is registered; docToMd equals
 	assert.deepEqual([...QUIVER_CONFIG_KEYS.docToMd], Object.keys(docToMdDefaults));
 });
 
+test("docToMd: a stale maxCellsPerSheet key is linted as unknown (migration signal)", () => {
+	withSettings({}, { quiver: { docToMd: { maxCellsPerSheet: 20 } } }, (cwd, files) => {
+		const warnings: string[] = [];
+		resolveConfig(cwd, "docToMd", docToMdDefaults, (raw) => (raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined), (m) => warnings.push(m));
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0].startsWith(`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}`));
+		assert.match(warnings[0], /"quiver\.docToMd\.maxCellsPerSheet" - unknown; accepted: primaryTimeoutMs, fallbackTimeoutMs, sofficeTimeoutMs, excelTimeoutMs, warmTimeoutMs, pymupdfVersion, imageDpi, imageFormat, maxOutputBytes, outlineMaxEntries/);
+	});
+});
+
 test("nested-only non-legacy key resolves from quiver", () => {
 	withSettings({}, { quiver: { slack: { enabled: true, label: "s" } } }, (cwd) => {
 		assert.deepEqual(resolveConfig(cwd, "slack", DEFAULTS, coerceCfg), { enabled: true, label: "s" });

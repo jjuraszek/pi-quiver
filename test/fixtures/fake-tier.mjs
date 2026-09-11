@@ -1,5 +1,5 @@
 // Scripted child for orchestration tests. argv[2] = mode (ignored), options JSON on stdin.
-// Options: { script: { sleepMs, exit, stdout, stageImages: [{page, files, done}], spawnGrandchild, bigStdout } }
+// Options: { script: { sleepMs, exit, stdout, stageImages: [{page, files, done}], stageFiles: [{dir: "stagingDir"|"sheetsStagingDir", name, content?}], spawnGrandchild, bigStdout } }
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -13,6 +13,11 @@ for (const st of s.stageImages ?? []) {
 	mkdirSync(d, { recursive: true });
 	for (const f of st.files) writeFileSync(join(d, f), "img");
 	if (st.done) writeFileSync(join(d, ".done"), "");
+}
+for (const f of s.stageFiles ?? []) {
+	const dir = o[f.dir];
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, f.name), f.content ?? "x");
 }
 if (s.spawnGrandchild) {
 	const gc = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });

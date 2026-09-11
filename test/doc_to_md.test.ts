@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolveOptions, TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
-import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAME, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, convertOffice, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
+import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAME, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, convertOffice, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
@@ -685,7 +685,7 @@ test("convertDocument: xlsx tier only gives timeout/output-cap remedy for those 
 		assert.ok(!error.message.includes("Remedy: raise excelTimeoutMs"));
 		return true;
 	});
-	await assert.rejects(convertDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => ({ ok: false, reason: "timeout after 1ms" }))), /Excel conversion failed: timeout after 1ms\. Remedy: raise excelTimeoutMs or lower maxCellsPerSheet/);
+	await assert.rejects(convertDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => ({ ok: false, reason: "timeout after 1ms" }))), /Excel conversion failed: timeout after 1ms\. Remedy: raise excelTimeoutMs/);
 });
 
 test("convertDocument: xlsx with python backend lacking XLSX -> remedy; no backend -> remedy", async () => {
@@ -709,7 +709,7 @@ test("inspectDocument: xlsx tier only gives timeout/output-cap remedy for those 
 	for (const reason of ["timeout after 1ms", "output exceeded maxOutputBytes"]) {
 		await assert.rejects(
 			inspectDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => ({ ok: false, reason }))),
-			new RegExp(`Excel inspection failed: ${reason}\\. Remedy: raise excelTimeoutMs or lower maxCellsPerSheet`),
+			new RegExp(`Excel inspection failed: ${reason}\\. Remedy: raise excelTimeoutMs`),
 		);
 	}
 	const nonzero = inspectDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => ({ ok: false, reason: "exit 1" })));
@@ -723,4 +723,148 @@ test("inspectDocument: xlsx tier only gives timeout/output-cap remedy for those 
 test("inspectDocument: python info via seam -> TOC rendered", async () => {
 	const r = await inspectDocument(opts({ info: true }), undefined, seamsWith(async () => ({ ok: true, json: { pageCount: 6, metadata: { title: "T" }, toc: [[1, "Chapter 1", 1]] } })));
 	assert.ok(r.output.includes("TOC:\n  L1 Chapter 1 (p1)"));
+});
+
+test("soffArgs: default pdf filter and explicit Calc filter", () => {
+	assert.ok(soffArgs("/in/a.docx", "/prof", "/out").includes("pdf"));
+	const a = soffArgs("/in/a.xlsx", "/prof", "/out", EXCEL_PDF_FILTER);
+	assert.equal(a[a.indexOf("--convert-to") + 1], EXCEL_PDF_FILTER);
+});
+
+test("tryConvertOffice: failures are results; convertOffice keeps thrown messages", async () => {
+	const docx = join(process.cwd(), "test/fixtures/sample.docx");
+	const mk = (r: Partial<{ code: number | null; timedOut: boolean }>) => async () => ({ code: 0, timedOut: false, capped: false, stdout: "", stderr: "boom", ...r });
+	assert.deepStrictEqual(await tryConvertOffice(1000, docx, undefined, mk({ code: null })), { ok: false, kind: "missing", code: null, timedOut: false, stderr: "boom" });
+	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({ timedOut: true, code: null })) as { kind: string }).kind, "timeout");
+	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({ code: 7 })) as { kind: string }).kind, "exit");
+	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({})) as { kind: string }).kind, "no-pdf");
+	await assert.rejects(convertOffice(1000, docx, undefined, mk({ code: null })), /was not found on PATH/);
+	await assert.rejects(convertOffice(1000, docx, undefined, mk({ code: 7 })), /soffice failed \(code=7 timedOut=false\): boom/);
+	await assert.rejects(convertOffice(1000, docx, undefined, mk({})), /produced no usable PDF/);
+});
+
+test("reconcileRenderMarkers: resolves by index and rejects leftovers", () => {
+	const md = "| <!--rvs:0--> | <!--rvs:3--> |\n<!--rv:0-->\n<!--rv:3-->\n";
+	const out = reconcileRenderMarkers(md, [0, 3], "png", new Map([["s0.png", "images/b-s0.png"]]), (idx) => idx === 3 ? "degenerate" : "n/a");
+	assert.equal(out, "| yes | no |\nRendered view: ![Rendered view of sheet 0](s0.png)\nRendered view: unavailable (degenerate)\n");
+	assert.throws(() => reconcileRenderMarkers("<!--rv:1-->", [0], "png", new Map(), () => "x"), /internal: unresolved render marker/);
+});
+
+const XL = fileURLToPath(new URL("../test/fixtures/workbook.xlsx", import.meta.url));
+const xlMd = "# workbook\n\n## Sheets\n| # | name | kind | size | hidden | charts | images | rendered | data |\n|---|---|---|---|---|---|---|---|---|\n| 0 | Data | worksheet | 2 x 1 | no | 0 | 1 | <!--rvs:0--> | [sheets/s0-data.csv](sheets/s0-data.csv) |\n| 1 | T | chartsheet | - | no | 1 | 0 | <!--rvs:1--> | - |\n\n## Data\n![image](s0-1.png)\n<!--rv:0-->\n\n## T (chartsheet)\n<!--rv:1-->\n";
+const xlJson = (): TierResult => ({ ok: true, json: { markdown: xlMd, notes: [], renderPages: [0, 1], sheetCount: 2 } });
+function stageXl(bundle: { stagingDir: string }, childOptions: Record<string, unknown>) {
+	writeFileSync(join(bundle.stagingDir, "s0-1.png"), "i");
+	mkdirSync(String(childOptions.sheetsStagingDir), { recursive: true });
+	writeFileSync(join(String(childOptions.sheetsStagingDir), "s0-data.csv"), "a\r\nb\r\n");
+}
+const fakeOffice = (result: Awaited<ReturnType<typeof tryConvertOffice>>): PipelineSeams["office"] => async () => result;
+
+test("convertDocument xlsx: rendered views and CSV are published into manifests and handle", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-xl-"));
+	try {
+		const pdf = join(out, "fake.pdf"); writeFileSync(pdf, "%PDF");
+		const modes: string[] = [];
+		const r = await convertDocument(resolveOptions({ path: XL, outputDir: out }, {}, {}), undefined, {
+			...seamsWith(async (mode, childOptions, bundle) => {
+				modes.push(mode);
+				if (mode === "xlsx") { stageXl(bundle, childOptions); return xlJson(); }
+				assert.equal(childOptions.path, pdf);
+				assert.deepStrictEqual(childOptions.sheetIndices, [0, 1]);
+				assert.equal(childOptions.expectedPages, 2);
+				writeFileSync(join(bundle.stagingDir, "s0.png"), "r0");
+				writeFileSync(join(bundle.stagingDir, "s1.png"), "r1");
+				return { ok: true, json: { ok: true, rendered: [{ idx: 0, file: "s0.png", dpi: 120 }, { idx: 1, file: "s1.png", dpi: 120 }], failed: [] } };
+			}),
+			office: fakeOffice({ ok: true, pdfPath: pdf, cleanup: () => {} }),
+		});
+		assert.deepStrictEqual(modes, ["xlsx", "render-pages"]);
+		const md = readFileSync(join(out, "workbook.md"), "utf8");
+		assert.ok(md.includes("| 0 | Data | worksheet | 2 x 1 | no | 0 | 1 | yes | [sheets/workbook-s0-data.csv](sheets/workbook-s0-data.csv) |"));
+		assert.ok(md.includes("| 1 | T | chartsheet | - | no | 1 | 0 | yes | - |"));
+		assert.ok(md.includes("Rendered view: ![Rendered view of sheet 0](images/workbook-s0.png)"));
+		assert.ok(md.includes("Rendered view: ![Rendered view of sheet 1](images/workbook-s1.png)"));
+		assert.ok(existsSync(join(out, "images", "workbook-s0.png")));
+		assert.ok(existsSync(join(out, "images", "workbook-s1.png")));
+		assert.ok(existsSync(join(out, "sheets", "workbook-s0-data.csv")));
+		assert.match(r.output, /^Sheets-Dir: .*sheets$/m);
+		assert.match(r.output, /^Images-Dir: .*images$/m);
+		assert.match(r.output, /\bImages: 3\b/);
+		assert.equal(r.details.sheetsDir, join(out, "sheets"));
+		assert.equal(r.details.imagesDir, join(out, "images"));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("convertDocument xlsx: partial render failure publishes one view and degrades one", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-xl-"));
+	try {
+		const pdf = join(out, "fake.pdf"); writeFileSync(pdf, "%PDF");
+		const r = await convertDocument(resolveOptions({ path: XL, outputDir: out }, {}, {}), undefined, {
+			...seamsWith(async (mode, childOptions, bundle) => {
+				if (mode === "xlsx") { stageXl(bundle, childOptions); return xlJson(); }
+				writeFileSync(join(bundle.stagingDir, "s0.png"), "r");
+				return { ok: true, json: { ok: true, rendered: [{ idx: 0, file: "s0.png", dpi: 120 }], failed: [{ idx: 1, reason: "rendered view degenerate (page 1 x 1 pt)" }] } };
+			}),
+			office: fakeOffice({ ok: true, pdfPath: pdf, cleanup: () => {} }),
+		});
+		const md = readFileSync(join(out, "workbook.md"), "utf8");
+		assert.ok(md.includes("| 0 | Data | worksheet | 2 x 1 | no | 0 | 1 | yes |"));
+		assert.ok(md.includes("| 1 | T | chartsheet | - | no | 1 | 0 | no |"));
+		assert.ok(md.includes("Rendered view: ![Rendered view of sheet 0](images/workbook-s0.png)"));
+		assert.ok(md.includes("Rendered view: unavailable (rendered view degenerate (page 1 x 1 pt))"));
+		assert.ok(r.output.includes("Rendered views: 1 of 2 unavailable"));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("convertDocument xlsx: missing or timed-out soffice degrades and releases lock", async () => {
+	const cases: Array<{ office: Awaited<ReturnType<typeof tryConvertOffice>>; reason: string }> = [
+		{ office: { ok: false, kind: "missing", code: null, timedOut: false, stderr: "" }, reason: "LibreOffice not found" },
+		{ office: { ok: false, kind: "timeout", code: null, timedOut: true, stderr: "" }, reason: "soffice failed: timeout after 120000ms" },
+	];
+	for (const c of cases) {
+		const out = mkdtempSync(join(tmpdir(), "quiver-xl-"));
+		try {
+			const r = await convertDocument(resolveOptions({ path: XL, outputDir: out }, {}, {}), undefined, {
+				...seamsWith(async (mode, childOptions, bundle) => {
+					assert.equal(mode, "xlsx");
+					stageXl(bundle, childOptions);
+					return xlJson();
+				}),
+				office: fakeOffice(c.office),
+			});
+			const md = readFileSync(join(out, "workbook.md"), "utf8");
+			assert.equal((md.match(new RegExp(`Rendered view: unavailable \\(${c.reason.replace(/[()]/g, "\\$&")}\\)`, "g")) ?? []).length, 2, c.reason);
+			assert.ok(md.includes("| 0 | Data | worksheet | 2 x 1 | no | 0 | 1 | no |"), c.reason);
+			assert.ok(md.includes("| 1 | T | chartsheet | - | no | 1 | 0 | no |"), c.reason);
+			assert.ok(r.output.includes(`Rendered views skipped: ${c.reason}`), c.reason);
+			assert.ok(!existsSync(join(out, "workbook.md.lock")), c.reason);
+		} finally { rmSync(out, { recursive: true, force: true }); }
+	}
+});
+
+test("convertDocument xlsx: page-count mismatch and render child failure degrade without failing", async () => {
+	const cases: TierResult[] = [
+		{ ok: true, json: { ok: false, reason: "page-count mismatch (5 vs 2)" } },
+		{ ok: false, reason: "timeout after 30000ms" },
+	];
+	for (const render of cases) {
+		const reason = render.ok ? "page-count mismatch (5 vs 2)" : "render failed: timeout after 30000ms";
+		const out = mkdtempSync(join(tmpdir(), "quiver-xl-"));
+		try {
+			const r = await convertDocument(resolveOptions({ path: XL, outputDir: out }, {}, {}), undefined, {
+				...seamsWith(async (mode, childOptions, bundle) => {
+					if (mode === "xlsx") { stageXl(bundle, childOptions); return xlJson(); }
+					writeFileSync(join(bundle.stagingDir, "s0.png"), "partial");
+					return render;
+				}),
+				office: fakeOffice({ ok: true, pdfPath: "/nonexistent.pdf", cleanup: () => {} }),
+			});
+			const md = readFileSync(join(out, "workbook.md"), "utf8");
+			assert.equal((md.match(new RegExp(`Rendered view: unavailable \\(${reason.replace(/[()]/g, "\\$&")}\\)`, "g")) ?? []).length, 2);
+			assert.ok(md.includes("| 0 | Data | worksheet | 2 x 1 | no | 0 | 1 | no |"));
+			assert.ok(md.includes("| 1 | T | chartsheet | - | no | 1 | 0 | no |"));
+			assert.equal(existsSync(join(out, "images/workbook-s0.png")), false);
+			assert.ok(r.output.includes(`Rendered views skipped: ${reason}`));
+		} finally { rmSync(out, { recursive: true, force: true }); }
+	}
 });

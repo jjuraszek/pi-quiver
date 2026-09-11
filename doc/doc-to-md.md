@@ -30,13 +30,13 @@ Its current implementation emits major and minor version as separate fields, for
 
 `.docx` and `.pptx` inputs are converted to PDF by headless LibreOffice (`soffice`) with an isolated per-call profile, then use the PDF pipeline. `soffice` must be on `PATH`; Office conversion otherwise fails. Requested page bounds apply after `soffice` produces the PDF.
 
-Excel does not go through LibreOffice. `.xlsx` uses `openpyxl`; `.xls` uses `xlrd`. Both require a Python backend. Workbooks become a sheet inventory followed by per-worksheet matrices, including merged and hidden disclosures. `.xlsx` includes formulas and cached values; `.xls` reports formulas and images unavailable. `.xlsm`, sheet/range selection, and chart rendering are out of scope.
+Excel does not go through LibreOffice for its data. `.xlsx` uses `openpyxl`; `.xls` uses `xlrd`. Both require a Python backend. Workbooks become a `## Sheets` inventory (every worksheet and chartsheet in workbook order, 0-based index) followed by one section per sheet: a `Data:` link to the sheet's full CSV under `sheets/` for non-empty worksheets, chart metadata (`<type> "<title>" - <n> series (<refs>)`), embedded images, an optional rendered view, a preview of at most 100 rows x 50 columns of the non-empty extent, and a `Columns:` profile when the preview is truncated. `.xlsx` shows formulas with cached values; `.xls` reports formulas and images unavailable. Sheets carrying charts or images get a rendered view (`images/<stem>-s<idx>.<fmt>`) when `soffice` is on `PATH`: the workbook is exported with `pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}` (one page per sheet) and the matching pages are rasterized by the `render-pages` child under a 16 Mpx budget. Every failure on that path (`LibreOffice not found`, `soffice failed: ...`, `soffice produced no PDF`, `page-count mismatch (N vs M)`, `render failed: ...`, `rendered view degenerate (...)`, `rendered view too large (...)`) is written into the sheet section as `Rendered view: unavailable (<reason>)` plus a handle note; conversion still succeeds. `.xlsm`, sheet/range selection, and in-grid placement of visuals are out of scope; `.xls` has no visual detection.
 
 ## Bundle and handle
 
-A bundle root contains `<stem>.md` and `images/`. `--output-dir` selects the root; otherwise a per-call temporary root is created. The caller owns a temporary bundle: the tool never deletes a bundle it produced.
+A bundle root contains `<stem>.md`, `images/`, and - when a spreadsheet has data - `sheets/`. `--output-dir` selects the root; otherwise a per-call temporary root is created. The caller owns a temporary bundle: the tool never deletes a bundle it produced.
 
-A call owns `<stem>.md.lock` for its duration. Child page images stage in `images/.stage-<lockId>/p<N>/`; a child writes `.done` only after that page is complete. Node publishes completed page files as `images/<stem>-p<N>-<n>.<ext>`, discards incomplete page staging directories, and atomically publishes `<stem>.md` by writing a temporary Markdown file then renaming it. Excel images stage as `s<idx>-<n>.<ext>` and publish as `<stem>-s<idx>-<n>.<ext>`. On overwrite, only owned-name files and files linked from the prior Markdown are removed.
+A call owns `<stem>.md.lock` for its duration. Child page images stage in `images/.stage-<lockId>/p<N>/`; a child writes `.done` only after that page is complete. Node publishes completed page files as `images/<stem>-p<N>-<n>.<ext>`, discards incomplete page staging directories, and atomically publishes `<stem>.md` by writing a temporary Markdown file then renaming it. Excel images stage as `s<idx>-<n>.<ext>` and publish as `<stem>-s<idx>-<n>.<ext>`. On overwrite, only this stem's owned-pattern files are removed (`images/<stem>-p<N>-<n>.*`, `images/<stem>-s<idx>[-<n>].*`, `sheets/<stem>-s<idx>-<slug>.csv`); nothing else in the bundle is touched. Excel CSVs stage under `sheets/.stage-<lockId>/s<idx>-<slug>.csv` and publish as `sheets/<stem>-s<idx>-<slug>.csv`; rendered views stage as `s<idx>.<fmt>` and publish as `images/<stem>-s<idx>.<fmt>`. The handle prints `Sheets-Dir` when any CSV was written.
 
 Every selected PDF/Office page ends with `--- end of page.page_number=N ---`.
 
@@ -72,12 +72,13 @@ For Excel, the info handle is:
 
 ```text
 Type: xlsx   Sheets: 3
-  Data  rows=120 cols=9
+  Data  worksheet rows=120 cols=9 charts=1 images=2 hiddenRows=1 hiddenCols=1
+  Trends  chartsheet rows=- cols=- charts=1 images=0
 ```
 
 ## Child contract
 
-The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, or `xlsx`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
+The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, `xlsx`, or `render-pages`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
 
 `pdf-fallback` receives `keepPages`: an object mapping page numbers to primary-tier image filenames already published. It preserves those images while extracting fallback text rather than duplicating them.
 
@@ -88,18 +89,17 @@ Set tunables under `quiver.docToMd` in global agent settings or project `.pi/set
 | Key | Default | CLI flag | Meaning |
 |---|---|---|---|
 | `primaryTimeoutMs` | `60000` | `--primary-timeout` | pymupdf4llm tier; also unpdf tier. |
-| `fallbackTimeoutMs` | `30000` | `--fallback-timeout` | PyMuPDF text tier; also PDF info. |
-| `sofficeTimeoutMs` | `120000` | `--soffice-timeout` | DOCX/PPTX -> PDF via LibreOffice. |
+| `fallbackTimeoutMs` | `30000` | `--fallback-timeout` | PyMuPDF text tier, PDF info, and Excel rendered-view rasterization. |
+| `sofficeTimeoutMs` | `120000` | `--soffice-timeout` | DOCX/PPTX -> PDF and Excel rendered-view export via LibreOffice. |
 | `excelTimeoutMs` | `60000` | `--excel-timeout` | Excel child, both `openpyxl` loads, and Excel info. |
 | `warmTimeoutMs` | `120000` | `--warm-timeout` | Absolute first-call backend discovery/bootstrap deadline. |
 | `pymupdfVersion` | `1.27.2.3` | `--pymupdf-version` | pymupdf4llm pin; must be >= `1.27.0`. |
-| `imageDpi` | `150` | `--image-dpi` | Render DPI for page images. |
+| `imageDpi` | `150` | `--image-dpi` | Render DPI for page images and Excel rendered views, subject to the 16 Mpx budget. |
 | `imageFormat` | `png` | `--image-format` | Rendered image format: `png` or `jpg`. |
-| `maxCellsPerSheet` | `50000` | `--max-cells-per-sheet` | Rows x columns budget per worksheet. |
 | `maxOutputBytes` | `20000000` | `--max-output-bytes` | Child stdout cap in bytes. |
 | `outlineMaxEntries` | `40` | `--outline-max-entries` | Outline, TOC, or sheet inventory cap in the handle. |
 
-Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + KILL_GRACE_MS`); `KILL_GRACE_MS` is 2000 ms. There is no cap on image count, image bytes or workbook memory - deliberately; the per-tier timeouts and `maxOutputBytes` are the bounds.
+Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + sofficeTimeoutMs + fallbackTimeoutMs + 2 * KILL_GRACE_MS`); `KILL_GRACE_MS` is 2000 ms. There is no cap on image count, image bytes, cell count or workbook memory - deliberately; the per-tier timeouts, the rendered-view pixel budget and `maxOutputBytes` are the bounds.
 
 Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primaryTimeoutMs`, `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` -> `sofficeTimeoutMs`, `PI_DOC_TO_MD_WARM_TIMEOUT_MS` -> `warmTimeoutMs`, and `PI_DOC_TO_MD_PYMUPDF_VERSION` -> `pymupdfVersion`.
 
@@ -124,7 +124,6 @@ Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primar
 | `--pymupdf-version <version>` | pymupdf4llm pin, >= `1.27.0`. |
 | `--image-dpi <n>` | Page image render DPI. |
 | `--image-format <png\|jpg>` | Rendered image format. |
-| `--max-cells-per-sheet <n>` | Worksheet cells budget. |
 | `--max-output-bytes <n>` | Child stdout cap. |
 | `--outline-max-entries <n>` | Handle outline/TOC/inventory cap. |
 
@@ -143,7 +142,8 @@ CI installs `uv` and LibreOffice on Ubuntu and runs the Python suite when they a
 | Info | `node bin/pi-quiver.ts doc-to-md --info test/fixtures/multipage.pdf` returns page count and TOC, with no `Saved-To`. |
 | Selected pages and images | `node bin/pi-quiver.ts doc-to-md --pages 3-5 test/fixtures/multipage.pdf` returns only pages 3-5; inspect its bundle for separators and page images. |
 | Forced fallback | `node bin/pi-quiver.ts doc-to-md --primary-timeout 1 test/fixtures/multipage.pdf` reports `Engine: pymupdf-text`, `Tier: fallback`, `Degraded:`, and `Fallback-Reason:`. |
-| XLSX | `node bin/pi-quiver.ts doc-to-md test/fixtures/workbook.xlsx` returns `Engine: openpyxl   Tier: excel`; inspect matrix, formulas, merged/hidden disclosures, and images. |
+| XLSX | `node bin/pi-quiver.ts doc-to-md test/fixtures/workbook.xlsx` returns `Engine: openpyxl   Tier: excel`; inspect the Sheets table, CSV links, preview, and (with soffice) rendered views. |
+| XLSX charts | `node bin/pi-quiver.ts doc-to-md test/fixtures/charts.xlsx` returns three `Rendered view:` images with soffice, or three `Rendered view: unavailable (LibreOffice not found)` lines without it; conversion succeeds either way. |
 | XLS | `node bin/pi-quiver.ts doc-to-md test/fixtures/legacy.xls` reports `Engine: xlrd   Tier: excel` and unavailable formulas/images. |
 
 ## Licensing note

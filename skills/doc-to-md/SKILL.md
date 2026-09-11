@@ -11,7 +11,7 @@ PDF/DOCX/PPTX/XLSX/XLS -> Markdown bundle on disk; handle returned.
 npx -y pi-quiver@latest doc-to-md --info <path>                       # page count, TOC or sheet inventory first
 npx -y pi-quiver@latest doc-to-md <path>                              # whole document
 npx -y pi-quiver@latest doc-to-md --pages 12-15 --output-dir ./out <path>
-npx -y pi-quiver@latest doc-to-md <workbook.xlsx>                     # per-sheet matrices, formulas + cached values
+npx -y pi-quiver@latest doc-to-md <workbook.xlsx>                     # sheet inventory, per-sheet CSV, preview, rendered charts (soffice optional)
 npx -y pi-quiver@latest doc-to-md --primary-timeout 180000 <path>     # stubborn PDF
 ```
 

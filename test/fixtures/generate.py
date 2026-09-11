@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the doc_to_md fixtures. Run from the repo root:
-uv run --with pymupdf==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py
+uv run --with pymupdf==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py [generator ...]
+Pass generator names to regenerate a subset (e.g. charts charts_zero_extent).
 Requires soffice on PATH (workbook.xlsx round-trip populates cached formula values)."""
 import io, os, shutil, subprocess, tempfile, zipfile, re
 import pymupdf
@@ -117,6 +118,61 @@ def legacy_xls():
         subprocess.run(["soffice", "--headless", "--convert-to", "xls", "--outdir", outdir, raw], check=True, capture_output=True, timeout=180)
         shutil.move(os.path.join(outdir, "legacy.xls"), target)
 
+ZERO_EXT = re.compile(rb'<(\w+:)?ext cx="0" cy="0"\s*/>')
+
+def patch_chartsheet_extents(src, dst):
+    """openpyxl writes chartsheet drawings with a zero-size absoluteAnchor extent, which LibreOffice honors
+    as an empty page. Rewrite the extent at the zip level; never soffice round-trip (LO drops chartsheet drawings)."""
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if re.fullmatch(r"xl/drawings/drawing\d+\.xml", item.filename):
+                data = ZERO_EXT.sub(rb'<\1ext cx="9144000" cy="6858000"/>', data)
+            zout.writestr(item, data)
+
+def charts():
+    import openpyxl, datetime
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.drawing.image import Image as XLImage
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = "Data"
+    ws.append(["Step", "North", "Double"])
+    for r in range(2, 201):
+        ws.cell(r, 1, r - 1); ws.cell(r, 2, round((r - 1) * 0.5, 1)); ws.cell(r, 3, f"=A{r}*2")
+    line = LineChart(); line.title = "Data trend"; line.add_data(Reference(ws, min_col=2, min_row=1, max_row=200), titles_from_data=True); ws.add_chart(line, "E2")
+    img = os.path.join(tempfile.gettempdir(), "fx4.png"); open(img, "wb").write(png_bytes("navy")); ws.add_image(XLImage(img), "E20")
+    wb.create_sheet("Empty")
+    aux = wb.create_sheet("Aux"); aux.sheet_state = "hidden"
+    for r in range(1, 11):
+        aux.cell(r, 1, r); aux.cell(r, 2, f"aux {r}")
+    cs = wb.create_chartsheet("Trends"); ch = LineChart(); ch.title = "Synthetic trends"
+    ch.add_data(Reference(ws, min_col=2, min_row=2, max_row=200)); cs.add_chart(ch)
+    cs2 = wb.create_chartsheet("Bars"); bar = BarChart(); bar.title = "Bars"
+    bar.add_data(Reference(ws, min_col=1, min_row=2, max_row=200)); cs2.add_chart(bar)
+    wide = wb.create_sheet("Wide")
+    wide.append([f"C{c}" for c in range(1, 81)])
+    words = ["alpha", "beta", "gamma", "delta"]
+    for r in range(2, 301):
+        row = [r - 1, round((r - 1) / 7, 3), words[r % 4], datetime.date(2026, 1, 1) + datetime.timedelta(days=r)]
+        row += [(r * c) % 97 for c in range(5, 81)]
+        wide.append(row)
+    raw = os.path.join(tempfile.gettempdir(), "charts-raw.xlsx"); wb.save(raw)
+    patch_chartsheet_extents(raw, os.path.join(HERE, "charts.xlsx"))
+
+def charts_zero_extent():
+    import openpyxl
+    from openpyxl.chart import LineChart, Reference
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = "Data"
+    for r in range(1, 4):
+        ws.cell(r, 1, r); ws.cell(r, 2, r * 2)
+    cs = wb.create_chartsheet("Chart"); ch = LineChart(); ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=3)); cs.add_chart(ch)
+    wb.save(os.path.join(HERE, "charts-zero-extent.xlsx"))  # deliberately unpatched: exercises the degenerate-page guard
+
+GENERATORS = {"multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
+
 if __name__ == "__main__":
-    multipage_pdf(); shared_resources_pdf(); office(); workbook(); legacy_xls()
+    import sys
+    for name in sys.argv[1:] or GENERATORS:
+        GENERATORS[name]()
     print("fixtures written to", HERE)
