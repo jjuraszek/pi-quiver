@@ -1,5 +1,7 @@
 # Herdr tab-name sync for session-name
 
+> **Superseded by:** [doc/specs/2026-09-13-gh-19-herdr-armed-prefix-tolerance.md](./2026-09-13-gh-19-herdr-armed-prefix-tolerance.md) - ownership comparison and prefix handling in `### Write path and claim-once state machine`, `### Restore on shutdown`, `### Edge cases` only
+
 Extend the `session-name` extension so the session name also drives the Herdr
 tab label, alongside the existing Ghostty tab title. Verified against herdr
 0.8.2 (socket protocol 20) live in this workspace.

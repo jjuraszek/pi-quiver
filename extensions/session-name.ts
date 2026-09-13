@@ -498,8 +498,10 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 
 	// Herdr sink. Claim-once: adopt the tab only while it shows its default
 	// (position) label; a human rename - before or during the session - wins
-	// permanently. All syncs serialize on one chain so overlapping hooks never
-	// interleave a read with a rename.
+	// permanently. The one exception is exactly one leading "* ": that is
+	// herdr-ntfy-notify's armed marker, ignored for ownership and carried
+	// through on every write. All syncs serialize on one chain so overlapping
+	// hooks never interleave a read with a rename.
 	// Used both for turn_start syncs (bounds a wedged-but-accepting Herdr so it
 	// can't stall the turn) and for the session_end restore.
 	const HERDR_TIMEOUT_MS = 500;
@@ -509,6 +511,13 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		if (!own) return -1;
 		const siblings = tabs.filter((t) => t.workspace_id === own.workspace_id);
 		return siblings.findIndex((t) => t.tab_id === tabId) + 1;
+	};
+
+	const ARMED_PREFIX = "* ";
+	const matchOwned = (live: string, expected: string): { owned: boolean; armed: boolean } => {
+		if (live === expected) return { owned: true, armed: false };
+		if (live === ARMED_PREFIX + expected) return { owned: true, armed: true };
+		return { owned: false, armed: false };
 	};
 
 	const syncHerdrTab = (cfg: Config, label: string | null, mode: Mode | undefined): Promise<void> => {
@@ -524,23 +533,25 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 				const position = positionOf(tabs, tabId);
 				if (position === -1) return; // stale tab id (pane moved); retry harmlessly
 				const own = tabs.find((t) => t.tab_id === tabId)!;
-				if (own.label !== String(position)) {
+				const owned = matchOwned(own.label, String(position));
+				if (!owned.owned) {
 					herdrClaim = "backed-off"; // human (or crashed predecessor) owns it
 					return;
 				}
-				if (await renameTab(sock, tabId, label, HERDR_TIMEOUT_MS)) {
+				if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) {
 					herdrClaim = { lastWritten: label };
 				}
 				return;
 			}
 			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
 			if (!live) return; // failed read is not a human rename; stay claimed
-			if (live.label !== herdrClaim.lastWritten) {
+			const owned = matchOwned(live.label, herdrClaim.lastWritten);
+			if (!owned.owned) {
 				herdrClaim = "backed-off";
 				return;
 			}
 			if (label === herdrClaim.lastWritten) return;
-			if (await renameTab(sock, tabId, label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
+			if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
 		};
 		herdrChain = herdrChain.then(run, run);
 		return herdrChain;
@@ -555,12 +566,14 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 			const sock = process.env.HERDR_SOCKET_PATH as string;
 			const tabId = process.env.HERDR_TAB_ID as string;
 			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
-			if (!live || live.label !== herdrClaim.lastWritten) return; // human's label wins
+			if (!live) return;
+			const owned = matchOwned(live.label, herdrClaim.lastWritten);
+			if (!owned.owned) return; // human's label wins
 			const tabs = await listTabs(sock, HERDR_TIMEOUT_MS);
 			if (!tabs) return;
 			const position = positionOf(tabs, tabId);
 			if (position === -1) return;
-			await renameTab(sock, tabId, String(position), HERDR_TIMEOUT_MS);
+			await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + String(position), HERDR_TIMEOUT_MS);
 		};
 		herdrChain = herdrChain.then(run, run);
 		return herdrChain;

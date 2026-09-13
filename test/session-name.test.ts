@@ -761,6 +761,176 @@ test("herdr sync: does not restore when the live label differs from ours", async
 	}
 });
 
+test("herdr sync: armed prefix on a claimed tab is not a human rename and is preserved", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("Old");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "Old" });
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "* Old"; // herdr-ntfy-notify arms the tab
+		h.setExternalName("New");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "* New" }, "rename keeps the armed marker");
+		// lastWritten === "New" is not observable directly; the following rename succeeding proves it.
+
+		h.setExternalName("Newer");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "* Newer" }, "claim survived the armed rename");
+
+		own.label = "Newer"; // disarm
+		h.setExternalName("Bare");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "Bare" }, "disarm keeps the claim; write is bare");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: arm flip without a name change never writes", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("Old");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "* Old";
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		own.label = "Old";
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "no tab.rename: the marker is ntfy-notify's state to toggle");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: armed foreign label and doubled prefix both back off", async () => {
+	for (const foreign of ["* Foo", "* * Old"]) {
+		const fake = fakeHerdr([
+			{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+			{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+		]);
+		await fake.listening;
+		const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+		const h = extensionHarness([]);
+		try {
+			h.setExternalName("Old");
+			await h.hooks.get("session_start")!({}, h.ctx);
+			assert.equal(fake.renames.length, 1);
+
+			const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+			own.label = foreign;
+			h.setExternalName("New");
+			await h.hooks.get("turn_start")!({}, h.ctx);
+			await h.hooks.get("turn_start")!({}, h.ctx);
+			assert.equal(fake.renames.length, 1, `${JSON.stringify(foreign)} is foreign: no write`);
+			assert.equal(own.label, foreign);
+		} finally {
+			restore();
+			h.destroy();
+			await fake.close();
+		}
+	}
+});
+
+test("herdr sync: claims a tab armed before the first rename and keeps the marker", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+		{ tab_id: "w1:t3", workspace_id: "w1", label: "* 3", number: 3 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t3");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t3", label: "* E-42 naming rules" });
+
+		h.setExternalName("E-42 mature context");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t3", label: "* E-42 mature context" }, "claimed, still armed");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: a sink name that itself starts with * is owned and not armed", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("* urgent fix");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "* urgent fix" });
+
+		h.setExternalName("New");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "New" }, "own prefix is not the armed marker: bare write");
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		h.setExternalName("* urgent fix");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(own.label, "* urgent fix");
+		own.label = "* * urgent fix"; // ntfy-notify arms the prefixed name
+		h.setExternalName("New");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "* New" }, "doubled prefix on our own name is armed");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: restore keeps the armed marker on the position label", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "* E-42 naming rules"; // armed after the claim
+		await h.hooks.get("session_shutdown")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "* 2" }, "restore never disarms");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
 test("herdr sync: overlapping syncs serialize (no interleaved read/write)", async () => {
 	const fake = fakeHerdr([
 		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },

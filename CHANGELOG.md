@@ -10,6 +10,7 @@ via OIDC trusted publishing. The release helper at
 
 ## Unreleased
 
+- `session-name` Herdr sink tolerates herdr-ntfy-notify's armed marker: exactly one leading `* ` on the live label no longer counts as a human rename, is preserved on every rename and on the shutdown restore, and its removal keeps the claim (#19).
 - `release.sh <level>` promotes the CHANGELOG `## Unreleased` section to `## vX.Y.Z - <date>` and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
 - Release skill and `/release` prompt: a user instruction naming the level is the approval - no proposal step or re-confirmation; bundled follow-ups run after `verify`.
 - AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3.
