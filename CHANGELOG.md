@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.0.1 - 2026-09-13
 
 - `session-name` Herdr sink tolerates herdr-ntfy-notify's armed marker: exactly one leading `* ` on the live label no longer counts as a human rename, is preserved on every rename and on the shutdown restore, and its removal keeps the claim (#19).
 - `release.sh <level>` promotes the CHANGELOG `## Unreleased` section to `## vX.Y.Z - <date>` and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
