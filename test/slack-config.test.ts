@@ -1176,6 +1176,14 @@ test("threadResultText: incomplete appends next_cursor and caveat when present",
 	assert.equal(text, "line1\n\ncomplete: false\nnext_cursor: CUR1\nrate limited caveat");
 });
 
+test("threadResultText: raw mode returns output alone, omitting the status trailer", () => {
+	const text = threadResultText(
+		{ output: "[{\"ts\":\"1.1\"}]", spilled: false, complete: false, nextCursor: "CUR1", caveat: "c", messageCount: 1 },
+		true,
+	);
+	assert.equal(text, "[{\"ts\":\"1.1\"}]");
+});
+
 // --- 22: G9 markdown_text rejection (registration-level, no tokens needed - guard fires first) ---
 
 test("slack_post: markdown_text field is rejected before any token resolution", async () => {
@@ -1644,6 +1652,74 @@ test("slack_thread with a permalink ignores channel entirely - no users.list, no
 	assert.equal(run.error, undefined, run.error?.message ?? "expected no error");
 	assert.deepEqual(methodsOf(run, "users.list", "conversations.open"), []);
 	assert.equal(run.calls.find((call) => call.method === "conversations.replies")!.params.channel, "C123");
+});
+
+test("slack_thread raw -> slack_update round trip: edited blocks reach chat.update (AC4)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-thread-raw-"));
+	try {
+		const cacheFile = join(dir, "cache.json");
+		writeMentionCache(cacheFile);
+		const blocks = [
+			{ type: "section", text: { type: "mrkdwn", text: "old body" } },
+			{ type: "context", elements: [{ type: "mrkdwn", text: "meta" }] },
+		];
+		const captured: Record<string, unknown>[] = [];
+		const handlers: FetchHandlers = {
+			"auth.test": () => ({ ok: true, team_id: "T1" }),
+			"conversations.replies": () => ({
+				ok: true,
+				messages: [{ user: "U1", ts: "1.1", text: "old body", blocks }],
+				has_more: false,
+				response_metadata: { next_cursor: "" },
+			}),
+			"chat.update": (params) => {
+				captured.push(params);
+				return { ok: true, ts: "1.1" };
+			},
+		};
+		await withEnvToken("SLACK_USER_TOKEN", "xoxp-e2e-thread-raw", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch(handlers, async () => {
+					const { api, defs, handlers: extHandlers } = makeMockApi();
+					slackExtension(api);
+					await extHandlers.session_start({}, makeFakeCtx(cwd));
+
+					const threadDef = defs.find((d) => d.name === "slack_thread")!;
+					const threadResult = await threadDef.execute(
+						"tc1",
+						{ channel: "C12345678", ts: "1.1", raw: true } as never,
+						new AbortController().signal,
+						() => {},
+						undefined as never,
+					);
+					const rawText = threadResult.content[0];
+					if (rawText.type !== "text") throw new Error("expected text content");
+					const parsed = JSON.parse(rawText.text) as { blocks: unknown[] }[];
+					const edited = structuredClone(parsed[0].blocks) as {
+						type: string;
+						text?: { type: string; text: string };
+					}[];
+					edited[0].text!.text = "new body";
+
+					const updateDef = defs.find((d) => d.name === "slack_update")!;
+					await updateDef.execute(
+						"tc2",
+						{ as: "user", channel: "C12345678", ts: "1.1", blocks: edited } as never,
+						new AbortController().signal,
+						() => {},
+						undefined as never,
+					);
+				});
+			});
+		});
+		assert.equal(captured.length, 1);
+		assert.deepEqual(captured[0].blocks, [
+			{ type: "section", text: { type: "mrkdwn", text: "new body" } },
+			{ type: "context", elements: [{ type: "mrkdwn", text: "meta" }] },
+		]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("slack_cache_refresh execute: zero emails out of N users names the missing scope in the content string", async () => {

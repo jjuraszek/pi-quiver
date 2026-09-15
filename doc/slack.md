@@ -227,13 +227,32 @@ returned by `slack_post { as: "bot" }` is not readable there
 | tool | identity | params (sketch) | behavior |
 |---|---|---|---|
 | `slack_search` | always user | `query`, `count` (<=100), `page` | `search.messages` with Slack's operator grammar (`in:#chan`, `from:@name`); one page per call, size-gated output |
-| `slack_thread` | always user | `channel`+`ts`, or `permalink`, optional `cursor` to resume | `conversations.replies`, cursor-paginated to completion or a 50-page/5000-message cap (returns `next_cursor` when capped); size-gated |
+| `slack_thread` | always user | `channel`+`ts`, or `permalink`, optional `cursor` to resume, optional `raw` | `conversations.replies`, cursor-paginated to completion or a 50-page/5000-message cap (returns `next_cursor` when capped); default Block Kit flattening or raw JSON; size-gated |
 | `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body`, optional `unfurl_links`/`unfurl_media` | plain post, threaded reply, or announce (headline + threaded detail) - see below |
 | `slack_update` | `as` | `channel`, `ts`, `text`/`blocks` | `chat.update`; only the original poster's identity can edit |
 | `slack_delete` | `as` | `channel`, `ts` | `chat.delete`; same ownership constraint |
 | `slack_pin` | `as` | `channel`, `ts` | `pins.add`; maps `already_pinned`/`not_pinnable`/`too_many_pins` |
 | `slack_upload` | `as` | `channel`, `path`, optional `filename`/`title`/`thread_ts`/`initial_comment` | `files.getUploadURLExternal` -> upload -> `files.completeUploadExternal` |
 | `slack_cache_refresh` | user if configured, else bot | none | full cache regeneration; reports `channels: N, users: N` plus `\| emails: N/N` (omitted when there are zero users; a `0/N` count adds a `(users:read.email scope may be missing)` hint) |
+
+By default, `slack_thread` renders one line per message. When a message has
+Block Kit blocks, `header` and `section` text and fields pass through without
+unescaping or entity decoding, `context` renders its text elements, and
+`rich_text` renders its named inline elements. Embedded newlines collapse to
+spaces to preserve the one-line-per-message format. Other types render as
+`[<type>]`; blocks join with ` / `. If flattening produces no content, the
+message falls back to `text`.
+
+Set `raw: true` for block extraction and `slack_update` round-trips. The
+result content is a pure JSON array of raw message objects with `blocks`
+untouched and no status trailer. Consequently, `complete: false` and
+`nextCursor` live only in result `details`: pagination caps and 429 throttles
+produce a partial array with no in-content signal, while other errors surface
+as tool errors with no content. A spill preview starts with `[` just like a
+complete array. Attempt `JSON.parse` on the content; on failure, read the file
+named in the truncation line. When completeness matters, run default (compact)
+mode first so `complete:` and `next_cursor` appear inline, then use `raw: true`
+for extraction or a round-trip.
 
 ### Mentions (`slack_post`, `slack_update`)
 
@@ -338,7 +357,9 @@ threaded reply, in one call.
 - **Size gate**: `slack_search`/`slack_thread` output inlines up to 32 KB /
   1000 lines; larger output is written in full to `tmpdir()/pi-slack` with a
   60-line/4 KB preview and the file path returned inline (files are never
-  deleted by the tool).
+  deleted by the tool). Raw pretty JSON typically reaches the 1000-line cap
+  before the 32 KB cap, so anything beyond a short thread usually spills; the
+  spill file contains the complete, parseable JSON array.
 
 ## Migrating from hand-rolled Slack scripts
 

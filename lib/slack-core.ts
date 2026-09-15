@@ -567,15 +567,107 @@ export async function searchMessages(
 	return { ...gated, total, page, pageCount };
 }
 
+function inlineElementText(element: unknown): string {
+	if (typeof element !== "object" || element === null) return "[unknown]";
+	const el = element as Record<string, unknown>;
+	const type = typeof el.type === "string" ? el.type : "unknown";
+	switch (type) {
+		case "text":
+			return typeof el.text === "string" ? el.text : "[text]";
+		case "user":
+			return typeof el.user_id === "string" ? `<@${el.user_id}>` : "[user]";
+		case "channel":
+			return typeof el.channel_id === "string" ? `<#${el.channel_id}>` : "[channel]";
+		case "link":
+			if (typeof el.text === "string" && el.text.length > 0) return el.text;
+			return typeof el.url === "string" ? el.url : "[link]";
+		case "emoji":
+			return typeof el.name === "string" ? `:${el.name}:` : "[emoji]";
+		default:
+			return `[${type}]`;
+	}
+}
+
+function richTextContainerText(element: unknown): string {
+	if (typeof element !== "object" || element === null) return "[unknown]";
+	const el = element as Record<string, unknown>;
+	const type = typeof el.type === "string" ? el.type : "unknown";
+	switch (type) {
+		case "rich_text_section":
+		case "rich_text_quote":
+		case "rich_text_preformatted":
+			return Array.isArray(el.elements) ? el.elements.map(inlineElementText).join("") : "";
+		case "rich_text_list":
+			return Array.isArray(el.elements)
+				? el.elements.map(richTextContainerText).filter((s) => s.length > 0).join(" ")
+				: "";
+		default:
+			return `[${type}]`;
+	}
+}
+
+function contextElementText(element: unknown): string {
+	if (typeof element !== "object" || element === null) return "[unknown]";
+	const el = element as Record<string, unknown>;
+	const type = typeof el.type === "string" ? el.type : "unknown";
+	if (type === "plain_text" || type === "mrkdwn") {
+		return typeof el.text === "string" ? el.text : `[${type}]`;
+	}
+	return `[${type}]`;
+}
+
+function blockText(block: unknown): string {
+	if (typeof block !== "object" || block === null) return "[unknown]";
+	const b = block as Record<string, unknown>;
+	const type = typeof b.type === "string" ? b.type : "unknown";
+	switch (type) {
+		case "header": {
+			const text = (b.text as Record<string, unknown> | undefined)?.text;
+			return typeof text === "string" ? text : "";
+		}
+		case "section": {
+			const parts: string[] = [];
+			const text = (b.text as Record<string, unknown> | undefined)?.text;
+			if (typeof text === "string" && text.length > 0) parts.push(text);
+			if (Array.isArray(b.fields)) {
+				for (const field of b.fields) {
+					const fieldText = (field as Record<string, unknown> | undefined)?.text;
+					if (typeof fieldText === "string" && fieldText.length > 0) parts.push(fieldText);
+				}
+			}
+			return parts.join(" ");
+		}
+		case "context":
+			return Array.isArray(b.elements)
+				? b.elements.map(contextElementText).filter((s) => s.length > 0).join(" ")
+				: "";
+		case "rich_text":
+			return Array.isArray(b.elements)
+				? b.elements.map(richTextContainerText).filter((s) => s.length > 0).join(" ")
+				: "";
+		default:
+			return `[${type}]`;
+	}
+}
+
+export function renderBlocks(blocks: unknown[]): string {
+	return blocks
+		.map(blockText)
+		.filter((s) => s.length > 0)
+		.join(" / ")
+		.replace(/\r?\n/g, " ");
+}
+
 function renderThreadLine(message: Record<string, unknown>): string {
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
-	const text = typeof message.text === "string" ? message.text.replace(/\r?\n/g, " ") : "";
-	return `${author} | ${ts} | ${text}`;
+	const flattened = Array.isArray(message.blocks) && message.blocks.length > 0 ? renderBlocks(message.blocks) : "";
+	const body = (flattened.length > 0 ? flattened : typeof message.text === "string" ? message.text : "").replace(/\r?\n/g, " ");
+	return `${author} | ${ts} | ${body}`;
 }
 
 export async function readThread(
-	args: { channel?: string; ts?: string; permalink?: string; cursor?: string },
+	args: { channel?: string; ts?: string; permalink?: string; cursor?: string; raw?: boolean },
 	deps: CoreDeps,
 ): Promise<ThreadResult> {
 	let channel = args.channel;
@@ -641,7 +733,7 @@ export async function readThread(
 		cursor = fetchedCursor;
 	}
 
-	const rendered = messages.map(renderThreadLine).join("\n");
+	const rendered = args.raw === true ? JSON.stringify(messages, null, 2) : messages.map(renderThreadLine).join("\n");
 	const gated = gateOutput(rendered, "thread");
 	return { ...gated, complete, nextCursor, caveat, messageCount: messages.length };
 }

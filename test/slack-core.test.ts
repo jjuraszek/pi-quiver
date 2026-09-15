@@ -18,6 +18,7 @@ import {
 	parsePermalink,
 	searchMessages,
 	readThread,
+	renderBlocks,
 	gateOutput,
 	INLINE_MAX_BYTES,
 	INLINE_MAX_LINES,
@@ -686,6 +687,167 @@ test("readThread: 429 mid-pagination returns partial messages, complete false, t
 	assert.equal(result.complete, false);
 	assert.equal(result.nextCursor, "CUR1");
 	assert.match(result.caveat ?? "", /1 request\/minute/);
+});
+
+test("renderBlocks: header, section with fields, context, unknown and malformed blocks", () => {
+	const blocks = [
+		{ type: "header", text: { type: "plain_text", text: "Deploy *failed*" } },
+		{
+			type: "section",
+			text: { type: "mrkdwn", text: "Build <https://x|#42> broke" },
+			fields: [
+				{ type: "mrkdwn", text: "*env:* prod" },
+				{ type: "mrkdwn", text: "*by:* alice" },
+			],
+		},
+		{
+			type: "context",
+			elements: [
+				{ type: "mrkdwn", text: "pipeline ci" },
+				{ type: "plain_text", text: "2m ago" },
+				{ type: "image", image_url: "https://x/i.png", alt_text: "i" },
+			],
+		},
+		{ type: "divider" },
+		{ type: "section" },
+		"nonsense",
+	];
+	assert.equal(
+		renderBlocks(blocks),
+		"Deploy *failed* / Build <https://x|#42> broke *env:* prod *by:* alice / pipeline ci 2m ago [image] / [divider] / [unknown]",
+	);
+});
+
+test("renderBlocks: multi-line text inside blocks collapses newlines to spaces", () => {
+	assert.equal(
+		renderBlocks([{ type: "section", text: { type: "mrkdwn", text: "line1\nline2\r\nline3" } }]),
+		"line1 line2 line3",
+	);
+});
+
+test("renderBlocks: rich_text containers recurse; five named inline elements; unlisted -> [<type>]", () => {
+	const blocks = [
+		{
+			type: "rich_text",
+			elements: [
+				{
+					type: "rich_text_section",
+					elements: [
+						{ type: "text", text: "Hel" },
+						{ type: "text", text: "lo " },
+						{ type: "user", user_id: "U1" },
+						{ type: "text", text: " " },
+						{ type: "channel", channel_id: "C9" },
+						{ type: "text", text: " " },
+						{ type: "link", url: "https://a", text: "A" },
+						{ type: "text", text: " " },
+						{ type: "link", url: "https://b" },
+						{ type: "text", text: " " },
+						{ type: "emoji", name: "wave" },
+						{ type: "text", text: " " },
+						{ type: "date", timestamp: "123" },
+					],
+				},
+				{
+					type: "rich_text_list",
+					style: "bullet",
+					elements: [
+						{ type: "rich_text_section", elements: [{ type: "text", text: "one" }] },
+						{ type: "rich_text_section", elements: [{ type: "text", text: "two" }] },
+					],
+				},
+				{ type: "rich_text_quote", elements: [{ type: "text", text: "quoted" }] },
+				{ type: "rich_text_preformatted", elements: [{ type: "text", text: "code" }] },
+			],
+		},
+	];
+	assert.equal(renderBlocks(blocks), "Hello <@U1> <#C9> A https://b :wave: [date] one two quoted code");
+});
+
+test("renderBlocks: inline element with a missing required field renders [<type>], never <@undefined>", () => {
+	assert.equal(
+		renderBlocks([
+			{
+				type: "rich_text",
+				elements: [
+					{
+						type: "rich_text_section",
+						elements: [
+							{ type: "user" },
+							{ type: "channel" },
+							{ type: "emoji" },
+							{ type: "link" },
+							{ type: "text" },
+						],
+					},
+				],
+			},
+		]),
+		"[user][channel][emoji][link][text]",
+	);
+});
+
+test("readThread: message with blocks renders flattened blocks; empty flatten falls back to text; no blocks renders as today", async () => {
+	const apiCall: ApiCall = async () => ({
+		ok: true,
+		messages: [
+			{
+				user: "U1",
+				ts: "1.1",
+				text: "fallback text",
+				blocks: [{ type: "section", text: { type: "mrkdwn", text: "line1\nline2" } }],
+			},
+			{ user: "U2", ts: "1.2", text: "only text", blocks: [] },
+			{ user: "U3", ts: "1.3", text: "degenerate", blocks: [{ type: "section" }] },
+			{ user: "U4", ts: "1.4", text: "plain\nold" },
+		],
+		has_more: false,
+		response_metadata: { next_cursor: "" },
+	});
+	const result = await readThread({ channel: "C1", ts: "1.1" }, { apiCall, token: "t" });
+	assert.equal(
+		result.output,
+		"U1 | 1.1 | line1 line2\nU2 | 1.2 | only text\nU3 | 1.3 | degenerate\nU4 | 1.4 | plain old",
+	);
+});
+
+test("readThread raw: output is a pure JSON array, each message deep-equals the API response (blocks untouched)", async () => {
+	const blocks = [
+		{ type: "section", text: { type: "mrkdwn", text: "*hello*" } },
+		{ type: "context", elements: [{ type: "mrkdwn", text: "ctx" }] },
+	];
+	const messages = [
+		{ user: "U1", ts: "1.1", text: "hello", blocks },
+		{ user: "U2", ts: "1.2", text: "plain" },
+	];
+	const apiCall: ApiCall = async () => ({
+		ok: true,
+		messages,
+		has_more: false,
+		response_metadata: { next_cursor: "" },
+	});
+	const result = await readThread({ channel: "C1", ts: "1.1", raw: true }, { apiCall, token: "t" });
+	const parsed: unknown = JSON.parse(result.output);
+	assert.deepEqual(parsed, messages);
+	assert.equal(result.spilled, false);
+	assert.equal(result.complete, true);
+	assert.equal(result.messageCount, 2);
+});
+
+test("readThread raw: over the inline line cap the complete JSON array spills to a parseable file", async () => {
+	const messages = Array.from({ length: 200 }, (_, i) => ({ user: "U1", ts: `1.${i}`, text: `m${i}` }));
+	const apiCall: ApiCall = async () => ({
+		ok: true,
+		messages,
+		has_more: false,
+		response_metadata: { next_cursor: "" },
+	});
+	const result = await readThread({ channel: "C1", ts: "1.1", raw: true }, { apiCall, token: "t" });
+	assert.equal(result.spilled, true);
+	assert.ok(result.path!.startsWith(join(tmpdir(), "pi-slack")));
+	const full = readFileSync(result.path!, "utf8");
+	assert.deepEqual(JSON.parse(full), messages);
+	assert.match(result.output, /pi-slack/);
 });
 
 function recordingApiCall(

@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `slack_thread` flattens Block Kit blocks in its default rendering (blocks joined by ` / `, `[<type>]` for unknown types) and gains an opt-in `raw: true` mode returning thread messages as a pure JSON array for `slack_update` round-trips; both modes go through the existing size gate. (#21)
+
 ## v6.1.0 - 2026-09-15
 
 - `slack`: tokens also resolve from a fixed per-user file - `$XDG_CONFIG_HOME/pi-quiver/.env` or `~/.config/pi-quiver/.env` (Linux/macOS), `%APPDATA%\pi-quiver\.env` (Windows) - after process env, the repo `.env`, and the primary checkout's `.env`. Every rung now falls through when it lacks the key; a repo `.env` holding only the bot token no longer blocks the user token. Breaking: an unreadable `.env` at any rung propagates the raw filesystem error instead of collapsing to `missing_token`; the `missing_token` message now lists every checked path (#22).

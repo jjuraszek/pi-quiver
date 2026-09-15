@@ -161,7 +161,8 @@ export function searchResultText(result: SearchResult): string {
 	return `${result.output}\n\ntotal: ${result.total} | page: ${result.page} of ${result.pageCount}`;
 }
 
-export function threadResultText(result: ThreadResult): string {
+export function threadResultText(result: ThreadResult, raw = false): string {
+	if (raw) return result.output;
 	const lines = [result.output, "", `complete: ${result.complete}`];
 	if (!result.complete && result.nextCursor) lines.push(`next_cursor: ${result.nextCursor}`);
 	if (result.caveat) lines.push(result.caveat);
@@ -269,21 +270,25 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Thread",
 			promptSnippet: "Read all replies in a Slack thread",
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Output is size-gated like slack_search.',
+				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` is for block extraction and slack_update round-trips: it returns the thread messages as a pure JSON array (no status trailer - `complete`/`next_cursor` stay in the result details and are not visible in the content, so an incomplete raw thread is a partial array with no in-content signal: try JSON.parse, on failure read the file named in the truncation line, and use default mode when completeness matters). Both modes are size-gated like slack_search: over the cap the full output is written to a temp file.',
 			parameters: Type.Object({
 				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
 				permalink: Type.Optional(Type.String({ description: "A Slack message permalink URL to parse channel+ts from" })),
 				cursor: Type.Optional(Type.String({ description: "Resume pagination from a next_cursor returned by a prior capped call" })),
+				raw: Type.Optional(Type.Boolean({ description: "Return thread messages as a JSON array of raw message objects (blocks untouched) instead of compact lines" })),
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
 					const { deps, cacheCtx } = await resolveCall("user", cfg, ctx, signal, repoRoot);
 					const channel =
 						params.permalink === undefined && params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
-					const result = await readThread({ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor }, deps);
+					const result = await readThread(
+						{ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor, raw: params.raw },
+						deps,
+					);
 					return {
-						content: [{ type: "text" as const, text: threadResultText(result) }],
+						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],
 						details: result,
 					};
 				}, "user");
