@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `slack`: tokens also resolve from a fixed per-user file - `$XDG_CONFIG_HOME/pi-quiver/.env` or `~/.config/pi-quiver/.env` (Linux/macOS), `%APPDATA%\pi-quiver\.env` (Windows) - after process env, the repo `.env`, and the primary checkout's `.env`. Every rung now falls through when it lacks the key; a repo `.env` holding only the bot token no longer blocks the user token. Breaking: an unreadable `.env` at any rung propagates the raw filesystem error instead of collapsing to `missing_token`; the `missing_token` message now lists every checked path (#22).
+
 ## v6.0.1 - 2026-09-13
 
 - `session-name` Herdr sink tolerates herdr-ntfy-notify's armed marker: exactly one leading `* ` on the live label no longer counts as a human rename, is preserved on every rename and on the shutdown restore, and its removal keeps the claim (#19).

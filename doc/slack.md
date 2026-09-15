@@ -54,17 +54,30 @@ API - accepts only user tokens, never bot tokens) and **bot** (an app
 identity, selected on every mutating tool via `as: "user" | "bot"`).
 
 Token *values* never live in `settings.json`. By default, each identity
-resolves per call from:
+resolves per call by walking these rungs in order and returning the first
+non-empty value of the configured key (`userTokenEnv` / `botTokenEnv`):
 
 1. `process.env[<configured env var name>]`.
-2. Repo-root `.env` file: one entry per line, optional leading whitespace,
-   optional `export ` prefix, exact `KEY=value`; last matching line wins; one
-   surrounding quote pair (`'...'` or `"..."`) is stripped; the file is never
-   shell-sourced. In a linked git worktree whose own root has no `.env` at
-   all, the primary checkout's repo-root `.env` is consulted instead
-   (discovered via `git rev-parse --path-format=absolute --git-common-dir`);
-   if a worktree *does* have a `.env`, it fully shadows the primary one even
-   if it lacks the needed key.
+2. Repo-root `.env`.
+3. In a linked git worktree, the primary checkout's repo-root `.env`
+   (discovered via `git rev-parse --path-format=absolute --git-common-dir`).
+4. A per-user file outside any repo: `$XDG_CONFIG_HOME/pi-quiver/.env`, else
+   `~/.config/pi-quiver/.env` (Linux and macOS); `%APPDATA%\pi-quiver\.env`
+   on Windows. The rung is skipped when neither `XDG_CONFIG_HOME` nor `HOME`
+   is set (Linux/macOS), or when `APPDATA` is unset (Windows). The location is
+   fixed - there is no setting for it.
+
+A file that exists but lacks the key (or has an empty value) falls through
+to the next rung; only when every rung misses does the call fail with
+`missing_token`, whose message names every checked path (never a token
+value). A file that exists but cannot be read (permissions, a directory at
+that path) is a misconfiguration: the raw filesystem error propagates and
+the remaining rungs are not consulted.
+
+`.env` file format, at every rung: one entry per line, optional leading
+whitespace, optional `export ` prefix, exact `KEY=value`; last matching line
+wins; one surrounding quote pair (`'...'` or `"..."`) is stripped; the file is
+never shell-sourced.
 
 Token values resolved from process env or `.env` are never logged or echoed
 back in tool output or errors.

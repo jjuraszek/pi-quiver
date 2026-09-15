@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -14,6 +14,7 @@ import {
 	parseEnvFile,
 	resolveToken,
 	resolveCredential,
+	userConfigEnvPath,
 	type SlackConfig,
 } from "../lib/slack-core.ts";
 
@@ -229,6 +230,8 @@ test("missing bot token throws SlackError naming the env var, never a value", ()
 				assert.equal(err.code, "missing_token");
 				assert.match(err.message, /SLACK_BOT_TOKEN/);
 				assert.doesNotMatch(err.message, /xox/);
+				assert.ok(err.message.includes(join(dir, ".env")));
+
 				return true;
 			},
 		);
@@ -296,6 +299,41 @@ test("empty .env value (after quote-strip) is treated as missing, not a usable e
 	}
 });
 
+// --- 13b: userConfigEnvPath ---
+
+test("userConfigEnvPath: linux with XDG_CONFIG_HOME", () => {
+	assert.equal(userConfigEnvPath({ XDG_CONFIG_HOME: "/xdg", HOME: "/home/u" }, "linux"), join("/xdg", "pi-quiver", ".env"));
+});
+
+test("userConfigEnvPath: linux with HOME only", () => {
+	assert.equal(userConfigEnvPath({ HOME: "/home/u" }, "linux"), join("/home/u", ".config", "pi-quiver", ".env"));
+});
+
+test("userConfigEnvPath: darwin with HOME only", () => {
+	assert.equal(userConfigEnvPath({ HOME: "/Users/u" }, "darwin"), join("/Users/u", ".config", "pi-quiver", ".env"));
+});
+
+test("userConfigEnvPath: win32 with APPDATA; XDG_CONFIG_HOME ignored", () => {
+	assert.equal(
+		userConfigEnvPath({ APPDATA: "C:\\Users\\u\\AppData\\Roaming", XDG_CONFIG_HOME: "/xdg" }, "win32"),
+		join("C:\\Users\\u\\AppData\\Roaming", "pi-quiver", ".env"),
+	);
+});
+
+test("userConfigEnvPath: win32 without APPDATA -> undefined even when HOME is set", () => {
+	assert.equal(userConfigEnvPath({ HOME: "C:\\Users\\u" }, "win32"), undefined);
+});
+
+test("userConfigEnvPath: linux with neither XDG_CONFIG_HOME nor HOME -> undefined", () => {
+	assert.equal(userConfigEnvPath({}, "linux"), undefined);
+});
+
+test("userConfigEnvPath: empty-string bases count as unset", () => {
+	assert.equal(userConfigEnvPath({ XDG_CONFIG_HOME: "", HOME: "/home/u" }, "linux"), join("/home/u", ".config", "pi-quiver", ".env"));
+	assert.equal(userConfigEnvPath({ HOME: "" }, "linux"), undefined);
+	assert.equal(userConfigEnvPath({ APPDATA: "" }, "win32"), undefined);
+});
+
 // --- 14: no cross-identity fallback ---
 
 test("no cross-identity fallback: user token present does not satisfy bot request", () => {
@@ -329,6 +367,15 @@ function initRepo(dir: string): void {
 	git(dir, ["commit", "-q", "-m", "init"]);
 }
 
+// Writes the linux/darwin user file under a fake HOME; callers pass { HOME: home } and "linux".
+function writeUserEnv(home: string, content: string): string {
+	const dir = join(home, ".config", "pi-quiver");
+	mkdirSync(dir, { recursive: true });
+	const path = join(dir, ".env");
+	writeFileSync(path, content);
+	return path;
+}
+
 test("discoverRepoRoot: nested subdir of a git repo returns toplevel", () => {
 	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-repo-"));
 	try {
@@ -354,22 +401,33 @@ test("discoverRepoRoot: non-git dir returns cwd itself", () => {
 test("worktree without its own .env: primary checkout .env is consulted", () => {
 	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-primary-"));
 	const worktreeParent = mkdtempSync(join(tmpdir(), "quiver-slack-wt-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
 	const worktree = join(worktreeParent, "wt");
 	try {
 		initRepo(repo);
 		writeFileSync(join(repo, ".env"), "SLACK_USER_TOKEN=xoxp-primary\n");
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
 		git(repo, ["branch", "wt-branch"]);
 		git(repo, ["worktree", "add", worktree, "wt-branch"]);
 
-		const token = resolveToken("user", DEFAULT_SLACK_CONFIG, {}, worktree);
+		const token = resolveToken("user", DEFAULT_SLACK_CONFIG, {}, realpathSync(worktree));
 		assert.equal(token, "xoxp-primary");
+		const competingToken = resolveToken(
+			"user",
+			DEFAULT_SLACK_CONFIG,
+			{ HOME: home },
+			realpathSync(worktree),
+			"linux",
+		);
+		assert.equal(competingToken, "xoxp-primary");
 	} finally {
+		rmSync(home, { recursive: true, force: true });
 		rmSync(worktreeParent, { recursive: true, force: true });
 		rmSync(repo, { recursive: true, force: true });
 	}
 });
 
-test("local .env exists but is unreadable: primary-checkout fallback is NOT consulted (missing_token)", (t) => {
+test("worktree .env unreadable: raw EACCES propagates, primary checkout is not consulted", (t) => {
 	if (process.platform === "win32") {
 		t.skip("chmod 000 is not enforced on win32");
 		return;
@@ -391,10 +449,10 @@ test("local .env exists but is unreadable: primary-checkout fallback is NOT cons
 		chmodSync(localEnvPath, 0o000);
 
 		assert.throws(
-			() => resolveToken("user", DEFAULT_SLACK_CONFIG, {}, worktree),
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, {}, realpathSync(worktree)),
 			(err: unknown) => {
-				assert.ok(err instanceof SlackError);
-				assert.equal(err.code, "missing_token");
+				assert.ok(!(err instanceof SlackError));
+				assert.equal((err as NodeJS.ErrnoException).code, "EACCES");
 				return true;
 			},
 		);
@@ -405,7 +463,7 @@ test("local .env exists but is unreadable: primary-checkout fallback is NOT cons
 	}
 });
 
-test("worktree without local .env, primary checkout .env unreadable: falls through to missing_token", (t) => {
+test("primary checkout .env unreadable: raw EACCES propagates even when the user file has the key", (t) => {
 	if (process.platform === "win32") {
 		t.skip("chmod 000 is not enforced on win32");
 		return;
@@ -417,6 +475,7 @@ test("worktree without local .env, primary checkout .env unreadable: falls throu
 	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-primary-"));
 	const worktreeParent = mkdtempSync(join(tmpdir(), "quiver-slack-wt-"));
 	const worktree = join(worktreeParent, "wt");
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
 	try {
 		initRepo(repo);
 		const primaryEnvPath = join(repo, ".env");
@@ -424,12 +483,13 @@ test("worktree without local .env, primary checkout .env unreadable: falls throu
 		chmodSync(primaryEnvPath, 0o000);
 		git(repo, ["branch", "wt-branch"]);
 		git(repo, ["worktree", "add", worktree, "wt-branch"]);
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
 
 		assert.throws(
-			() => resolveToken("user", DEFAULT_SLACK_CONFIG, {}, worktree),
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, realpathSync(worktree), "linux"),
 			(err: unknown) => {
-				assert.ok(err instanceof SlackError);
-				assert.equal(err.code, "missing_token");
+				assert.ok(!(err instanceof SlackError));
+				assert.equal((err as NodeJS.ErrnoException).code, "EACCES");
 				return true;
 			},
 		);
@@ -437,31 +497,217 @@ test("worktree without local .env, primary checkout .env unreadable: falls throu
 		chmodSync(join(repo, ".env"), 0o644);
 		rmSync(worktreeParent, { recursive: true, force: true });
 		rmSync(repo, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
 	}
 });
 
-test("worktree's own .env fully shadows the primary checkout's .env (file-level, not per-key, fallback)", () => {
-	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-primary-"));
-	const worktreeParent = mkdtempSync(join(tmpdir(), "quiver-slack-wt-"));
-	const worktree = join(worktreeParent, "wt");
-	try {
-		initRepo(repo);
-		writeFileSync(join(repo, ".env"), "SLACK_USER_TOKEN=xoxp-primary\n");
-		git(repo, ["branch", "wt-branch"]);
-		git(repo, ["worktree", "add", worktree, "wt-branch"]);
-		writeFileSync(join(worktree, ".env"), "OTHER=1\n");
+// --- 17b: fall-through ladder + user file ---
 
+test("fall-through: repo .env with only the bot key, user file supplies the user key", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		writeFileSync(join(dir, ".env"), "SLACK_BOT_TOKEN=xoxb-repo\n");
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"), "xoxp-user");
+		assert.equal(resolveToken("bot", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"), "xoxb-repo");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("precedence: repo .env beats the user file; process env beats both", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		writeFileSync(join(dir, ".env"), "SLACK_USER_TOKEN=xoxp-repo\n");
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"), "xoxp-repo");
+		assert.equal(
+			resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home, SLACK_USER_TOKEN: "xoxp-env" }, dir, "linux"),
+			"xoxp-env",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("empty repo .env value falls through to the user file", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		writeFileSync(join(dir, ".env"), "SLACK_USER_TOKEN=\n");
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"), "xoxp-user");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("user file via XDG_CONFIG_HOME on linux and via APPDATA on win32", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const base = mkdtempSync(join(tmpdir(), "quiver-slack-base-"));
+	try {
+		mkdirSync(join(base, "pi-quiver"), { recursive: true });
+		writeFileSync(join(base, "pi-quiver", ".env"), "SLACK_USER_TOKEN=xoxp-base\n");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { XDG_CONFIG_HOME: base }, dir, "linux"), "xoxp-base");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { APPDATA: base }, dir, "win32"), "xoxp-base");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("remapped key name is honored in the user file", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		writeUserEnv(home, "MY_TOKEN=xoxp-mapped\n");
+		const cfg: SlackConfig = { ...DEFAULT_SLACK_CONFIG, userTokenEnv: "MY_TOKEN" };
+		assert.equal(resolveToken("user", cfg, { HOME: home }, dir, "linux"), "xoxp-mapped");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("user file present but lacking the key (or with an empty value) -> missing_token naming every checked path", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		const userPath = writeUserEnv(home, "SLACK_BOT_TOKEN=xoxb-user\nSLACK_USER_TOKEN=\n");
 		assert.throws(
-			() => resolveToken("user", DEFAULT_SLACK_CONFIG, {}, worktree),
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"),
 			(err: unknown) => {
 				assert.ok(err instanceof SlackError);
 				assert.equal(err.code, "missing_token");
+				assert.match(err.message, /SLACK_USER_TOKEN/);
+				assert.ok(err.message.includes(join(dir, ".env")));
+				assert.ok(err.message.includes(userPath));
+				assert.doesNotMatch(err.message, /xox/);
+				return true;
+			},
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("non-git repoRoot with HOME unset: missing_token lists the repo path only", () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	try {
+		assert.throws(
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, {}, dir, "linux"),
+			(err: unknown) => {
+				assert.ok(err instanceof SlackError);
+				assert.equal(err.code, "missing_token");
+				assert.ok(err.message.endsWith(`no entry found in ${join(dir, ".env")}.`));
+				return true;
+			},
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("linked worktree, key missing everywhere: missing_token lists repo, primary, and user paths in order", () => {
+	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-primary-"));
+	const worktreeParent = mkdtempSync(join(tmpdir(), "quiver-slack-wt-"));
+	const worktree = join(worktreeParent, "wt");
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		initRepo(repo);
+		git(repo, ["branch", "wt-branch"]);
+		git(repo, ["worktree", "add", worktree, "wt-branch"]);
+		const worktreeRoot = realpathSync(worktree);
+		const expected = [join(worktreeRoot, ".env"), join(realpathSync(repo), ".env"), join(home, ".config", "pi-quiver", ".env")];
+		assert.throws(
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, worktreeRoot, "linux"),
+			(err: unknown) => {
+				assert.ok(err instanceof SlackError);
+				assert.equal(err.code, "missing_token");
+				assert.ok(err.message.endsWith(`no entry found in ${expected.join(", ")}.`));
 				return true;
 			},
 		);
 	} finally {
 		rmSync(worktreeParent, { recursive: true, force: true });
 		rmSync(repo, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("worktree .env lacking the key falls through to the primary checkout, then to the user file", () => {
+	const repo = mkdtempSync(join(tmpdir(), "quiver-slack-primary-"));
+	const worktreeParent = mkdtempSync(join(tmpdir(), "quiver-slack-wt-"));
+	const worktree = join(worktreeParent, "wt");
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	try {
+		initRepo(repo);
+		git(repo, ["branch", "wt-branch"]);
+		git(repo, ["worktree", "add", worktree, "wt-branch"]);
+		const worktreeRoot = realpathSync(worktree);
+		writeFileSync(join(worktree, ".env"), "OTHER=1\n");
+		writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
+
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, worktreeRoot, "linux"), "xoxp-user");
+
+		writeFileSync(join(repo, ".env"), "SLACK_USER_TOKEN=xoxp-primary\n");
+		assert.equal(resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, worktreeRoot, "linux"), "xoxp-primary");
+	} finally {
+		rmSync(worktreeParent, { recursive: true, force: true });
+		rmSync(repo, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("user file unreadable: raw EACCES propagates", (t) => {
+	if (process.platform === "win32") {
+		t.skip("chmod 000 is not enforced on win32");
+		return;
+	}
+	if (typeof process.getuid === "function" && process.getuid() === 0) {
+		t.skip("root bypasses file permission modes");
+		return;
+	}
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const home = mkdtempSync(join(tmpdir(), "quiver-slack-home-"));
+	const userPath = writeUserEnv(home, "SLACK_USER_TOKEN=xoxp-user\n");
+	try {
+		chmodSync(userPath, 0o000);
+		assert.throws(
+			() => resolveToken("user", DEFAULT_SLACK_CONFIG, { HOME: home }, dir, "linux"),
+			(err: unknown) => {
+				assert.ok(!(err instanceof SlackError));
+				assert.equal((err as NodeJS.ErrnoException).code, "EACCES");
+				return true;
+			},
+		);
+	} finally {
+		chmodSync(userPath, 0o644);
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("resolveCredential forwards platform to the ladder for the bot identity", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-token-"));
+	const base = mkdtempSync(join(tmpdir(), "quiver-slack-base-"));
+	try {
+		mkdirSync(join(base, "pi-quiver"), { recursive: true });
+		writeFileSync(join(base, "pi-quiver", ".env"), "SLACK_BOT_TOKEN=xoxb-appdata\n");
+		assert.equal(await resolveCredential("bot", DEFAULT_SLACK_CONFIG, { APPDATA: base }, dir, "win32"), "xoxb-appdata");
+		await assert.rejects(
+			resolveCredential("bot", DEFAULT_SLACK_CONFIG, { APPDATA: base }, dir, "linux"),
+			(err: unknown) => err instanceof SlackError && err.code === "missing_token",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(base, { recursive: true, force: true });
 	}
 });
 
@@ -630,6 +876,10 @@ function makeFakeCtx(cwd: string, notify: (m: string, type?: string) => void = (
 
 // Async sibling of withSettings: session_start handlers are declared async, so callers must
 // await the fixture body before withSettings's own cleanup (env restore + temp-dir removal) runs.
+// HOME/XDG_CONFIG_HOME/APPDATA are redirected too: the extension passes process.env into the token
+// ladder, and a developer's real ~/.config/pi-quiver/.env must never satisfy a test.
+const USER_CONFIG_ENV_VARS = ["HOME", "XDG_CONFIG_HOME", "APPDATA"] as const;
+
 async function withSettingsAsync(
 	global: Record<string, unknown>,
 	project: Record<string, unknown>,
@@ -638,8 +888,10 @@ async function withSettingsAsync(
 ): Promise<void> {
 	const agentDir = mkdtempSync(join(tmpdir(), "quiver-slack-agent-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
+	const previousUserEnv = USER_CONFIG_ENV_VARS.map((name) => [name, process.env[name]] as const);
 	try {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
+		for (const name of USER_CONFIG_ENV_VARS) process.env[name] = join(agentDir, "home");
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(global));
 		mkdirSync(join(projectDir, ".pi"), { recursive: true });
 		writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify(project));
@@ -647,6 +899,10 @@ async function withSettingsAsync(
 	} finally {
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previous;
+		for (const [name, value] of previousUserEnv) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(projectDir, { recursive: true, force: true });
 	}

@@ -191,14 +191,25 @@ export function parseEnvFile(content: string): Map<string, string> {
 	return result;
 }
 
-function readEnvFile(dir: string): Map<string, string> | undefined {
+export function userConfigEnvPath(
+	env: Record<string, string | undefined>,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
+	if (platform === "win32") {
+		return env.APPDATA ? join(env.APPDATA, "pi-quiver", ".env") : undefined;
+	}
+	if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "pi-quiver", ".env");
+	if (env.HOME) return join(env.HOME, ".config", "pi-quiver", ".env");
+	return undefined;
+}
+
+function readEnvFile(path: string): Map<string, string> | undefined {
 	try {
-		return parseEnvFile(readFileSync(join(dir, ".env"), "utf8"));
+		return parseEnvFile(readFileSync(path, "utf8"));
 	} catch (err) {
-		// Deliberate: a genuinely absent .env degrades to "token not found", not a thrown error.
+		// Deliberate: a genuinely absent .env degrades to "token not found". Anything else (permissions,
+		// a directory at that path) is a misconfiguration the caller must see, so it propagates raw.
 		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-		// Present but unreadable (e.g. permissions): re-thrown so callers treat it as present-but-empty,
-		// not absent - this must NOT authorize the primary-checkout fallback.
 		throw err;
 	}
 }
@@ -208,45 +219,29 @@ export function resolveToken(
 	cfg: SlackConfig,
 	env: Record<string, string | undefined>,
 	repoRoot: string,
+	platform: NodeJS.Platform = process.platform,
 ): string {
 	const envVar = identity === "user" ? cfg.userTokenEnv : cfg.botTokenEnv;
 
 	const fromEnv = env[envVar];
 	if (fromEnv) return fromEnv;
 
-	let repoEnvFile: Map<string, string> | undefined;
-	let repoEnvUnreadable = false;
-	try {
-		repoEnvFile = readEnvFile(repoRoot);
-	} catch {
-		repoEnvUnreadable = true;
-	}
+	const candidates = [join(repoRoot, ".env")];
+	const primaryRoot = primaryCheckoutRoot(repoRoot);
+	if (primaryRoot !== undefined && primaryRoot !== repoRoot) candidates.push(join(primaryRoot, ".env"));
+	const userPath = userConfigEnvPath(env, platform);
+	if (userPath !== undefined) candidates.push(userPath);
 
-	if (repoEnvFile) {
-		// An empty (after quote-strip) .env value is treated as missing, not a usable empty token.
-		const value = repoEnvFile.get(envVar);
+	for (const path of candidates) {
+		const parsed = readEnvFile(path);
+		// An empty (after quote-strip) value is treated as missing, not a usable empty token.
+		const value = parsed?.get(envVar);
 		if (value) return value;
-	} else if (!repoEnvUnreadable) {
-		// File-level fallback only, per spec: this only triggers when the worktree root has no .env at
-		// all (ENOENT); an existing-but-unreadable local .env blocks the fallback just like an existing
-		// one that lacks this key.
-		const primaryRoot = primaryCheckoutRoot(repoRoot);
-		if (primaryRoot && primaryRoot !== repoRoot) {
-			// Best-effort: any error reading the primary .env (missing or otherwise) just means no fallback.
-			let primaryEnvFile: Map<string, string> | undefined;
-			try {
-				primaryEnvFile = readEnvFile(primaryRoot);
-			} catch {
-				primaryEnvFile = undefined;
-			}
-			const value = primaryEnvFile?.get(envVar);
-			if (value) return value;
-		}
 	}
 
 	throw new SlackError(
 		"missing_token",
-		`No Slack ${identity} token: env var ${envVar} is empty and no .env entry was found.`,
+		`No Slack ${identity} token: env var ${envVar} is empty and no entry found in ${candidates.join(", ")}.`,
 	);
 }
 
@@ -279,11 +274,12 @@ export async function resolveCredential(
 	cfg: SlackConfig,
 	env: Record<string, string | undefined>,
 	repoRoot: string,
+	platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
 	if (identity === "user" && cfg.userTokenCommand) {
 		return runCredentialCommand(cfg.userTokenCommand, Math.ceil(cfg.userTokenCommandTimeoutSeconds * 1000));
 	}
-	return resolveToken(identity, cfg, env, repoRoot);
+	return resolveToken(identity, cfg, env, repoRoot, platform);
 }
 
 /**
