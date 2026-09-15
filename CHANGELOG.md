@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.1.0 - 2026-09-15
 
 - `slack`: tokens also resolve from a fixed per-user file - `$XDG_CONFIG_HOME/pi-quiver/.env` or `~/.config/pi-quiver/.env` (Linux/macOS), `%APPDATA%\pi-quiver\.env` (Windows) - after process env, the repo `.env`, and the primary checkout's `.env`. Every rung now falls through when it lacks the key; a repo `.env` holding only the bot token no longer blocks the user token. Breaking: an unreadable `.env` at any rung propagates the raw filesystem error instead of collapsing to `missing_token`; the `missing_token` message now lists every checked path (#22).
 - `slack`: every `channel` parameter accepts `@name` or a user ID (`U...`/`W...`) and targets that person's DM - `resolveChannel` opens it via `conversations.open` (needs `im:write`; `slack_thread` DM reads need `im:history`) and tools echo the resulting `D...`. Cached display/real-name aliases are trusted only after a `slack_cache_refresh` snapshot (#20).
