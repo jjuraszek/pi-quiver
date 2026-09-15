@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.2.0 - 2026-09-15
 
 - `slack_thread` flattens Block Kit blocks in its default rendering (blocks joined by ` / `, `[<type>]` for unknown types) and gains an opt-in `raw: true` mode returning thread messages as a pure JSON array for `slack_update` round-trips; both modes go through the existing size gate. (#21)
 
