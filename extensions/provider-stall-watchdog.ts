@@ -7,14 +7,20 @@ export const DEFAULT_CONFIG = {
 	firstEventMs: 20_000,
 	warningMs: 120_000,
 	recoveryMs: 240_000,
+	models: {},
 } as const;
 
-export type WatchdogConfig = {
-	enabled: boolean;
+export type WatchdogThresholds = {
 	firstEventMs: number;
 	warningMs: number;
 	recoveryMs: number;
+};
+
+export type WatchdogConfig = WatchdogThresholds & {
+	enabled: boolean;
 	maxStallRetries: number;
+	/** Per-model threshold overrides keyed by glob; see thresholdsFor. */
+	models: Record<string, Partial<WatchdogThresholds>>;
 };
 
 export type WatchdogRuntime = {
@@ -30,6 +36,7 @@ export type ConfigCandidate = {
 	warningMs?: unknown;
 	recoveryMs?: unknown;
 	maxStallRetries?: unknown;
+	models?: unknown;
 };
 
 export type ConfigValidation =
@@ -45,11 +52,16 @@ export function coerce(raw: unknown): ConfigCandidate | undefined {
 
 	const source = raw as Record<string, unknown>;
 	const candidate: ConfigCandidate = { blockIsObject: true };
-	for (const key of ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries"] as const) {
+	for (const key of ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries", "models"] as const) {
 		if (Object.hasOwn(source, key)) candidate[key] = source[key];
 	}
 	return candidate;
 }
+
+const THRESHOLD_KEYS = ["firstEventMs", "warningMs", "recoveryMs"] as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	value !== null && typeof value === "object" && !Array.isArray(value);
 
 export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 	if (candidate.blockIsObject !== true) return { ok: false, error: "providerStallWatchdog must be an object" };
@@ -59,6 +71,21 @@ export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 	if (!isTimerDelay(candidate.recoveryMs)) return { ok: false, error: "recoveryMs must be a positive timer delay" };
 	if (candidate.warningMs >= candidate.recoveryMs) return { ok: false, error: "warningMs must be less than recoveryMs" };
 	if (!isNonNegativeInteger(candidate.maxStallRetries)) return { ok: false, error: "maxStallRetries must be a non-negative integer" };
+	if (!isRecord(candidate.models)) return { ok: false, error: "models must be an object" };
+	for (const [pattern, override] of Object.entries(candidate.models)) {
+		if (!isRecord(override)) return { ok: false, error: `models["${pattern}"] must be an object` };
+		for (const key of Object.keys(override)) {
+			if (!(THRESHOLD_KEYS as readonly string[]).includes(key)) {
+				return { ok: false, error: `models["${pattern}"] has unknown key "${key}"; accepted: ${THRESHOLD_KEYS.join(", ")}` };
+			}
+			if (!isTimerDelay(override[key])) return { ok: false, error: `models["${pattern}"].${key} must be a positive timer delay` };
+		}
+		const mergedWarning = (override.warningMs ?? candidate.warningMs) as number;
+		const mergedRecovery = (override.recoveryMs ?? candidate.recoveryMs) as number;
+		if (mergedWarning >= mergedRecovery) {
+			return { ok: false, error: `models["${pattern}"] leaves warningMs (${mergedWarning}) >= recoveryMs (${mergedRecovery})` };
+		}
+	}
 	return {
 		ok: true,
 		config: {
@@ -67,6 +94,7 @@ export function validateConfig(candidate: ConfigCandidate): ConfigValidation {
 			warningMs: candidate.warningMs,
 			recoveryMs: candidate.recoveryMs,
 			maxStallRetries: candidate.maxStallRetries,
+			models: candidate.models as Record<string, Partial<WatchdogThresholds>>,
 		},
 	};
 }
@@ -120,20 +148,41 @@ function formatElapsed(ms: number): string {
 
 const ABORT_STUCK_NOTICE = `The stalled request did not stop within ${formatElapsed(ABORT_GRACE_MS)} of being aborted; the provider connection is unresponsive. No automatic retry will run - the turn will not end until the HTTP idle timeout expires.`;
 
-function warningNotice(config: WatchdogConfig): string {
-	return `No model progress for ${formatElapsed(config.warningMs)}; aborting and asking Pi to retry in ${formatElapsed(config.recoveryMs - config.warningMs)} (Esc aborts now)`;
+function warningNotice(thresholds: WatchdogThresholds): string {
+	return `No model progress for ${formatElapsed(thresholds.warningMs)}; aborting and asking Pi to retry in ${formatElapsed(thresholds.recoveryMs - thresholds.warningMs)} (Esc aborts now)`;
 }
 
 function exhaustedNotice(config: WatchdogConfig): string {
 	return `Stall retry budget (${config.maxStallRetries}) exhausted; aborting without another automatic retry. Submit the message again manually.`;
 }
 
-function firstEventRetryNotice(config: WatchdogConfig): string {
-	return `Provider sent no response for ${formatElapsed(config.firstEventMs)}; stopping and retrying the request.`;
+function firstEventRetryNotice(thresholds: WatchdogThresholds): string {
+	return `Provider sent no response for ${formatElapsed(thresholds.firstEventMs)}; stopping and retrying the request.`;
 }
 
-function firstEventExhaustedNotice(config: WatchdogConfig): string {
-	return `Provider sent no response for ${formatElapsed(config.firstEventMs)} and the stall-retry budget is spent; the request was stopped.`;
+function firstEventExhaustedNotice(thresholds: WatchdogThresholds): string {
+	return `Provider sent no response for ${formatElapsed(thresholds.firstEventMs)} and the stall-retry budget is spent; the request was stopped.`;
+}
+
+/** A glob where `*` matches any run of characters; matching is case-insensitive. */
+function modelPattern(pattern: string): RegExp {
+	const source = pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+	return new RegExp(`^${source}$`, "i");
+}
+
+/**
+ * Effective thresholds for one request: the base knobs overlaid with the
+ * first `models` entry whose glob matches the request's `provider/model`
+ * label. First match wins; later entries for the same model are ignored.
+ */
+export function thresholdsFor(config: WatchdogConfig, model: { provider: string; id: string } | undefined): WatchdogThresholds {
+	const base: WatchdogThresholds = { firstEventMs: config.firstEventMs, warningMs: config.warningMs, recoveryMs: config.recoveryMs };
+	if (model === undefined) return base;
+	const label = `${model.provider}/${model.id}`;
+	for (const [pattern, override] of Object.entries(config.models)) {
+		if (modelPattern(pattern).test(label)) return { ...base, ...override };
+	}
+	return base;
 }
 
 export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRuntime): (pi: ExtensionAPI) => void {
@@ -147,6 +196,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		let config: WatchdogConfig | undefined;
 		let generation = 0;
 		let activeGeneration: number | undefined;
+		let activeModel: { provider: string; id: string } | undefined;
 		let lastSemanticAt = 0;
 		let warned = false;
 		let deadlineEpoch = 0;
@@ -229,9 +279,10 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 		const armFirstEvent = (ctx: { abort(): void }) => {
 			if (activeGeneration === undefined || !config) return;
 			const cfg = config;
+			const thresholds = thresholdsFor(cfg, activeModel);
 			const capturedGeneration = activeGeneration;
 			const capturedDeadlineEpoch = ++deadlineEpoch;
-			const threshold = cfg.firstEventMs;
+			const threshold = thresholds.firstEventMs;
 			const run = () => {
 				if (capturedGeneration !== activeGeneration || capturedDeadlineEpoch !== deadlineEpoch || !activeRun || firstEventSeen) return;
 				const elapsed = runtime.now() - lastSemanticAt;
@@ -240,15 +291,16 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 					return;
 				}
 				abortStall(ctx, capturedGeneration, {
-					retry: () => firstEventRetryNotice(cfg),
-					exhausted: () => firstEventExhaustedNotice(cfg),
-				}, `Provider first-event timeout after ${cfg.firstEventMs} ms without a stream event`);
+					retry: () => firstEventRetryNotice(thresholds),
+					exhausted: () => firstEventExhaustedNotice(thresholds),
+				}, `Provider first-event timeout after ${thresholds.firstEventMs} ms without a stream event`);
 			};
 			timers.firstEvent = runtime.setTimeout(run, threshold);
 		};
 		const schedule = (ctx: { abort(): void }) => {
 			if (activeGeneration === undefined || !config) return;
 			const cfg = config;
+			const thresholds = thresholdsFor(cfg, activeModel);
 			const capturedGeneration = activeGeneration;
 			const capturedDeadlineEpoch = ++deadlineEpoch;
 			const run = (kind: "warning" | "recovery", threshold: number) => () => {
@@ -260,17 +312,17 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 				}
 				if (kind === "warning" && !warned) {
 					warned = true;
-					announce(warningNotice(cfg), "warning");
+					announce(warningNotice(thresholds), "warning");
 				}
 				if (kind === "recovery") {
 					abortStall(ctx, capturedGeneration, {
 						retry: () => `No model progress for ${formatElapsed(elapsed)}; aborting now. Pi will retry (${stallRetriesUsed}/${cfg.maxStallRetries}) if retry is enabled and capacity remains. Pending follow-ups are returned to the editor.`,
 						exhausted: () => exhaustedNotice(cfg),
-					}, `Provider semantic timeout after ${cfg.recoveryMs} ms without progress`);
+					}, `Provider semantic timeout after ${thresholds.recoveryMs} ms without progress`);
 				}
 			};
-			timers.warning = runtime.setTimeout(run("warning", cfg.warningMs), cfg.warningMs);
-			timers.recovery = runtime.setTimeout(run("recovery", cfg.recoveryMs), cfg.recoveryMs);
+			timers.warning = runtime.setTimeout(run("warning", thresholds.warningMs), thresholds.warningMs);
+			timers.recovery = runtime.setTimeout(run("recovery", thresholds.recoveryMs), thresholds.recoveryMs);
 		};
 
 		pi.on("before_provider_request", (_event, ctx) => {
@@ -291,6 +343,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			disarm();
 			if (convertedTimeout) continuationStarted = true;
 			activeGeneration = ++generation;
+			activeModel = ctx.model;
 			lastSemanticAt = runtime.now();
 			const target = ctx.signal;
 			if (target) {

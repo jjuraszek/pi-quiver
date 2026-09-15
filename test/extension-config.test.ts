@@ -277,7 +277,7 @@ test("lint: both files contribute -> per-file sub-headers", () => {
 				`  ${files.globalFile}`,
 				`    "fastMode" at top level - move under "quiver"`,
 				`  ${files.projectFile}`,
-				`    "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries`,
+				`    "quiver.providerStallWatchdog.timeoutMs" - unknown; accepted: enabled, firstEventMs, warningMs, recoveryMs, maxStallRetries, models`,
 			].join("\n"),
 		]);
 	});
