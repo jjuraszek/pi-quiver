@@ -269,9 +269,9 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Thread",
 			promptSnippet: "Read all replies in a Slack thread",
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name or channel ID; user @names not accepted) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Output is size-gated like slack_search.',
+				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Output is size-gated like slack_search.',
 			parameters: Type.Object({
-				channel: Type.Optional(Type.String({ description: "#name or channel ID (user @names not accepted)" })),
+				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
 				permalink: Type.Optional(Type.String({ description: "A Slack message permalink URL to parse channel+ts from" })),
 				cursor: Type.Optional(Type.String({ description: "Resume pagination from a next_cursor returned by a prior capped call" })),
@@ -279,7 +279,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
 					const { deps, cacheCtx } = await resolveCall("user", cfg, ctx, signal, repoRoot);
-					const channel = params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
+					const channel =
+						params.permalink === undefined && params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
 					const result = await readThread({ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor }, deps);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result) }],
@@ -296,10 +297,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Post",
 			promptSnippet: "Post a Slack message, reply, or headline+detail announcement",
 			description:
-				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name or a channel ID (user @names not accepted). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts `thread_body` as the first threaded reply in the same call; if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the error names the path. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
+				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts `thread_body` as the first threaded reply in the same call; if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the error names the path. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
 			parameters: Type.Object({
 				as: IDENTITY,
-				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
+				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				text: Type.Optional(Type.String({ description: "Message text, or the announce headline when thread_body is set" })),
 				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON array, passed through unvalidated" })),
 				thread_ts: Type.Optional(Type.String({ description: "Reply into this existing thread instead of posting a new headline" })),
@@ -378,10 +379,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Update",
 			promptSnippet: "Edit an existing Slack message",
 			description:
-				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name or a channel ID (user @names not accepted). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).',
+				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).',
 			parameters: Type.Object({
 				as: IDENTITY,
-				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
+				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				ts: Type.String({ description: "Timestamp of the message to edit" }),
 				text: Type.Optional(Type.String()),
 				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON array, passed through unvalidated" })),
@@ -408,10 +409,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Delete",
 			promptSnippet: "Delete a Slack message",
 			description:
-				'Delete a message via chat.delete, as `as: "user"` or `as: "bot"`. `channel` accepts #name or a channel ID (user @names not accepted). Only the identity that originally posted the message can delete it (Slack constraint; surfaced as an error otherwise).',
+				'Delete a message via chat.delete, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can delete it (Slack constraint; surfaced as an error otherwise).',
 			parameters: Type.Object({
 				as: IDENTITY,
-				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
+				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				ts: Type.String({ description: "Timestamp of the message to delete" }),
 			}),
 			async execute(_toolCallId, params, signal) {
@@ -434,10 +435,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Pin",
 			promptSnippet: "Pin a Slack message to its channel",
 			description:
-				'Pin a message via pins.add, as `as: "user"` or `as: "bot"`. `channel` accepts #name or a channel ID (user @names not accepted). Slack errors are mapped: already_pinned, not_pinnable (this message type cannot be pinned), too_many_pins (the channel hit Slack\'s pin limit).',
+				'Pin a message via pins.add, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Slack errors are mapped: already_pinned, not_pinnable (this message type cannot be pinned), too_many_pins (the channel hit Slack\'s pin limit).',
 			parameters: Type.Object({
 				as: IDENTITY,
-				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
+				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				ts: Type.String({ description: "Timestamp of the message to pin" }),
 			}),
 			async execute(_toolCallId, params, signal) {
@@ -460,10 +461,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Upload",
 			promptSnippet: "Upload a file to a Slack channel or thread",
 			description:
-				'Upload a file to Slack (getUploadURLExternal -> upload -> completeUploadExternal), as `as: "user"` or `as: "bot"`. `channel` accepts #name or a channel ID (user @names not accepted). `path` is an absolute path or resolved relative to the current working directory; a missing file errors before any network call. `filename` defaults to the path\'s basename. Optional `title`, `thread_ts` (attach to an existing thread), and `initial_comment`.',
+				'Upload a file to Slack (getUploadURLExternal -> upload -> completeUploadExternal), as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). `path` is an absolute path or resolved relative to the current working directory; a missing file errors before any network call. `filename` defaults to the path\'s basename. Optional `title`, `thread_ts` (attach to an existing thread), and `initial_comment`.',
 			parameters: Type.Object({
 				as: IDENTITY,
-				channel: Type.String({ description: "#name or channel ID (user @names not accepted)" }),
+				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				path: Type.String({ description: "Absolute path, or a path relative to the current working directory" }),
 				filename: Type.Optional(Type.String({ description: "Defaults to the basename of path" })),
 				title: Type.Optional(Type.String()),

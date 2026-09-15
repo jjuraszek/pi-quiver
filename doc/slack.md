@@ -189,10 +189,9 @@ workspace (keyed by team ID from `auth.test`):
 
 ## Tools
 
-All channel/user parameters accept `#name`, `@name`, or a raw Slack ID.
-`@name` is accepted **only in user positions** - currently no tool exposes a
-user-position parameter, so every `channel` parameter rejects `@name` inputs
-outright (opening a DM is out of scope). `slack_post`, `slack_update`, and
+Every `channel` parameter accepts four forms: `#name`, a raw channel ID
+(`C...`/`D...`/`G...`), `@name`, or a raw user ID (`U...`/`W...`). The last
+two target a DM - see "DM targets" below. `slack_post`, `slack_update`, and
 `slack_pin` echo `channel` (resolved ID), `ts`, and an API-derived
 `permalink` (via `chat.getPermalink`); a permalink lookup failure never
 fails the call - it degrades to a `warning` field on an otherwise-successful
@@ -203,6 +202,27 @@ message cannot be linked to, so this shape is the honest one, not a gap.
 comes from the completed file object when Slack returns one, degrading to a
 `warning` (like the mutation tools above) rather than failing the call when
 it's absent.
+
+**DM targets.** A `@name` or user-ID `channel` is resolved by
+`resolveChannel` itself: `@name` is looked up in the users cache, then
+`users.list` (cached display/real-name aliases are trusted only after a
+`slack_cache_refresh` snapshot; an unknown name fails with `name_not_found`),
+then one `conversations.open { users }` call returns the DM's `D...` id,
+which every tool then uses as `channel`. Results echo that `D...`, so
+follow-ups (`slack_update`, `slack_delete`, `slack_pin`, `slack_thread`) can
+pass it directly and skip the hop. The hop runs on the acting identity's
+token and needs `im:write`; `slack_thread` DM reads additionally need
+`im:history` on the user token. A missing scope surfaces as Slack's own
+`missing_scope` error - there is no local preflight. A user-token open is
+the user's DM with that person; a bot-token open is the app's DM with them -
+two different `D...` conversations. Follow-ups (`slack_update`,
+`slack_delete`, `slack_pin`) must reuse the returned `D...` under the same
+`as` that posted - re-resolving `@name` under the other identity opens a
+different conversation and does not address the posted message.
+`slack_thread` always runs as the user, so
+`slack_thread { channel: "@bob" }` reads the user's own DM with bob; a `D...`
+returned by `slack_post { as: "bot" }` is not readable there
+(`channel_not_found`). Group DMs (`U1,U2`) are not supported.
 
 | tool | identity | params (sketch) | behavior |
 |---|---|---|---|

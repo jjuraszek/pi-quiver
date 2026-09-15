@@ -1523,6 +1523,129 @@ test("slack_post execute: blocks-only threaded reply (no thread_body, no text) o
 	}
 });
 
+type DmRun = {
+	calls: { method: string; params: Record<string, unknown> }[];
+	result?: { content: { type: string; text: string }[] };
+	error?: Error;
+};
+
+async function runDmTool(
+	tool: "slack_post" | "slack_thread",
+	identityEnv: "SLACK_USER_TOKEN" | "SLACK_BOT_TOKEN",
+	params: Record<string, unknown>,
+	overrides: FetchHandlers,
+): Promise<DmRun> {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-dm-"));
+	const cacheFile = join(dir, "cache.json");
+	writeMentionCache(cacheFile);
+	const run: DmRun = { calls: [] };
+	const record =
+		(method: string, respond: (params: Record<string, unknown>) => Record<string, unknown>) =>
+		(params: Record<string, unknown>) => {
+			run.calls.push({ method, params });
+			return respond(params);
+		};
+	const base: FetchHandlers = {
+		"auth.test": () => ({ ok: true, team_id: "T1" }),
+		"users.list": () => ({
+			ok: true,
+			members: [{ id: "U000BOB", name: "bob", profile: {} }],
+			response_metadata: { next_cursor: "" },
+		}),
+		"conversations.open": () => ({ ok: true, channel: { id: "D000XYZ" } }),
+		"chat.postMessage": (postParams) => ({ ok: true, ts: "1111.1", channel: postParams.channel }),
+		"chat.getPermalink": () => ({ ok: true, permalink: "https://x.slack.com/archives/D000XYZ/p11111" }),
+		"conversations.replies": () => ({
+			ok: true,
+			messages: [{ ts: "1111.1", user: "U000BOB", text: "hi" }],
+			has_more: false,
+			response_metadata: { next_cursor: "" },
+		}),
+		...overrides,
+	};
+	const handlers = Object.fromEntries(Object.entries(base).map(([method, handler]) => [method, record(method, handler)]));
+	try {
+		await withEnvToken(identityEnv, identityEnv === "SLACK_USER_TOKEN" ? "xoxp-e2e-dm" : "xoxb-e2e-dm", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch(handlers, async () => {
+					const { api, defs, handlers: extensionHandlers } = makeMockApi();
+					slackExtension(api);
+					await extensionHandlers.session_start({}, makeFakeCtx(cwd));
+					const def = defs.find((definition) => definition.name === tool)!;
+					try {
+						run.result = (await def.execute(
+							"tc1",
+							params as never,
+							new AbortController().signal,
+							() => {},
+							undefined as never,
+						)) as never;
+					} catch (err) {
+						run.error = err as Error;
+					}
+				});
+			});
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	return run;
+}
+
+function methodsOf(run: DmRun, ...names: string[]): string[] {
+	return run.calls.map((call) => call.method).filter((method) => names.includes(method));
+}
+
+test("slack_post as user with a raw user ID opens the DM and posts to the returned D... id", async () => {
+	const run = await runDmTool("slack_post", "SLACK_USER_TOKEN", { as: "user", channel: "U000ABC", text: "hello" }, {});
+	assert.equal(run.error, undefined, run.error?.message ?? "expected no error");
+	assert.deepEqual(methodsOf(run, "users.list", "conversations.open", "chat.postMessage"), [
+		"conversations.open",
+		"chat.postMessage",
+	]);
+	assert.equal(run.calls.find((call) => call.method === "conversations.open")!.params.users, "U000ABC");
+	assert.equal(run.calls.find((call) => call.method === "chat.postMessage")!.params.channel, "D000XYZ");
+	assert.match(run.result!.content[0].text, /channel D000XYZ \| ts 1111\.1/);
+});
+
+test("slack_post as bot with @name surfaces Slack's missing_scope from conversations.open unchanged", async () => {
+	const run = await runDmTool(
+		"slack_post",
+		"SLACK_BOT_TOKEN",
+		{ as: "bot", channel: "@bob", text: "hello" },
+		{ "conversations.open": () => ({ ok: false, error: "missing_scope", needed: "im:write" }) },
+	);
+	assert.ok(run.error, "expected the tool to throw");
+	assert.equal(
+		run.error.message,
+		'missing_scope: missing_scope: the token passed to this call does not have the "im:write" scope. (identity: bot)',
+	);
+	assert.deepEqual(methodsOf(run, "chat.postMessage"), []);
+});
+
+test("slack_thread with @name resolves the user, opens the DM, and reads replies from the D... id", async () => {
+	const run = await runDmTool("slack_thread", "SLACK_USER_TOKEN", { channel: "@bob", ts: "1111.1" }, {});
+	assert.equal(run.error, undefined, run.error?.message ?? "expected no error");
+	assert.deepEqual(methodsOf(run, "users.list", "conversations.open", "conversations.replies"), [
+		"users.list",
+		"conversations.open",
+		"conversations.replies",
+	]);
+	assert.equal(run.calls.find((call) => call.method === "conversations.replies")!.params.channel, "D000XYZ");
+});
+
+test("slack_thread with a permalink ignores channel entirely - no users.list, no conversations.open", async () => {
+	const run = await runDmTool(
+		"slack_thread",
+		"SLACK_USER_TOKEN",
+		{ channel: "@bob", permalink: "https://x.slack.com/archives/C123/p1111100000" },
+		{},
+	);
+	assert.equal(run.error, undefined, run.error?.message ?? "expected no error");
+	assert.deepEqual(methodsOf(run, "users.list", "conversations.open"), []);
+	assert.equal(run.calls.find((call) => call.method === "conversations.replies")!.params.channel, "C123");
+});
+
 test("slack_cache_refresh execute: zero emails out of N users names the missing scope in the content string", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-cache-refresh-"));
 	try {

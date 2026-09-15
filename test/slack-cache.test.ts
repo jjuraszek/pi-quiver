@@ -232,16 +232,123 @@ test("resolveChannel: exhaustion throws SlackError name_not_found", async () => 
 
 // --- 7b: name/type-position rejections ---
 
-test("resolveChannel: rejects @name - user names are not accepted in a channel position", async () => {
-	const dir = tmpDir("quiver-slack-badchan-");
+test("resolveChannel: @name resolves the user then opens the DM and returns the D... id", async () => {
+	const dir = tmpDir("quiver-slack-dm-name-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall, calls } = scriptedApiCall([
+		{
+			method: "users.list",
+			result: { members: [{ id: "U000BOB", name: "bob", profile: {} }], response_metadata: { next_cursor: "" } },
+		},
+		{ method: "conversations.open", result: { ok: true, channel: { id: "D000XYZ" } } },
+	]);
+	const id = await resolveChannel("@bob", { apiCall, token: "tok", filePath });
+	assert.equal(id, "D000XYZ");
+	assert.deepEqual(calls.map((c) => c.method), ["users.list", "conversations.open"]);
+	assert.deepEqual(calls[1].params, { users: "U000BOB" });
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: raw user ID opens the DM with exactly one conversations.open and no users.list", async () => {
+	const dir = tmpDir("quiver-slack-dm-raw-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall, calls } = scriptedApiCall([
+		{ method: "conversations.open", result: { ok: true, channel: { id: "D000XYZ" } } },
+	]);
+	const id = await resolveChannel("U000ABC", { apiCall, token: "tok", filePath });
+	assert.equal(id, "D000XYZ");
+	assert.deepEqual(calls, [{ method: "conversations.open", params: { users: "U000ABC" } }]);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: an existing D... id passes through with zero apiCall invocations", async () => {
+	const dir = tmpDir("quiver-slack-dm-passthru-");
 	const filePath = join(dir, "does-not-exist.json");
 	const { apiCall, calls } = scriptedApiCall([]);
-	await assert.rejects(
-		() => resolveChannel("@bob", { apiCall, token: "tok", filePath }),
-		(err: unknown) => err instanceof SlackError && err.code === "invalid_channel",
-	);
+	assert.equal(await resolveChannel("D000XYZ", { apiCall, token: "tok", filePath }), "D000XYZ");
 	assert.equal(calls.length, 0);
-	assert.equal(existsSync(filePath), false);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: unknown @name exhausts users.list -> name_not_found, never calls conversations.open", async () => {
+	const dir = tmpDir("quiver-slack-dm-unknown-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall, calls } = scriptedApiCall([
+		{ method: "users.list", result: { members: [], response_metadata: { next_cursor: "" } } },
+	]);
+	await assert.rejects(
+		() => resolveChannel("@nope", { apiCall, token: "tok", filePath }),
+		(err: unknown) => err instanceof SlackError && err.code === "name_not_found",
+	);
+	assert.deepEqual(calls.map((c) => c.method), ["users.list"]);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: a conversations.open SlackError propagates unchanged (same instance, code, message)", async () => {
+	const dir = tmpDir("quiver-slack-dm-err-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const original = new SlackError("cannot_dm_bot", "cannot_dm_bot", { ok: false, error: "cannot_dm_bot" });
+	const { apiCall } = scriptedApiCall([{ method: "conversations.open", error: original }]);
+	await assert.rejects(
+		() => resolveChannel("U000ABC", { apiCall, token: "tok", filePath }),
+		(err: unknown) => err === original && (err as SlackError).code === "cannot_dm_bot" && (err as SlackError).message === "cannot_dm_bot",
+	);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: conversations.open ok:true without channel.id -> unexpected_response", async () => {
+	const dir = tmpDir("quiver-slack-dm-shape-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const { apiCall } = scriptedApiCall([{ method: "conversations.open", result: { ok: true } }]);
+	await assert.rejects(
+		() => resolveChannel("U000ABC", { apiCall, token: "tok", filePath }),
+		(err: unknown) => err instanceof SlackError && err.code === "unexpected_response",
+	);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveChannel: conversations.open is called with retry:true and the ctx signal", async () => {
+	const dir = tmpDir("quiver-slack-dm-opts-");
+	const filePath = join(dir, "cache.json");
+	writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+	const controller = new AbortController();
+	const seen: { method: string; opts?: { retry?: boolean; signal?: AbortSignal } }[] = [];
+	const apiCall: ApiCall = async (method, _token, _params, opts) => {
+		seen.push({ method, opts });
+		return { ok: true, channel: { id: "D000XYZ" } };
+	};
+	await resolveChannel("U000ABC", { apiCall, token: "tok", filePath, signal: controller.signal });
+	assert.equal(seen.length, 1);
+	assert.equal(seen[0].method, "conversations.open");
+	assert.deepEqual(seen[0].opts, { retry: true, signal: controller.signal });
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("resolveUser: cached display-name alias is trusted only when snapshot_at is present", async () => {
+	const dir = tmpDir("quiver-slack-user-alias-trust-");
+	const withoutPath = join(dir, "without.json");
+	const withPath = join(dir, "with.json");
+	const users = { alice: { id: "U01ALICE", display_name: "bob", real_name: "Alice A" } };
+	writeCacheFile(withoutPath, { team_id: "T1", channels: {}, users, refreshed_at: "x" });
+	writeCacheFile(withPath, { team_id: "T1", channels: {}, users, refreshed_at: "x", snapshot_at: "x" });
+
+	const live = scriptedApiCall([
+		{
+			method: "users.list",
+			result: { members: [{ id: "U000BOB", name: "bob", profile: {} }], response_metadata: { next_cursor: "" } },
+		},
+	]);
+	assert.equal(await resolveUser("@bob", { apiCall: live.apiCall, token: "tok", filePath: withoutPath }), "U000BOB");
+	assert.deepEqual(live.calls.map((c) => c.method), ["users.list"]);
+
+	const cached = scriptedApiCall([]);
+	assert.equal(await resolveUser("@bob", { apiCall: cached.apiCall, token: "tok", filePath: withPath }), "U01ALICE");
+	assert.equal(cached.calls.length, 0);
 	rmSync(dir, { recursive: true, force: true });
 });
 

@@ -2,6 +2,7 @@
 
 > **Superseded by:** [doc/specs/2026-09-01-gh-9-slack-repo-policy-gap.md](./2026-09-01-gh-9-slack-repo-policy-gap.md) - the Goal's "house policy stays out of the extension" stance only; the tool contract, cache model, and announce protocol remain current.
 > **Superseded by:** [doc/specs/2026-10-01-gh-22-slack-user-level-env.md](./2026-10-01-gh-22-slack-user-level-env.md) - `### Tokens` section only (two-rung ladder and its stop rule)
+> **Superseded by:** [doc/specs/2026-09-15-gh-20-slack-dm-user-channel.md](./2026-09-15-gh-20-slack-dm-user-channel.md) - channel resolution / "opening a DM is out of scope" stance only
 
 Ticket: https://github.com/jjuraszek/pi-quiver/issues/7
 Depends on: gh-8 nested `quiver.*` settings root (shipped, `24a20db`; contract in

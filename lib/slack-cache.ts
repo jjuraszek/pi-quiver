@@ -119,13 +119,21 @@ function toUserEntry(u: SlackUser): UserEntry {
 	};
 }
 
+/** DM conversations are opened per identity: Slack returns the existing D... for a repeat call, so this is idempotent and safe to retry. */
+async function openDm(userId: string, ctx: CacheCtx): Promise<string> {
+	const data = await ctx.apiCall("conversations.open", ctx.token, { users: userId }, { retry: true, signal: ctx.signal });
+	const channel = data.channel as { id?: unknown } | undefined;
+	if (typeof channel?.id !== "string") {
+		throw new SlackError("unexpected_response", 'conversations.open returned an unexpected response: missing "channel.id".');
+	}
+	return channel.id;
+}
+
 export async function resolveChannel(input: string, ctx: CacheCtx): Promise<string> {
 	if (RAW_CHANNEL_ID.test(input)) return input;
-	if (input.startsWith("@")) {
-		throw new SlackError(
-			"invalid_channel",
-			`"${input}" looks like a user name, which is not accepted in a channel position (opening a DM is out of scope).`,
-		);
+	if (RAW_USER_ID.test(input) || input.startsWith("@")) {
+		const userId = await resolveUser(input, ctx);
+		return openDm(userId, ctx);
 	}
 	const name = stripPrefix(input);
 
@@ -189,22 +197,26 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 		const byUsername = cached.users[name];
 		if (byUsername) return byUsername.id;
 
-		const displayMatches = Object.values(cached.users).filter((u) => u.display_name === name);
-		if (displayMatches.length === 1) return displayMatches[0].id;
-		if (displayMatches.length > 1) {
-			throw new SlackError(
-				"ambiguous_user",
-				`Multiple users have display name "${name}": ${displayMatches.map((u) => u.id).join(", ")}.`,
-			);
-		}
+		// Same gate as resolveMentions' aliasTrusted: an alias match is conclusive only against a
+		// complete workspace snapshot; a partial cache may hold a different person with that alias.
+		if (cached.snapshot_at !== undefined) {
+			const displayMatches = Object.values(cached.users).filter((u) => u.display_name === name);
+			if (displayMatches.length === 1) return displayMatches[0].id;
+			if (displayMatches.length > 1) {
+				throw new SlackError(
+					"ambiguous_user",
+					`Multiple users have display name "${name}": ${displayMatches.map((u) => u.id).join(", ")}.`,
+				);
+			}
 
-		const realMatches = Object.values(cached.users).filter((u) => u.real_name === name);
-		if (realMatches.length === 1) return realMatches[0].id;
-		if (realMatches.length > 1) {
-			throw new SlackError(
-				"ambiguous_user",
-				`Multiple users have real name "${name}": ${realMatches.map((u) => u.id).join(", ")}.`,
-			);
+			const realMatches = Object.values(cached.users).filter((u) => u.real_name === name);
+			if (realMatches.length === 1) return realMatches[0].id;
+			if (realMatches.length > 1) {
+				throw new SlackError(
+					"ambiguous_user",
+					`Multiple users have real name "${name}": ${realMatches.map((u) => u.id).join(", ")}.`,
+				);
+			}
 		}
 	}
 
