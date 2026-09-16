@@ -1,5 +1,7 @@
 # Herdr tab sink: tolerate the `* ` armed prefix
 
+> **Superseded by:** [doc/specs/2026-09-16-herdr-tab-reorder-resilience.md](./2026-09-16-herdr-tab-reorder-resilience.md) - ownership comparison at claim time in `## Design` only (prefix tolerance stands)
+
 Ticket: jjuraszek/pi-quiver#19. Supersedes the ownership-comparison scope of
 [doc/specs/2026-09-01-herdr-tab-name-sync.md](./2026-09-01-herdr-tab-name-sync.md)
 (`### Write path and claim-once state machine`, `### Restore on shutdown`,

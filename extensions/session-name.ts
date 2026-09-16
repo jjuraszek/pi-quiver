@@ -173,12 +173,15 @@ export function isGhosttyActive(
 }
 
 export function toTabLabel(name: string, maxWords = 4): string {
-	return name
+	const label = name
 		.replace(/[\u0000-\u001f\u007f]/g, " ")
 		.split(/\s+/)
 		.filter(Boolean)
 		.slice(0, maxWords)
 		.join(" ");
+	// A bare number is Herdr's "unnamed tab" vocabulary; our own label must
+	// never look like one or a successor session would treat it as claimable.
+	return /^\d+$/.test(label) ? `#${label}` : label;
 }
 
 /**
@@ -338,6 +341,7 @@ export function buildNamingPrompt(conversation: string, opts: PromptOptions = {}
 		"- Describe the actual task, NOT the tool/skill/command used to start it.",
 		"- Lead with an action verb (e.g. refine, fix, add, rework).",
 		"- Preserve ticket/issue IDs (e.g. ABC-123, PROJ-42, #99) verbatim.",
+		"- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Never reply with digits only.",
 		"- No quotes, no trailing punctuation, plain ASCII.",
 		...rules.map((r) => `- ${r}`),
 		"Example -> SESSION: Refine Linear Ticket ABC-123 / TAB: Refine ABC-123",
@@ -496,12 +500,15 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		if (currentTabLabel) renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
 	};
 
-	// Herdr sink. Claim-once: adopt the tab only while it shows its default
-	// (position) label; a human rename - before or during the session - wins
-	// permanently. The one exception is exactly one leading "* ": that is
-	// herdr-ntfy-notify's armed marker, ignored for ownership and carried
-	// through on every write. All syncs serialize on one chain so overlapping
-	// hooks never interleave a read with a rename.
+	// Herdr sink. A tab is claimable while its label is a bare number - Herdr's
+	// vocabulary for "unnamed", and the only label this extension or
+	// herdr-ntfy-notify ever write back - regardless of position: Herdr stores a
+	// renamed number as a permanent custom label that reorders never update. A
+	// non-numeric label is a human's and is never overwritten; it is re-checked
+	// each turn so a tab renumbered by hand becomes claimable again. Exactly one
+	// leading "* " is herdr-ntfy-notify's armed marker, ignored for ownership and
+	// carried through on every write. All syncs serialize on one chain so
+	// overlapping hooks never interleave a read with a rename.
 	// Used both for turn_start syncs (bounds a wedged-but-accepting Herdr so it
 	// can't stall the turn) and for the session_end restore.
 	const HERDR_TIMEOUT_MS = 500;
@@ -514,44 +521,42 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	};
 
 	const ARMED_PREFIX = "* ";
+	const NUMERIC = /^\d+$/;
 	const matchOwned = (live: string, expected: string): { owned: boolean; armed: boolean } => {
 		if (live === expected) return { owned: true, armed: false };
 		if (live === ARMED_PREFIX + expected) return { owned: true, armed: true };
 		return { owned: false, armed: false };
 	};
+	const matchClaimable = (live: string): { claimable: boolean; armed: boolean } => {
+		if (NUMERIC.test(live)) return { claimable: true, armed: false };
+		if (live.startsWith(ARMED_PREFIX) && NUMERIC.test(live.slice(ARMED_PREFIX.length))) return { claimable: true, armed: true };
+		return { claimable: false, armed: false };
+	};
 
 	const syncHerdrTab = (cfg: Config, label: string | null, mode: Mode | undefined): Promise<void> => {
 		const run = async (): Promise<void> => {
 			if (!cfg.herdrTab || mode !== "tui" || !label) return;
-			if (herdrClaim === "backed-off") return;
 			if (!isHerdrActive()) return;
 			const sock = process.env.HERDR_SOCKET_PATH as string;
 			const tabId = process.env.HERDR_TAB_ID as string;
-			if (herdrClaim === null) {
-				const tabs = await listTabs(sock, HERDR_TIMEOUT_MS);
-				if (!tabs) return; // transient; retry next sync
-				const position = positionOf(tabs, tabId);
-				if (position === -1) return; // stale tab id (pane moved); retry harmlessly
-				const own = tabs.find((t) => t.tab_id === tabId)!;
-				const owned = matchOwned(own.label, String(position));
-				if (!owned.owned) {
-					herdrClaim = "backed-off"; // human (or crashed predecessor) owns it
+			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
+			if (!live) return; // transient or stale tab id; a failed read is never a human rename
+			if (typeof herdrClaim === "object" && herdrClaim !== null) {
+				const owned = matchOwned(live.label, herdrClaim.lastWritten);
+				if (owned.owned) {
+					if (label === herdrClaim.lastWritten) return;
+					if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
 					return;
 				}
-				if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) {
-					herdrClaim = { lastWritten: label };
-				}
+			}
+			const claim = matchClaimable(live.label);
+			if (!claim.claimable) {
+				herdrClaim = "backed-off"; // human owns it until the label is numeric again
 				return;
 			}
-			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
-			if (!live) return; // failed read is not a human rename; stay claimed
-			const owned = matchOwned(live.label, herdrClaim.lastWritten);
-			if (!owned.owned) {
-				herdrClaim = "backed-off";
-				return;
+			if (await renameTab(sock, tabId, (claim.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) {
+				herdrClaim = { lastWritten: label };
 			}
-			if (label === herdrClaim.lastWritten) return;
-			if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
 		};
 		herdrChain = herdrChain.then(run, run);
 		return herdrChain;
@@ -595,6 +600,10 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Every session claims afresh, exactly like a fresh process: /new, resume,
+		// and fork each tear the previous session down (restore included) first.
+		// Before loadConfig so `enabled: false, herdrTab: true` resets too.
+		herdrClaim = null;
 		const cfg = loadConfig(ctx);
 		if (!cfg.enabled) return; // off by default; opt in via settings.json
 		const current = pi.getSessionName();
@@ -646,9 +655,9 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	});
 
 	// Restore the numeric label on every teardown reason (quit/reload/new/
-	// resume/fork): a successor session in this pane must find the default so
-	// claim-once stays sound. The restored label is internally a custom name -
-	// Herdr has no clear-to-auto API - so it looks right but won't renumber.
+	// resume/fork) so the pane reads as unnamed again. The restored label is
+	// internally a custom name - Herdr has no clear-to-auto API - so it won't
+	// renumber on reorders; the successor claims any numeric label regardless.
 	pi.on("session_shutdown", async () => {
 		await restoreHerdrTab();
 	});

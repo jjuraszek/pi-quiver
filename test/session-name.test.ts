@@ -67,6 +67,13 @@ test("toTabLabel: strips control chars and collapses whitespace", () => {
 	assert.equal(toTabLabel("  padded   words  "), "padded words");
 });
 
+test("toTabLabel: a digits-only label becomes #<digits>, typed and prefixed IDs are untouched", () => {
+	assert.equal(toTabLabel("1234"), "#1234");
+	assert.equal(toTabLabel("PR 1234"), "PR 1234");
+	assert.equal(toTabLabel("#1234"), "#1234");
+	assert.equal(toTabLabel("Refine ABC-123"), "Refine ABC-123");
+});
+
 test("coerce: boolean shorthand enables/disables everything", () => {
 	assert.deepEqual(coerce(true), { enabled: true, ghosttyTab: true, herdrTab: true });
 	assert.deepEqual(coerce(false), { enabled: false, ghosttyTab: false, herdrTab: false });
@@ -204,6 +211,14 @@ test("buildNamingPrompt: user rules land after the built-ins so they win", () =>
 	assert.ok(builtIn > -1 && custom > builtIn, "custom rule must follow the built-in it overrides");
 });
 
+test("buildNamingPrompt: typed-ID rule follows the preserve-IDs rule and precedes user rules", () => {
+	const prompt = buildNamingPrompt("User: hi", { rules: ["Never lead with a verb"] });
+	const preserve = prompt.indexOf("- Preserve ticket/issue IDs");
+	const typed = prompt.indexOf("- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Never reply with digits only.");
+	const custom = prompt.indexOf("- Never lead with a verb");
+	assert.ok(preserve > -1 && typed > preserve && custom > typed, "order: preserve-IDs, typed-ID, user rule");
+});
+
 test("buildNamingPrompt: no current name means no KEEP option offered", () => {
 	const prompt = buildNamingPrompt("User: hi");
 	assert.ok(!prompt.includes("KEEP"));
@@ -310,7 +325,7 @@ function extensionHarness(
 		notifications,
 		runAgentSettled,
 		getName: () => name,
-		setExternalName: (next: string) => { name = next; },
+		setExternalName: (next: string | undefined) => { name = next; },
 		destroy: () => rmSync(cwd, { recursive: true, force: true }),
 	};
 }
@@ -568,6 +583,15 @@ test("parseGeneratedName: tab label is capped to 4 words", () => {
 	assert.equal(got?.tabLabel, "one two three four");
 });
 
+test("parseGeneratedName: digits-only TAB line is prefixed with #", () => {
+	const got = parseGeneratedName("SESSION: Review pull request 1234\nTAB: 1234");
+	assert.equal(got?.tabLabel, "#1234");
+});
+
+test("parseGeneratedName: digits-only session name with no TAB line yields #<digits>", () => {
+	assert.equal(parseGeneratedName("SESSION: 1234")?.tabLabel, "#1234");
+});
+
 test("parseGeneratedName: no SESSION line → undefined", () => {
 	assert.equal(parseGeneratedName("TAB: only a tab"), undefined);
 	assert.equal(parseGeneratedName("no markers at all"), undefined);
@@ -629,6 +653,105 @@ test("herdr sync: backs off on non-default first read", async () => {
 	}
 });
 
+test("herdr sync: claims a numeric label that does not match the tab's position (reorder before first name)", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t4", workspace_id: "w1", label: "4", number: 4 }, // moved to slot 1, label stayed "4"
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t4");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("Verify E-3108 Leg 2");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames, [{ tab_id: "w1:t4", label: "Verify E-3108 Leg 2" }]);
+		assert.deepEqual(fake.requests, ["tab.get", "tab.rename"], "claim reads only its own tab");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: claims an armed numeric label at a different position and keeps the marker", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t7", workspace_id: "w1", label: "* 7", number: 7 },
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t7");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t7", label: "* E-42 naming rules" });
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: re-claims when the label reverts to a bare number after our claim", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "4"; // renumbered by hand or by an ntfy stale-read race
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 naming rules" }, "numeric label is re-claimed");
+
+		// lastWritten was updated: a same-name turn is a no-op, a new name writes bare.
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 2);
+		h.setExternalName("E-42 mature context");
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 mature context" });
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: a backed-off tab is claimed once it shows a bare number again", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("E-42 naming rules");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		own.label = "Deploy";
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1, "human label backs off");
+		assert.equal(own.label, "Deploy");
+
+		own.label = "5";
+		await h.hooks.get("turn_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t2", label: "E-42 naming rules" }, "numeric again: claimed");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
 test("herdr sync: backs off on mid-session external rename", async () => {
 	const fake = fakeHerdr([
 		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
@@ -648,7 +771,7 @@ test("herdr sync: backs off on mid-session external rename", async () => {
 		assert.equal(fake.renames.length, 1, "no new rename after human intervened");
 
 		await h.hooks.get("turn_start")!({}, h.ctx);
-		assert.equal(fake.renames.length, 1, "renames stay frozen once backed off");
+		assert.equal(fake.renames.length, 1, "a non-numeric foreign label is never overwritten");
 		assert.equal(own.label, "mine now");
 	} finally {
 		restore();
@@ -754,6 +877,113 @@ test("herdr sync: does not restore when the live label differs from ours", async
 		own.label = "mine now";
 		await h.hooks.get("session_shutdown")!({}, h.ctx);
 		assert.equal(own.label, "mine now", "human label wins, no restore write");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: /new in one install restores, resets the claim, and re-claims on the next auto-name", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([{ sessionName: "Second task here", tabLabel: "Second task" }]);
+	try {
+		h.setExternalName("First task");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("session_shutdown")!({}, h.ctx); // /new tears the session down
+
+		// reorder: label stays "2", position is now 1
+		fake.tabs.unshift(fake.tabs.splice(1, 1)[0]!);
+		h.setExternalName(undefined); // pi presents an unnamed successor session
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("agent_end")!({}, h.ctx);
+
+		assert.deepEqual(fake.renames.map((r) => r.label), ["First task", "2", "Second task"]);
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: resume in one install claims a numeric label at a different position", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t3", workspace_id: "w1", label: "3", number: 3 },
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t3");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("First task");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(fake.renames.length, 1);
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t3")!;
+		own.label = "Deploy";
+		await h.hooks.get("turn_start")!({}, h.ctx); // backed off
+		await h.hooks.get("session_shutdown")!({}, h.ctx); // human label: no restore
+		assert.equal(own.label, "Deploy");
+
+		own.label = "3"; // the human handed the tab back
+		h.setExternalName("Resumed task");
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.deepEqual(fake.renames.at(-1), { tab_id: "w1:t3", label: "Resumed task" }, "session_start reset the claim; numeric label claimed");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: shutdown enqueued behind a delayed first claim still restores the position", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t4", workspace_id: "w1", label: "4", number: 4 },
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+	], { delayMs: 5 });
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t4");
+	const h = extensionHarness([]);
+	try {
+		h.setExternalName("First task");
+		const claim = h.hooks.get("turn_start")!({}, h.ctx); // tab.get in flight
+		const shutdown = h.hooks.get("session_shutdown")!({}, h.ctx); // queued behind it
+		await Promise.all([claim, shutdown]);
+		assert.deepEqual(fake.renames.map((r) => r.label), ["First task", "1"], "restore reads the claim when it runs, not when it was enqueued");
+	} finally {
+		restore();
+		h.destroy();
+		await fake.close();
+	}
+});
+
+test("herdr sync: a successor never inherits the predecessor's claim on a non-numeric label", async () => {
+	const fake = fakeHerdr([
+		{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 },
+		{ tab_id: "w1:t2", workspace_id: "w1", label: "2", number: 2 },
+	]);
+	await fake.listening;
+	const restore = withHerdrEnv(fake.clientPath, "w1:t2");
+	const h = extensionHarness([{ sessionName: "Second task here", tabLabel: "Second task" }]);
+	try {
+		h.setExternalName("First task");
+		await h.hooks.get("session_start")!({}, h.ctx);
+
+		fake.setFailReads(true);
+		await h.hooks.get("session_shutdown")!({}, h.ctx);
+		fake.setFailReads(false);
+
+		h.setExternalName(undefined);
+		await h.hooks.get("session_start")!({}, h.ctx);
+		await h.hooks.get("agent_end")!({}, h.ctx);
+
+		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
+		assert.equal(own.label, "First task");
+		assert.equal(fake.renames.some((r) => r.label === "Second task"), false);
 	} finally {
 		restore();
 		h.destroy();
@@ -942,7 +1172,7 @@ test("herdr sync: overlapping syncs serialize (no interleaved read/write)", asyn
 	try {
 		h.setExternalName("E-42 naming rules");
 		await h.hooks.get("session_start")!({}, h.ctx);
-		assert.deepEqual(fake.requests, ["tab.list", "tab.rename"], "claim: read-then-write");
+		assert.deepEqual(fake.requests, ["tab.get", "tab.rename"], "claim: read-then-write");
 
 		// Two turn_start calls fired back-to-back, deliberately not awaited
 		// between them, each changing the name so both must write. If the
