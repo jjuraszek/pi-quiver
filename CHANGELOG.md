@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.3.0 - 2026-09-16
 
 - `session-name` Herdr sink claims any numeric tab label (optionally behind one `* `) at any position instead of only the label equal to the tab's live position, so tabs reordered before the first auto-name - or after a `/new` restore - get named; the claim resets at every `session_start` (`/new`, resume, fork behave like a fresh process) and a tab that reverts to a bare number is re-claimed on the next turn. The extension never writes a digits-only label (`1234` -> `#1234`) and the naming prompt asks for `PR 1234` / `issue 123` / `ticket ABC-123` over a bare ID.
 
