@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.3.1 - 2026-09-25
 
 - `provider-stall-watchdog` recovers again on pi >= 0.86 ([#23](https://github.com/jjuraszek/pi-quiver/issues/23)): pi's session abort now fences the run so its retry loop never runs after a watchdog abort; the watchdog omits the aborted attempt from the model's context at `turn_end` and re-drives the request itself via a hidden custom message after pi's backoff, honoring pi's `retry.enabled` / `retry.baseDelayMs` / `retry.maxAgentDelayMs` live and the existing `maxStallRetries` cap. Print/json await the backoff; TUI/RPC show `Retrying (n/m) in Ns... (Esc to cancel)` in the status bar on the timer path. In TUI, Esc, a new prompt, a tree switch, or compaction cancels the pending retry; RPC cancels on a new prompt, not Esc. Behavior guide: `doc/provider-stall-watchdog.md`. Dev dependencies on `@earendil-works/*` move to `^0.87.1`.
 
