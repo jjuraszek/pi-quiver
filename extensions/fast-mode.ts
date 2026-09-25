@@ -28,7 +28,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Context, Model, StreamOptions, Usage } from "@earendil-works/pi-ai";
+import type { Context, Model, StreamOptions, TranscriptContext, Usage } from "@earendil-works/pi-ai";
 import { resolveConfig } from "../lib/extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
@@ -163,7 +163,7 @@ export async function probePiBetaHeader(
 	};
 	try {
 		const { anthropicMessagesApi } = await import("@earendil-works/pi-ai/compat");
-		const stream = anthropicMessagesApi().stream(model, PROBE_CONTEXT, options);
+		const stream = anthropicMessagesApi().stream(model, PROBE_CONTEXT as TranscriptContext, options);
 		await stream.result().catch(() => {});
 	} catch {
 		return captured;

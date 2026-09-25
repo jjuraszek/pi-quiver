@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Type, createAssistantMessageEventStream, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { Type, createAssistantMessageEventStream, isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai";
 import {
 	DefaultResourceLoader,
 	ModelRuntime,
@@ -16,6 +16,8 @@ import providerStallWatchdog, {
 	MAX_TIMER_MS,
 	coerce,
 	createProviderStallWatchdog,
+	redriveDelayMs,
+	resolveRetrySettings,
 	resolveWatchdogConfig,
 	validateConfig,
 	type ConfigCandidate,
@@ -94,23 +96,29 @@ test("validateConfig accepts Node's maximum timer delay", () => {
 function withSettings(
 	globalSettings: unknown,
 	projectSettings: unknown,
-	assertion: (cwd: string) => void,
-): void {
+	assertion: (cwd: string) => void | Promise<void>,
+): Promise<void> | void {
 	const root = mkdtempSync(join(tmpdir(), "provider-stall-watchdog-"));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const cleanup = () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(root, { recursive: true, force: true });
+	};
 	try {
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalSettings));
 		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(projectSettings));
 		process.env.PI_CODING_AGENT_DIR = agentDir;
-		assertion(cwd);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		rmSync(root, { recursive: true, force: true });
+		const result = assertion(cwd);
+		if (result instanceof Promise) return result.finally(cleanup);
+		cleanup();
+	} catch (error) {
+		cleanup();
+		throw error;
 	}
 }
 
@@ -178,6 +186,34 @@ test("maxStallRetries defaults to layered retry.maxRetries and explicit config w
 	);
 });
 
+test("resolveRetrySettings layers retry settings with defaults and validation", () => {
+	withSettings({}, {}, (cwd) => {
+		assert.deepEqual(resolveRetrySettings(cwd), { enabled: true, baseDelayMs: 2_000, maxAgentDelayMs: 60_000 });
+	});
+	withSettings(
+		{ retry: { enabled: false, baseDelayMs: 10, maxAgentDelayMs: 40 } },
+		{ retry: { baseDelayMs: 5 } },
+		(cwd) => {
+			assert.deepEqual(resolveRetrySettings(cwd), { enabled: false, baseDelayMs: 5, maxAgentDelayMs: 40 });
+		},
+	);
+	withSettings(
+		{ retry: { enabled: "no", baseDelayMs: -1, maxAgentDelayMs: 1.5 } },
+		{ retry: "bad" },
+		(cwd) => {
+			assert.deepEqual(resolveRetrySettings(cwd), { enabled: true, baseDelayMs: 2_000, maxAgentDelayMs: 60_000 });
+		},
+	);
+});
+
+test("redriveDelayMs matches pi's retry backoff and clamps to Node's timer ceiling", () => {
+	const settings = { enabled: true, baseDelayMs: 2_000, maxAgentDelayMs: 60_000 };
+	for (const attempt of [0, 1, 2, 3, 6, 40]) {
+		assert.equal(redriveDelayMs(settings, attempt), retryDelayMs(settings, attempt), `attempt ${attempt}`);
+	}
+	assert.equal(redriveDelayMs({ baseDelayMs: 1, maxAgentDelayMs: MAX_TIMER_MS + 5 }, 40), MAX_TIMER_MS);
+});
+
 test("settings layers let invalid project values override valid global values and fail closed", () => {
 	withSettings(
 		{ quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } },
@@ -211,13 +247,23 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 	const statuses: Array<[string, string | undefined]> = [];
 	const notifications: Array<[string, string | undefined]> = [];
 	let aborts = 0;
+	const sent: Array<[any, any]> = [];
+	const sendControl = { fail: false };
+	let terminalInput: ((data: string) => any) | undefined;
 	let controller = new AbortController();
 	const ctx = {
 		mode,
 		cwd,
 		hasUI: mode === "tui" || mode === "rpc",
 		signal: controller.signal,
-		ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), notify: (text: string, type?: string) => notifications.push([text, type]) },
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+			onTerminalInput: (handler: (data: string) => any) => {
+				terminalInput = handler;
+				return () => { terminalInput = undefined; };
+			},
+			notify: (text: string, type?: string) => notifications.push([text, type]),
+		},
 		abort: () => { aborts += 1; controller.abort(); },
 	};
 	createProviderStallWatchdog({
@@ -228,7 +274,7 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 			return handle;
 		},
 		clearTimeout: (handle) => { timers.delete(handle as number); },
-	})({ on: (event: string, handler: Handler) => handlers.set(event, handler) } as never);
+	})({ on: (event: string, handler: Handler) => handlers.set(event, handler), sendMessage: (message: any, options: any) => { if (sendControl.fail) throw new Error("session disposed"); sent.push([message, options]); } } as never);
 	return {
 		emit: (event: string, payload: Record<string, unknown> = {}) => handlers.get(event)?.({ type: event, ...payload }, ctx),
 		advance: (ms: number) => { now += ms; for (;;) { const due = [...timers.entries()].filter(([, timer]) => timer.at <= now).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; timers.delete(due[0]); due[1].callback(); } },
@@ -241,7 +287,9 @@ function watchdogHarness(mode = "tui", cwd = process.cwd()) {
 		abortCurrentSignal: () => controller.abort(),
 		get now() { return now; },
 		get aborts() { return aborts; },
-		timers, statuses, notifications,
+		pressKey: (key: string) => terminalInput?.(key),
+		get statusText() { return statuses.at(-1)?.[1]; },
+		sent, sendControl, timers, statuses, notifications,
 	};
 }
 
@@ -317,8 +365,8 @@ test("resolveRetryMaxRetries: quiver.retry is never consulted", () => {
 	});
 });
 
-function withEnabledWatchdog(assertion: (cwd: string) => void): void {
-	withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } }, assertion);
+function withEnabledWatchdog(assertion: (cwd: string) => void | Promise<void>): void | Promise<void> {
+	return withSettings({}, { quiver: { providerStallWatchdog: { enabled: true, warningMs: 10, recoveryMs: 20 } } }, assertion);
 }
 
 test("every mode arms the first-event deadline with no preceding input or before_agent_start; only TUI arms mid-stream", () => {
@@ -590,6 +638,129 @@ test("a successful assistant turn resets the stall retry counter", () => {
 	});
 });
 
+test("converted abort appends omission and re-drives after delay in print mode", async () => {
+	await withSettings({}, { retry: { baseDelayMs: 5 }, quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20 } } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		h.emit("before_provider_request"); h.advance(5);
+		h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } });
+		const sibling = { type: "sibling" };
+		assert.deepEqual(h.emit("turn_end", { messageEntryId: "entry-1", entries: [sibling] }), { entries: [sibling, { type: "context_edit", targetId: "entry-1", replacement: null }] });
+		const settled = h.emit("agent_settled") as Promise<void>;
+		h.advance(4); assert.equal(h.sent.length, 0);
+		h.advance(1); await settled;
+		assert.deepEqual(h.sent, [[{ customType: "provider-stall-watchdog", content: "The previous provider request stalled before completing and was retried automatically. Continue.", display: false }, { triggerTurn: true }]]);
+	});
+});
+
+test("TUI pending re-drive shows countdown and Esc cancels it", async () => {
+	await withEnabledWatchdog(async (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(20);
+		h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } });
+		h.emit("turn_end", { messageEntryId: "entry", entries: [] });
+		await h.emit("agent_settled");
+		assert.equal(h.statusText, "Retrying (1/3) in 2s... (Esc to cancel)");
+		assert.deepEqual(h.pressKey("x"), undefined, "non-Esc passes through");
+		assert.equal(h.statusText, "Retrying (1/3) in 2s... (Esc to cancel)");
+		assert.deepEqual(h.pressKey("\x1b"), { consume: true }); h.advance(2_000);
+		assert.equal(h.pressKey("\x1b"), undefined, "subscription is removed on cancellation");
+		assert.equal(h.sent.length, 0);
+		assert.equal(h.statusText, undefined);
+		assert.deepEqual(h.notifications.at(-1), ["Automatic retry cancelled; submit the message again to retry manually.", undefined]);
+	});
+});
+
+test("request-less re-drive error does not schedule another re-drive", async () => {
+	await withSettings({}, { ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 1 } } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		stallAndConvert(h);
+		const settled = h.emit("agent_settled") as Promise<void>;
+		h.advance(2_000); await settled;
+		h.emit("message_end", { message: { role: "assistant", stopReason: "error" } });
+		const second = h.emit("agent_settled") as Promise<void>;
+		h.advance(60_000);
+		await second;
+		assert.equal(h.sent.length, 1);
+		assert.deepEqual(h.notifications.at(-1), ["The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually.", undefined]);
+		h.newController(); h.emit("before_provider_request"); h.advance(5);
+		assert.deepEqual(h.notifications.at(-1), ["Provider sent no response for 5ms; stopping and retrying the request.", undefined], "the next stall starts a fresh chain rather than exhausting the budget");
+	});
+});
+
+test("RPC returns immediately and input cancels its armed timer silently", async () => {
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		const h = watchdogHarness("rpc", cwd);
+		stallAndConvert(h);
+		const result = h.emit("agent_settled") as Promise<void>;
+		const status = h.statusText;
+		const notices = h.notifications.length;
+		h.emit("input", { text: "hello", source: "interactive" });
+		h.advance(2_000);
+		await result;
+		assert.equal(status, "Retrying (1/3) in 2s... (Esc to cancel)");
+		assert.equal(h.sent.length, 0);
+		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined]);
+		assert.equal(h.notifications.length, notices);
+	});
+});
+
+test("TUI timer cancellation events clear status without a notice", async () => {
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		for (const event of ["input", "session_before_tree", "session_before_compact", "before_provider_request"]) {
+			const h = watchdogHarness("tui", cwd);
+			stallAndConvert(h); await h.emit("agent_settled");
+			const notices = h.notifications.length;
+			if (event === "before_provider_request") h.newController();
+			h.emit(event, event === "input" ? { text: "hello", source: "interactive" } : {});
+			if (event !== "before_provider_request") h.advance(2_000);
+			assert.equal(h.sent.length, 0, event);
+			assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined], event);
+			assert.equal(h.notifications.length, notices, event);
+		}
+	});
+});
+
+test("TUI input after re-drive send resets the chain before the user's request", async () => {
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		stallAndConvert(h); await h.emit("agent_settled");
+		h.advance(2_000);
+		assert.equal(h.sent.length, 1);
+		h.emit("input", { text: "new prompt", source: "interactive" });
+		h.newController(); h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(20);
+		assert.ok(h.notifications.at(-1)?.[0].includes("(1/3)"), "the user's request starts at retry 1, not continuation retry 2");
+		assert.equal(h.sent.length, 1, "the previous chain sent nothing else");
+	});
+});
+
+test("TUI countdown expires and its own continuation retains the stall budget", async () => {
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		stallAndConvert(h); await h.emit("agent_settled");
+		h.advance(1_000);
+		assert.equal(h.statusText, "Retrying (1/3) in 1s... (Esc to cancel)");
+		h.advance(1_000);
+		assert.equal(h.sent.length, 1);
+		assert.deepEqual(h.statuses.at(-1), ["providerStallWatchdog", undefined]);
+		h.newController(); h.emit("before_provider_request"); h.emit("message_start", messageStart()); h.advance(20);
+		assert.ok(h.notifications.at(-1)?.[0].includes("(2/3)"));
+	});
+});
+
+test("native retry completing successfully resets without degradation or re-drive", async () => {
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		stallAndConvert(h);
+		h.newController(); h.emit("before_provider_request");
+		h.emit("message_end", { message: { role: "assistant", stopReason: "stop" } });
+		h.emit("turn_end", { messageEntryId: "success", entries: [] });
+		const notices = h.notifications.length;
+		await h.emit("agent_settled");
+		assert.equal(h.sent.length, 0);
+		assert.equal(h.notifications.length, notices);
+	});
+});
+
 test("settlement only resets retry and reports an unavailable continuation", () => {
 	withEnabledWatchdog((cwd) => {
 		const h = watchdogHarness("tui", cwd);
@@ -618,6 +789,113 @@ test("invalid config disables once without timers", () => {
 	});
 });
 
+const RETRY_ON = { quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 5, warningMs: 10, recoveryMs: 20, maxStallRetries: 3 } }, retry: { enabled: true, baseDelayMs: 2_000, maxAgentDelayMs: 60_000 } };
+const REDRIVE = { customType: "provider-stall-watchdog", content: "The previous provider request stalled before completing and was retried automatically. Continue.", display: false };
+function stallAndConvert(h: ReturnType<typeof watchdogHarness>, entry = "entry-aborted") {
+	h.emit("before_provider_request"); h.advance(5);
+	const converted = h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }) as { message: { stopReason: string } };
+	assert.equal(converted?.message.stopReason, "error");
+	return h.emit("turn_end", { messageEntryId: entry, entries: [{ type: "custom", customType: "sibling" }] }) as { entries: unknown[] } | undefined;
+}
+
+test("only the converted watchdog turn is omitted, not another error or the exhausted attempt", async () => {
+	await withSettings({}, { ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 1 } } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		assert.deepEqual(stallAndConvert(h)?.entries, [{ type: "custom", customType: "sibling" }, { type: "context_edit", targetId: "entry-aborted", replacement: null }]);
+		const settled = h.emit("agent_settled") as Promise<void>; h.advance(2_000); await settled;
+		h.newController(); h.emit("before_provider_request"); h.emit("message_end", { message: { role: "assistant", stopReason: "error" } });
+		assert.equal(h.emit("turn_end", { messageEntryId: "other-error", entries: [] }), undefined);
+		h.advance(5);
+		assert.equal(h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }), undefined);
+		assert.equal(h.emit("turn_end", { messageEntryId: "exhausted", entries: [] }), undefined);
+		await h.emit("agent_settled"); assert.equal(h.sent.length, 1);
+	});
+});
+
+test("print re-drive awaits uncapped doubling and capped third delay; successful continuation resets the chain", async () => {
+	await withSettings({}, { ...RETRY_ON, retry: { enabled: true, baseDelayMs: 2_000, maxAgentDelayMs: 5_000 } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		stallAndConvert(h); let settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0].delayMs, 2_000); assert.equal(h.sent.length, 0);
+		h.advance(2_000); await settled; assert.deepEqual(h.sent, [[REDRIVE, { triggerTurn: true }]]);
+		h.newController(); stallAndConvert(h, "second"); settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0].delayMs, 4_000);
+		h.advance(4_000); await settled; assert.equal(h.sent.length, 2);
+		h.newController(); stallAndConvert(h, "third"); settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0].delayMs, 5_000);
+		h.advance(5_000); await settled; assert.equal(h.sent.length, 3);
+		h.newController(); h.emit("before_provider_request"); h.emit("message_end", { message: { role: "assistant", stopReason: "stop" } });
+		assert.equal(h.emit("turn_end", { messageEntryId: "success", entries: [] }), undefined);
+		await h.emit("agent_settled"); assert.equal(h.sent.length, 3);
+		h.newController(); stallAndConvert(h); settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0].delayMs, 2_000); h.advance(2_000); await settled;
+	});
+});
+
+test("print re-drive re-reads retry delay, cap, and enabled between stalls in one session", async () => {
+	await withSettings({}, { ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 5 } } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		stallAndConvert(h); let settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0]?.delayMs, 2_000, "first stall uses the initial base delay");
+		h.advance(2_000); await settled; assert.equal(h.sent.length, 1);
+
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 5 } }, retry: { enabled: true, baseDelayMs: 500, maxAgentDelayMs: 60_000 } }));
+		h.newController(); stallAndConvert(h, "second"); settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0]?.delayMs, 1_000, "second stall doubles the live base delay");
+		h.advance(1_000); await settled; assert.equal(h.sent.length, 2);
+
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 5 } }, retry: { enabled: true, baseDelayMs: 500, maxAgentDelayMs: 700 } }));
+		h.newController(); stallAndConvert(h, "third"); settled = h.emit("agent_settled") as Promise<void>;
+		assert.equal([...h.timers.values()][0]?.delayMs, 700, "third stall uses the live delay cap");
+		h.advance(700); await settled; assert.equal(h.sent.length, 3);
+
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 5 } }, retry: { enabled: false, baseDelayMs: 500, maxAgentDelayMs: 700 } }));
+		h.newController(); assert.equal(stallAndConvert(h, "fourth"), undefined, "disabled retry leaves no omission draft");
+		await h.emit("agent_settled");
+		assert.deepEqual(h.notifications.at(-1), ["The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually.", undefined]);
+		assert.equal(h.sent.length, 3, "disabled retry sends no continuation");
+		assert.equal(h.timers.size, 0, "disabled retry arms no timer");
+	});
+});
+
+test("disabled retry, live setting flip, and exhausted budgets never send", async () => {
+	for (const maxStallRetries of [0, 2]) {
+		await withSettings({}, { ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries } } }, async (cwd) => {
+			const h = watchdogHarness("print", cwd);
+			for (let i = 0; i < maxStallRetries; i++) { stallAndConvert(h); const settled = h.emit("agent_settled") as Promise<void>; h.advance(60_000); await settled; h.newController(); }
+			h.emit("before_provider_request"); h.advance(5);
+			assert.ok(h.notifications.at(-1)?.[0].includes("budget is spent"));
+			assert.equal(h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } }), undefined);
+			assert.equal(h.emit("turn_end", { messageEntryId: "exhausted", entries: [] }), undefined);
+			await h.emit("agent_settled"); assert.ok(h.notifications.at(-1)?.[0].startsWith("The stalled request was stopped"));
+			assert.equal(h.sent.length, maxStallRetries);
+		});
+	}
+	for (const flip of [false, true]) await withSettings({}, flip ? RETRY_ON : { ...RETRY_ON, retry: { enabled: false } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd);
+		if (flip) writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ ...RETRY_ON, retry: { enabled: false } }));
+		assert.equal(stallAndConvert(h), undefined); await h.emit("agent_settled");
+		assert.equal(h.sent.length, 0); assert.ok(h.notifications.at(-1)?.[0].startsWith("The stalled request was stopped"));
+	});
+});
+
+test("exhaustion after native-style continuation and stale-runtime synchronous send failure", async () => {
+	await withSettings({}, { ...RETRY_ON, quiver: { providerStallWatchdog: { ...RETRY_ON.quiver.providerStallWatchdog, maxStallRetries: 1 } } }, async (cwd) => {
+		const h = watchdogHarness("print", cwd); stallAndConvert(h);
+		h.newController(); h.emit("before_provider_request"); h.advance(5);
+		assert.ok(h.notifications.at(-1)?.[0].includes("budget is spent"));
+		h.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } });
+		await h.emit("agent_settled"); assert.equal(h.sent.length, 0);
+	});
+	await withSettings({}, RETRY_ON, async (cwd) => {
+		const h = watchdogHarness("print", cwd); h.sendControl.fail = true; stallAndConvert(h);
+		const settled = h.emit("agent_settled") as Promise<void>; h.advance(2_000); await settled;
+		assert.ok(h.notifications.at(-1)?.[0].startsWith("providerStallWatchdog: automatic retry failed to start:"));
+		h.newController(); h.emit("before_provider_request"); h.advance(5);
+		assert.ok(h.notifications.at(-1)?.[0].includes("stopping and retrying"));
+	});
+});
+
 type RuntimeScript = "tool" | "stall" | "slow" | "success";
 
 function deferred<T = void>() {
@@ -643,7 +921,10 @@ async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = t
 	const contexts: any[] = []; const starts = scripts.map(() => deferred<void>()); const editor: string[] = []; const notifications: string[] = []; let toolCalls = 0;
 	try {
 		mkdirSync(agentDir, { recursive: true });
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 20, warningMs: 10, recoveryMs: 20, ...(opts.maxStallRetries === undefined ? {} : { maxStallRetries: opts.maxStallRetries }) } } }));
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+			retry: { enabled: retryEnabled, maxRetries: opts.maxRetries ?? 1, baseDelayMs: 1 },
+			quiver: { providerStallWatchdog: { enabled: true, firstEventMs: 20, warningMs: 10, recoveryMs: 20, ...(opts.maxStallRetries === undefined ? {} : { maxStallRetries: opts.maxStallRetries }) } },
+		}));
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const runtime = await ModelRuntime.create({ modelsPath: null });
 		runtime.registerProvider("watchdog-test", { apiKey: "test-key", baseUrl: "https://watchdog.test", api: "watchdog-test", models: [{ id: "watchdog-test-model", name: "Watchdog test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 1_024 }], streamSimple(model, context, options) {
@@ -660,60 +941,73 @@ async function runtimeWatchdogHarness(scripts: RuntimeScript[], retryEnabled = t
 			return stream;
 		} });
 		const model = runtime.getModel("watchdog-test", "watchdog-test-model")!;
-		const settingsManager = SettingsManager.inMemory({ retry: { enabled: retryEnabled, maxRetries: opts.maxRetries ?? 1, baseDelayMs: 1 } });
+		const settingsManager = SettingsManager.create(root, agentDir);
 		const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [providerStallWatchdog] });
 		await loader.reload();
 		const { session } = await createAgentSession({ cwd: root, modelRuntime: runtime, model, settingsManager, resourceLoader: loader, sessionManager: SessionManager.inMemory(root), customTools: [defineTool({ name: "watchdog_tool", label: "watchdog tool", description: "test", parameters: Type.Object({}), execute: async () => { toolCalls += 1; return { content: [{ type: "text", text: "tool complete" }], details: undefined }; } })] });
 		// InteractiveMode editor restoration is upstream Pi behavior; this pins the watchdog's public abort binding.
 		const withUI = opts.withUI !== false;
-		await session.bindExtensions({ ...(withUI ? { uiContext: { notify: (text: string) => notifications.push(text), setStatus: () => {}, setEditorText: (text: string) => editor.push(text) } as any } : {}), mode: opts.mode ?? "tui", abortHandler: () => { const queued = session.clearQueue(); for (const text of [...queued.steering, ...queued.followUp]) editor.push(text); void session.abort(); } });
-		return { session, contexts, starts, editor, notifications, get toolCalls() { return toolCalls; }, dispose: () => { session.dispose(); if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir; rmSync(root, { recursive: true, force: true }); } };
+		await session.bindExtensions({ ...(withUI ? { uiContext: { notify: (text: string) => notifications.push(text), setStatus: () => {}, setEditorText: (text: string) => editor.push(text), onTerminalInput: () => () => {} } as any } : {}), mode: opts.mode ?? "tui", abortHandler: () => { const queued = session.clearQueue(); for (const text of [...queued.steering, ...queued.followUp]) editor.push(text); void session.abort(); } });
+		return { session, contexts, starts, editor, notifications, lastBranchAssistant: () => (session as any).sessionManager.getBranch().filter((entry: any) => entry.type === "message" && entry.message.role === "assistant").at(-1)?.message as any, projectedContext: () => (session as any).sessionManager.buildSessionProjection().messages as any[], get toolCalls() { return toolCalls; }, dispose: () => { session.dispose(); if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir; rmSync(root, { recursive: true, force: true }); } };
 	} catch (error) { if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir; rmSync(root, { recursive: true, force: true }); throw error; }
+}
+
+function assertRecoveredProjection(messages: any[]) {
+	assert.equal(messages.filter((m) => m.role === "assistant" && m.stopReason === "error").length, 0, "converted attempts are omitted");
+	assert.equal(messages.at(-1)?.role, "assistant");
+	const previous = messages.at(-2);
+	assert.equal(previous?.role, "custom", "the hidden re-drive precedes the final assistant in the projection");
+	assert.equal(previous?.customType, REDRIVE.customType);
+	assert.equal(previous?.content, REDRIVE.content);
 }
 
 test("installed runtime watchdog uses ExtensionContext.abort to clear queued follow-up through bound abortHandler and retry", async () => {
 	const h = await runtimeWatchdogHarness(["tool", "stall", "success"]);
 	try {
-		const run = h.session.prompt("start"); await waitBounded(h.starts[1].promise, "stalled request start"); await h.session.followUp("keep this out of retry"); await waitBounded(run, "recovered run");
+		const run = h.session.prompt("start"); await waitBounded(h.starts[1].promise, "stalled request start"); await h.session.followUp("keep this out of retry"); await waitBounded(run, "stalled run"); await waitBounded(h.starts[2].promise, "re-driven request"); await waitBounded(h.session.waitForIdle(), "recovered run");
 		assert.equal(h.contexts.length, 3); assert.equal(h.toolCalls, 1, "watchdog_tool handler ran exactly once"); assert.deepEqual(h.editor, ["keep this out of retry"]);
-		for (const context of h.contexts) assert.equal(context.messages.filter((message: any) => message.role === "user").length, 1);
+		for (const [index, context] of h.contexts.entries()) assert.equal(context.messages.filter((message: any) => message.role === "user").length, index === 2 ? 2 : 1);
 		for (const index of [1, 2]) {
 			const toolResults = h.contexts[index].messages.filter((message: any) => message.role === "toolResult");
 			assert.equal(toolResults.length, 1, `context ${index} has one completed tool result`);
 			assert.equal(toolResults[0].toolCallId, "watchdog-tool-call", `context ${index} completed the watchdog tool call`);
 		}
-		assert.equal(h.session.messages.at(-1)?.role, "assistant"); assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+		assert.equal(h.lastBranchAssistant()?.role, "assistant"); assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assert.equal(h.projectedContext().filter((m: any) => m.role === "assistant" && m.stopReason === "error").length, 0, "the converted abort is omitted from model context");
+		assert.equal(h.contexts[2].messages.at(-1)?.role, "user", "the hidden re-drive is the last user turn");
 	} finally { h.dispose(); }
 });
 
 test("installed runtime aborts a stalled request past the stall budget without recursive retry", async () => {
 	const h = await runtimeWatchdogHarness(["stall", "stall"], true, { maxStallRetries: 1 });
-	try { await waitBounded(h.session.prompt("start"), "second stalled run"); assert.equal(h.contexts.length, 2); assert.equal((h.session.messages.at(-1) as any).stopReason, "aborted"); assert.equal(h.notifications.at(-1), "Provider sent no response for 20ms and the stall-retry budget is spent; the request was stopped."); }
+	try { await waitBounded(h.session.prompt("start"), "first stalled run"); await waitBounded(h.starts[1].promise, "second stalled request"); await waitBounded(h.session.waitForIdle(), "second stalled run"); assert.equal(h.contexts.length, 2); assert.equal(h.lastBranchAssistant()?.stopReason, "aborted"); assert.equal(h.projectedContext().at(-1)?.stopReason, "aborted"); assert.equal(h.projectedContext().filter((m: any) => m.role === "custom" && m.customType === REDRIVE.customType).length, 1, "exhaustion adds no second re-drive"); assert.ok(h.notifications.includes("Provider sent no response for 20ms and the stall-retry budget is spent; the request was stopped.")); assert.equal(h.notifications.at(-1), "The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually."); }
 	finally { h.dispose(); }
 });
 
 test("installed runtime retries multiple consecutive stalls within the stall budget", async () => {
 	const h = await runtimeWatchdogHarness(["stall", "stall", "success"], true, { maxStallRetries: 2, maxRetries: 2 });
 	try {
-		await waitBounded(h.session.prompt("start"), "multi-stall run");
+		await waitBounded(h.session.prompt("start"), "first stalled run"); await waitBounded(h.starts[2].promise, "third request"); await waitBounded(h.session.waitForIdle(), "multi-stall run");
 		assert.equal(h.contexts.length, 3);
-		assert.equal(h.session.messages.at(-1)?.role, "assistant");
-		assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+		assert.equal(h.lastBranchAssistant()?.role, "assistant");
+		assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assertRecoveredProjection(h.projectedContext());
 	} finally { h.dispose(); }
 });
 
 test("installed runtime degrades without a continuation when retry is disabled", async () => {
 	const h = await runtimeWatchdogHarness(["stall"], false);
-	try { await waitBounded(h.session.prompt("start"), "retry-disabled stalled run"); assert.equal(h.contexts.length, 1); assert.equal((h.session.messages.at(-1) as any).stopReason, "error"); assert.equal(h.notifications.at(-1), "The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually."); }
+	try { await waitBounded(h.session.prompt("start"), "retry-disabled stalled run"); assert.equal(h.contexts.length, 1); assert.equal(h.lastBranchAssistant()?.stopReason, "error"); assert.equal(h.projectedContext().some((m: any) => m.role === "assistant" && m.stopReason === "error"), true); assert.equal(h.notifications.at(-1), "The stalled request was stopped, but Pi did not start an automatic retry. Retry may be disabled, exhausted, or incompatible; submit the message again to retry manually."); }
 	finally { h.dispose(); }
 });
 
 test("installed runtime converts a request that never emits a stream event", async () => {
 	const h = await runtimeWatchdogHarness(["stall", "success"]);
 	try {
-		await waitBounded(h.session.prompt("start"), "no-first-event run");
+		await waitBounded(h.session.prompt("start"), "first run"); await waitBounded(h.starts[1].promise, "re-driven request"); await waitBounded(h.session.waitForIdle(), "no-first-event run");
 		assert.equal(h.contexts.length, 2, "the unresponsive request was retried");
-		assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+		assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assertRecoveredProjection(h.projectedContext());
 		assert.equal(h.notifications.at(0), "Provider sent no response for 20ms; stopping and retrying the request.");
 	} finally { h.dispose(); }
 });
@@ -721,16 +1015,17 @@ test("installed runtime converts a request that never emits a stream event", asy
 test("installed runtime still converts a mid-stream stall after the first event", async () => {
 	const h = await runtimeWatchdogHarness(["slow", "success"]);
 	try {
-		await waitBounded(h.session.prompt("start"), "mid-stream stall run");
+		await waitBounded(h.session.prompt("start"), "first run"); await waitBounded(h.starts[1].promise, "re-driven request"); await waitBounded(h.session.waitForIdle(), "mid-stream stall run");
 		assert.equal(h.contexts.length, 2);
-		assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+		assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assertRecoveredProjection(h.projectedContext());
 		// Pins the recovery notice specifically (retry budget + "returned to the editor"), not the warning
 		// notice, which also starts with "No model progress for" - the recovery notice is always the last one
 		// to fire. The elapsed-ms figure is left as \d+ because it is measured against real timers and jitters
 		// a millisecond or two past the configured recoveryMs.
 		assert.match(
 			h.notifications.at(-1)!,
-			/^No model progress for \d+ms; aborting now\. Pi will retry \(1\/3\) if retry is enabled and capacity remains\. Pending follow-ups are returned to the editor\.$/,
+			/^No model progress for \d+ms; aborting now\. Pi will retry \(1\/1\) if retry is enabled and capacity remains\. Pending follow-ups are returned to the editor\.$/,
 			"the mid-stream recovery tier produced its notice",
 		);
 	} finally { h.dispose(); }
@@ -747,7 +1042,8 @@ test("installed runtime recovers an unresponsive request in headless print mode"
 	try {
 		await waitBounded(h.session.prompt("start"), "headless no-first-event run");
 		assert.equal(h.contexts.length, 2, "headless runs retry the unresponsive request");
-		assert.equal((h.session.messages.at(-1) as any).stopReason, "stop");
+		assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assertRecoveredProjection(h.projectedContext());
 		assert.ok(warnings.includes("Provider sent no response for 20ms; stopping and retrying the request."), "headless diagnostics go to stderr");
 		// json mode multiplexes its protocol on stdout; a stray console.log would corrupt it.
 		assert.deepEqual(logs, [], "headless diagnostics never reach stdout");
@@ -761,7 +1057,10 @@ test("installed runtime arms for an extension-origin turn that never emits befor
 			h.session.sendCustomMessage({ customType: "watchdog-origin", content: "start", display: false }, { triggerTurn: true }),
 			"triggerTurn run",
 		);
+		await waitBounded(h.starts[1].promise, "re-driven extension-origin request"); await waitBounded(h.session.waitForIdle(), "extension-origin retry");
 		assert.equal(h.contexts.length, 2, "the extension-origin turn was watched and retried");
+		assert.equal(h.lastBranchAssistant()?.stopReason, "stop");
+		assertRecoveredProjection(h.projectedContext());
 	} finally { h.dispose(); }
 });
 

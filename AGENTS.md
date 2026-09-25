@@ -103,7 +103,7 @@ test/                       # node --test suites, one per extension, + layout.te
 | What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
 | `fetch` routing and size gate | [`doc/fetch.md`](doc/fetch.md) |
 | `doc_to_md` backend ladder, bundle protocol, child contract, CLI | [`doc/doc-to-md.md`](doc/doc-to-md.md) |
-| `provider-stall-watchdog` tiers and retry budget | [`README.md`](README.md#opt-in-extension-config) |
+| `provider-stall-watchdog` recovery flow, retry budget, TUI/RPC wait, manual repro | [`doc/provider-stall-watchdog.md`](doc/provider-stall-watchdog.md) |
 | `slack` config, tokens, cache, announce protocol, smoke checklist | [`doc/slack.md`](doc/slack.md) |
 | pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |

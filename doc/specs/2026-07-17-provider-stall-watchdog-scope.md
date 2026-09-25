@@ -1,5 +1,7 @@
 # Provider stall watchdog
 
+> **Superseded by:** [doc/specs/2026-09-24-gh-23-watchdog-retry-after-abort.md](./2026-09-24-gh-23-watchdog-retry-after-abort.md) - "Recovery flow" section only (policy D replaced by a quiver-owned re-drive when pi declines to retry)
+
 ## Status
 
 Proposed design for [GitHub issue #3](https://github.com/jjuraszek/pi-quiver/issues/3). This spec intentionally amends the issue in two places:
