@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import {
@@ -630,7 +630,27 @@ test("linked worktree, key missing everywhere: missing_token lists repo, primary
 			(err: unknown) => {
 				assert.ok(err instanceof SlackError);
 				assert.equal(err.code, "missing_token");
-				assert.ok(err.message.endsWith(`no entry found in ${expected.join(", ")}.`));
+				// On Windows the candidate list mixes path forms: the worktree path arrives
+				// realpath-resolved while the primary checkout path comes back from git in
+				// the form recorded at `worktree add` time (8.3 short names in TEMP). Compare
+				// canonicalized paths rather than raw strings. The .env files (and the user
+				// config directory) do not exist, so realpath the deepest existing ancestor
+				// and rejoin the remainder.
+				const listed = /no entry found in (.+)\.$/.exec(err.message)?.[1].split(", ");
+				assert.ok(listed);
+				const canonicalize = (p: string): string => {
+					let ancestor = p;
+					const rest: string[] = [];
+					while (true) {
+						try {
+							return join(realpathSync.native(ancestor), ...rest.reverse());
+						} catch {
+							rest.push(basename(ancestor));
+							ancestor = dirname(ancestor);
+						}
+					}
+				};
+				assert.deepEqual(listed.map(canonicalize), expected.map(canonicalize));
 				return true;
 			},
 		);
