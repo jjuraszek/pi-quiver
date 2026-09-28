@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.4.0 - 2026-09-28
 
 - provider-stall-watchdog: per-model threshold overrides via a `models` map on `quiver.providerStallWatchdog` - glob keys like `lmstudio/*` override `firstEventMs`/`warningMs`/`recoveryMs` for matching models, so slow local servers get patience without raising the global defaults (#18).
 
