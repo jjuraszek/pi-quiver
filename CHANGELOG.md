@@ -8,6 +8,11 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `doc_to_md` converts DOCX directly in the Python child (mammoth -> markdownify, python-docx text fallback) instead of LibreOffice -> PDF: heading styles survive as `#` headings, hyperlinks and footnotes are kept, pictures land under `images/` (#24). DOCX page semantics change: only author-inserted page breaks become `--- end of page.page_number=N ---` markers, `Page-Count` is suffixed `(explicit page breaks, not printed pages)` / `(no explicit page breaks)`, `pages` selects those segments and is rejected on a break-less file, and DOCX that falls back to LibreOffice (no DOCX-capable Python, or both DOCX engines failed) is marked degraded with `(LibreOffice pagination)` and rejects `pages`. LibreOffice is now optional for DOCX and still required for PPTX. Backend probe gains a `DOCX` line and pins `mammoth==1.13.0`, `markdownify==1.2.3`, `python-docx==1.2.0`; the managed venv moves to `doc-to-md-venv-v3` and the older venvs are removed after the first successful build.
+- `doc_to_md` handle: the `Outline` gains a `p<N>` page column (the page whose marker closes each heading's segment) for every format that emits page markers, and prints `Outline: none` when the Markdown has no headings. DOCX `info` returns core properties and a heading TOC with segment pages, or `TOC: none (no heading styles found)`.
+
 ## v6.4.0 - 2026-09-28
 
 - provider-stall-watchdog: per-model threshold overrides via a `models` map on `quiver.providerStallWatchdog` - glob keys like `lmstudio/*` override `firstEventMs`/`warningMs`/`recoveryMs` for matching models, so slow local servers get patience without raising the global defaults (#18).

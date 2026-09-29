@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,219 @@ async function child(mode: string, options: Record<string, unknown>): Promise<Re
 function dirs() {
 	const root = mkdtempSync(join(tmpdir(), "quiver-child-"));
 	return { root, stagingDir: join(root, "images", ".stage-x"), sheetsStagingDir: join(root, "sheets", ".stage-x") };
+}
+
+async function childRaw(mode: string, options: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env) {
+	return runCapped("uv", uvChildArgs(CFG, scriptPath(), mode), { timeoutMs: 240_000, capBytes: 20_000_000, env, stdin: JSON.stringify({ maxOutputBytes: 20_000_000, pymupdfVersion: CFG.pymupdfVersion, ...options }) });
+}
+const markers = (md: string) => [...md.matchAll(/--- end of page\.page_number=(\d+) ---/g)].map((m) => Number(m[1]));
+
+test("docx child: headings.docx -> headings, hyperlink, footnote, hoisted breaks, staged images, segments", T, async () => {
+	const d = dirs();
+	try {
+		mkdirSync(d.stagingDir, { recursive: true });
+		const r = await child("docx", { path: fx("headings.docx"), stagingDir: d.stagingDir });
+		assert.equal(r.engine, "mammoth"); assert.equal(r.degraded, false); assert.equal(r.explicitBreaks, 2); assert.equal(r.pageCount, 3);
+		const md: string = r.markdown;
+		assert.deepEqual(markers(md), [1, 2, 3]);
+		assert.match(md, /^# Chapter One$/m); assert.match(md, /^## Section A$/m); assert.match(md, /^### Detail A1$/m);
+		assert.ok(md.includes("[pi-quiver](https://github.com/jjuraszek/pi-quiver)"));
+		assert.ok(md.includes("FOOTNOTE-TEXT about provenance"));
+		assert.match(md, /^# Chapter Two$\n\n--- end of page\.page_number=1 ---\n\n# Continued$/m);
+		assert.match(md, /- beta\n\n--- end of page\.page_number=2 ---\n\n- gamma/);
+		assert.ok(md.includes("![](p1/img1.png)") && md.includes("![](p3/img1.png)"));
+		assert.ok(!md.includes("\x00") && !md.includes("data:"));
+		for (const p of ["p1", "p2", "p3"]) assert.ok(existsSync(join(d.stagingDir, p, ".done")), p);
+		for (const p of ["p1", "p3"]) assert.ok(existsSync(join(d.stagingDir, p, "img1.png")), p);
+		assert.ok(!existsSync(join(d.stagingDir, "p2", "img1.png")));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: assembly failure removes staged segment directories", { ...T, skip: process.platform === "win32" || T.skip }, async () => {
+	const d = dirs();
+	try {
+		mkdirSync(d.stagingDir, { recursive: true });
+		writeFileSync(join(d.stagingDir, "p3"), "block image placement");
+		const r = await childRaw("docx", { path: fx("headings.docx"), stagingDir: d.stagingDir });
+		assert.equal(r.code, 1, r.stderr);
+		assert.match(r.stderr, /FileExistsError/);
+		assert.ok(!existsSync(join(d.stagingDir, "p1")));
+		assert.ok(!existsSync(join(d.stagingDir, "p2")));
+		assert.ok(statSync(join(d.stagingDir, "p3")).isFile());
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: pages selects segments, keeps original marker numbers, carries referenced footnotes only", T, async () => {
+	const d = dirs();
+	try {
+		mkdirSync(d.stagingDir, { recursive: true });
+		const one = await child("docx", { path: fx("headings.docx"), stagingDir: d.stagingDir, pages: [1] });
+		assert.deepEqual(markers(one.markdown), [1]); assert.ok(one.markdown.includes("FOOTNOTE-TEXT"));
+		const three = await child("docx", { path: fx("headings.docx"), stagingDir: join(d.root, "s3"), pages: [3] });
+		assert.deepEqual(markers(three.markdown), [3]); assert.ok(!three.markdown.includes("FOOTNOTE-TEXT")); assert.ok(three.markdown.includes("Cell A"));
+		const two = await child("docx", { path: fx("multipage.docx"), stagingDir: join(d.root, "mp"), pages: [2, 3] });
+		assert.deepEqual(markers(two.markdown), [2, 3]); assert.equal(two.pageCount, 5); assert.equal(two.explicitBreaks, 4);
+		assert.ok(two.markdown.includes("PAGE-2") && two.markdown.includes("PAGE-3") && !two.markdown.includes("PAGE-1"));
+
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: user errors - no explicit breaks, out of range segments", T, async () => {
+ const d = dirs();
+ try {
+  mkdirSync(d.stagingDir, { recursive: true });
+		const none = await childRaw("docx", { path: fx("sample.docx"), stagingDir: d.stagingDir, pages: [1] });
+		assert.equal(none.code, 3, none.stderr); assert.equal(JSON.parse(none.stdout).error, "--pages does not apply to this DOCX: it has no explicit page breaks; read the .md by Outline line offsets instead");
+		const oor = await childRaw("docx", { path: fx("multipage.docx"), stagingDir: d.stagingDir, pages: [9] });
+		assert.equal(oor.code, 3); assert.deepEqual(JSON.parse(oor.stdout), { error: "pages out of range: 9 (document has 5 segments)", pageCount: 5 });
+		const whole = await child("docx", { path: fx("sample.docx"), stagingDir: d.stagingDir });
+		assert.equal(whole.pageCount, 1); assert.equal(whole.explicitBreaks, 0); assert.deepEqual(markers(whole.markdown), []);
+ } finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: forced python-docx fallback keeps headings, tables and markers; degraded flag set", T, async () => {
+	const d = dirs();
+	try {
+		mkdirSync(d.stagingDir, { recursive: true });
+		const r = await childRaw("docx", { path: fx("headings.docx"), stagingDir: d.stagingDir }, { ...process.env, DOC_TO_MD_FORCE_DOCX_FALLBACK: "1" });
+		assert.equal(r.code, 0, r.stderr);
+		const j = JSON.parse(r.stdout);
+		assert.equal(j.engine, "python-docx"); assert.equal(j.degraded, true); assert.match(j.fallbackReason, /^mammoth RuntimeError: forced/);
+		assert.deepEqual(markers(j.markdown), [1, 2, 3]); assert.match(j.markdown, /^# Chapter One$/m); assert.match(j.markdown, /^# Continued$/m);
+		assert.ok(j.markdown.includes("| Cell A |")); assert.ok(!j.markdown.includes("![") && !j.markdown.includes("FOOTNOTE-TEXT"));
+
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("info child: .docx branch - core properties, ISO dates, heading TOC with segment pages, bold-only -> empty TOC", T, async () => {
+		const h = await child("info", { path: fx("headings.docx") });
+		assert.equal(h.pageCount, 3); assert.equal(h.explicitBreaks, 2);
+		assert.equal(h.metadata.title, "Headings Fixture"); assert.equal(h.metadata.author, "pi-quiver tests");
+		if (h.metadata.created !== undefined) assert.match(h.metadata.created, /^\d{4}-\d{2}-\d{2}T/);
+		assert.deepEqual(h.toc, [[1, "Chapter One", 1], [2, "Section A", 1], [3, "Detail A1", 1], [1, "Chapter Two", 1], [1, "Continued", 2]]);
+		const b = await child("info", { path: fx("bold-headings.docx") });
+		assert.deepEqual(b.toc, []); assert.equal(b.pageCount, 1); assert.equal(b.explicitBreaks, 0);
+		const s = await child("info", { path: fx("sample.docx") }); assert.deepEqual(s.toc, []);
+		const m = await child("info", { path: fx("multipage.docx") });
+		assert.equal(m.pageCount, 5); assert.deepEqual(m.toc.map((t: [number, string, number]) => t[2]), [1, 2, 3, 4, 5]);
+ for (const name of ["headings.docx", "multipage.docx", "sample.docx", "bold-headings.docx"]) {
+  const d = dirs();
+  try {
+   mkdirSync(d.stagingDir, { recursive: true });
+   const info = await child("info", { path: fx(name) });
+   const converted = await child("docx", { path: fx(name), stagingDir: d.stagingDir });
+   assert.equal(info.pageCount, converted.pageCount, name);
+  } finally { rmSync(d.root, { recursive: true, force: true }); }
+ }
+});
+
+test("docx child: Heading 7, trailing break and table-cell break", T, async () => {
+ const d = dirs();
+ try {
+  const path = join(d.root, "edge.docx");
+  const python = `from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+D=Document()
+if 'Heading 7' not in D.styles: D.styles.add_style('Heading 7', WD_STYLE_TYPE.PARAGRAPH)
+D.add_paragraph('Deep', style='Heading 7')
+t=D.add_table(rows=1, cols=1)
+p=t.cell(0,0).paragraphs[0]
+p.add_run('Cell')
+b=OxmlElement('w:br'); b.set(qn('w:type'),'page'); p.add_run()._r.append(b)
+D.add_paragraph('After')
+D.save(${JSON.stringify(path)})`;
+  const generated = spawnSync("uv", ["run", "--with", "python-docx==1.2.0", "--python", "3.14", "python", "-c", python], { encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+  mkdirSync(d.stagingDir, { recursive: true });
+  const result = await child("docx", { path, stagingDir: d.stagingDir });
+  const info = await child("info", { path });
+  assert.equal(result.explicitBreaks, 1);
+  assert.equal(result.pageCount, 2);
+  assert.equal(info.pageCount, result.pageCount);
+  assert.match(result.markdown, /^###### Deep$/m);
+  assert.match(result.markdown, /\| Cell \|[\s\S]*--- end of page\.page_number=1 ---\n\nAfter/);
+  const fallback = await childRaw("docx", { path, stagingDir: d.stagingDir }, { ...process.env, DOC_TO_MD_FORCE_DOCX_FALLBACK: "1" });
+  assert.equal(fallback.code, 0, fallback.stderr);
+  assert.match(JSON.parse(fallback.stdout).markdown, /^###### Deep$/m);
+  const trailing = DocumentTrailingBreakPython(path);
+  const g2 = spawnSync("uv", ["run", "--with", "python-docx==1.2.0", "--python", "3.14", "python", "-c", trailing], { encoding: "utf8" });
+  assert.equal(g2.status, 0, g2.stderr);
+  const end = await child("docx", { path, stagingDir: d.stagingDir, pages: [1] });
+  const endInfo = await child("info", { path });
+  assert.equal(end.explicitBreaks, 1); assert.equal(end.pageCount, 1); assert.deepEqual(end.pages, [1]);
+  assert.deepEqual(markers(end.markdown), []); assert.equal(endInfo.pageCount, 1);
+ } finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: consecutive page breaks keep all segments and contiguous markers", T, async () => {
+ const d = dirs();
+ try {
+  const path = join(d.root, "consecutive.docx");
+  const python = `from docx import Document
+from docx.enum.text import WD_BREAK
+d=Document()
+p=d.add_paragraph()
+p.add_run('alpha')
+r=p.add_run()
+r.add_break(WD_BREAK.PAGE)
+r.add_break(WD_BREAK.PAGE)
+d.add_paragraph('omega')
+d.save(${JSON.stringify(path)})`;
+  const generated = spawnSync("uv", ["run", "--with", "python-docx==1.2.0", "--python", "3.14", "python", "-c", python], { encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+  mkdirSync(d.stagingDir, { recursive: true });
+  const info = await child("info", { path });
+  const converted = await child("docx", { path, stagingDir: d.stagingDir });
+  const fallbackRaw = await childRaw("docx", { path, stagingDir: d.stagingDir }, { ...process.env, DOC_TO_MD_FORCE_DOCX_FALLBACK: "1" });
+  assert.equal(fallbackRaw.code, 0, fallbackRaw.stderr);
+  const fallback = JSON.parse(fallbackRaw.stdout);
+  assert.equal(converted.engine, "mammoth");
+  assert.equal(info.pageCount, 3);
+  assert.equal(converted.pageCount, info.pageCount);
+  assert.equal(converted.pageCount, fallback.pageCount);
+  assert.deepEqual(markers(converted.markdown), [1, 2, 3]);
+  assert.deepEqual(markers(fallback.markdown), [1, 2, 3]);
+ } finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("docx child: content control after break counts as a segment in info and fallback", T, async () => {
+ const d = dirs();
+ try {
+  const path = join(d.root, "content-control.docx");
+  const python = `from docx import Document
+from docx.enum.text import WD_BREAK
+from docx.oxml import OxmlElement
+D=Document()
+D.add_paragraph('Before')
+D.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+sdt=OxmlElement('w:sdt')
+content=OxmlElement('w:sdtContent')
+p=D.add_paragraph('Inside control', style='Heading 1')
+D.element.body.remove(p._p)
+content.append(p._p)
+sdt.append(content)
+D.element.body.insert(-1, sdt)
+D.save(${JSON.stringify(path)})`;
+  const generated = spawnSync("uv", ["run", "--with", "python-docx==1.2.0", "--python", "3.14", "python", "-c", python], { encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+  mkdirSync(d.stagingDir, { recursive: true });
+  const info = await child("info", { path });
+  const converted = await child("docx", { path, stagingDir: d.stagingDir });
+  const fallbackRaw = await childRaw("docx", { path, stagingDir: d.stagingDir }, { ...process.env, DOC_TO_MD_FORCE_DOCX_FALLBACK: "1" });
+  assert.equal(fallbackRaw.code, 0, fallbackRaw.stderr);
+  const fallback = JSON.parse(fallbackRaw.stdout);
+  assert.equal(converted.engine, "mammoth");
+  assert.equal(info.pageCount, converted.pageCount);
+  assert.equal(info.pageCount, fallback.pageCount);
+  assert.equal(info.pageCount, 2);
+  assert.match(fallback.markdown, /^# Inside control$/m);
+ } finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+function DocumentTrailingBreakPython(path: string) {
+ return `from docx import Document\nfrom docx.enum.text import WD_BREAK\nd=Document()\nd.add_paragraph('Content')\np=d.add_paragraph()\np.add_run().add_break(WD_BREAK.PAGE)\nd.save(${JSON.stringify(path)})`;
 }
 
 test("xlsx child: charts.xlsx inventory, CSVs, preview, profile, charts, markers", T, async () => {

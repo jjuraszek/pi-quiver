@@ -1,0 +1,242 @@
+schema: 1
+spec: doc/specs/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md
+run_id: 6549084a-e70a-4259-bf5b-17ed4536e701
+branch: doc-to-md-toc
+status: shipped
+created_at: 2026-09-28T20:24:52Z
+sessions:
+  - 01a0e9aa-bd1d-73b5-8051-ec6770572245
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+versions:
+  pi: 0.87.1
+  pi-gauntlet: 5.23.1
+  pi-cohort: 7.1.1
+  pi-quiver: 6.4.0
+  pi-condense: 2.11.0
+agent_overrides:
+  oracle:
+    model: anthropic-fable/claude-fable-5-1
+    thinking: max
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  scout:
+    model: github-copilot/gpt-6-luna
+    thinking: medium
+  planner:
+    model: github-copilot/gpt-6-sol
+    thinking: xhigh
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  worker:
+    model: github-copilot/gpt-6-sol
+    thinking: medium
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  implementer:
+    model: github-copilot/gpt-6-sol
+    thinking: low
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  code-reviewer:
+    model: anthropic/claude-opus-5-5
+    thinking: medium
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  spec-reviewer:
+    model: anthropic/claude-opus-5-5
+    thinking: low
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  context-builder:
+    model: github-copilot/gpt-6-sol
+    thinking: medium
+    toolsPrepend:
+      - resolve-library-id
+      - query-docs
+  ticket-reviewer:
+    model: github-copilot/gpt-6-sol
+    thinking: low
+supersedes:
+  - doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md
+approved_at: 2026-09-28T21:40:43Z
+shipped_at: 2026-09-29T07:56:31Z
+derived:
+  duration_s: 41499
+  phases:
+    brainstorm: { started_at: 2026-09-28T20:24:52Z, model: anthropic-fable/claude-fable-5-1, thinking: medium, completed_at: 2026-09-28T21:40:43Z, duration_s: 4551, tokens: { input: 1100924, output: 276989, cache_read: 14524619, cache_write: 1057018, cost: 29.352856395 }, peak_context: 135789 }
+    plan: { started_at: 2026-09-28T21:40:51Z, model: anthropic-fable/claude-fable-5-1, thinking: medium, completed_at: 2026-09-28T22:00:51Z, duration_s: 1200, tokens: { input: 116, output: 97968, cache_read: 7932215, cache_write: 443441, cost: 12.917939989999995 }, peak_context: 279740 }
+    implement: { started_at: 2026-09-28T22:01:18Z, model: anthropic-fable/claude-fable-5-1, thinking: medium, completed_at: 2026-09-29T07:11:58Z, duration_s: 33040, tokens: { input: 1026, output: 214439, cache_read: 32036792, cache_write: 1749563, cost: 36.81600549999997 }, user_messages: 1, peak_context: 331859 }
+    verify: { started_at: 2026-09-29T07:12:01Z, model: anthropic-fable/claude-fable-5-1, thinking: medium, completed_at: 2026-09-29T07:50:39Z, duration_s: 2318, tokens: { input: 351, output: 82402, cache_read: 14163128, cache_write: 454190, cost: 12.06030675 }, peak_context: 388213 }
+    ship: { started_at: 2026-09-29T07:51:13Z, model: anthropic-fable/claude-fable-5-1, thinking: medium, tokens: { input: 12, output: 2443, cache_read: 1219609, cache_write: 344819, cost: 7.3235522500000005 }, user_messages: 1, peak_context: 401615 }
+    unphased: { tokens: { input: 18, output: 3091, cache_read: 2334986, cache_write: 42051, cost: 1.5794965 }, peak_context: 395952 }
+  personas:
+    scout: { dispatches: 2, models: [ github-copilot/gpt-6-luna:medium ], tokens: { input: 120, output: 33107, cache_read: 1750936, cache_write: 262871, cost: 0.066933735 } }
+    context-builder: { dispatches: 1, models: [ github-copilot/gpt-6-sol:medium ], tokens: { input: 30, output: 6153, cache_read: 340930, cache_write: 55061, cost: 0.2674285 } }
+    spec-council-member: { dispatches: 5, models: [ anthropic/claude-opus-5-5:xhigh, github-copilot/gpt-6-astra:xhigh, anthropic-fable/claude-fable-5-1:high, github-copilot/grok-4.7:xhigh, anthropic-fable/claude-fable-5-1:medium ], tokens: { input: 1100635, output: 161093, cache_read: 8173925, cache_write: 324034, cost: 13.70222415 } }
+    spec-council-synthesizer: { dispatches: 2, models: [ github-copilot/gpt-6-sol:medium ], tokens: { input: 15, output: 4573, cache_read: 36765, cache_write: 30359, cost: 0.1290105 } }
+    spec-summarizer: { dispatches: 2, models: [ anthropic-fable/claude-fable-5-1:medium ], tokens: { input: 12, output: 7702, cache_read: 26388, cache_write: 30744, cost: 1.006697 } }
+    implementer: { dispatches: 22, models: [ github-copilot/gpt-6-sol:low ], tokens: { input: 711, output: 64724, cache_read: 4189193, cache_write: 452177, cost: 2.6169431 } }
+    spec-reviewer: { dispatches: 16, models: [ anthropic/claude-opus-5-5:low ], tokens: { input: 142, output: 50646, cache_read: 971820, cache_write: 303082, cost: 3.632508 } }
+    code-reviewer: { dispatches: 8, models: [ anthropic/claude-opus-5-5:medium ], tokens: { input: 132, output: 54242, cache_read: 2083527, cache_write: 250170, cost: 3.5034334000000005 } }
+    conformance-reviewer: { dispatches: 2, models: [ github-copilot/gpt-6-astra:xhigh ], tokens: { input: 66, output: 29397, cache_read: 891757, cache_write: 215478, cost: 5.055742 } }
+  reviews:
+    spec-reviewer: { dispatches: 16, nonzero_exit: 0 }
+    code-reviewer: { dispatches: 8, nonzero_exit: 0, findings: { blocker: 0, major: 0, minor: 22 } }
+    conformance-reviewer: { dispatches: 2, nonzero_exit: 0 }
+  conformance_loops: 2
+  conformance_open_gaps: 4
+  gates: { spec_rounds: 2, plan_rounds: 4, fix_round_grants: 0, task_reopens: 3, ship_option: squash }
+  plan: { tasks: 8, complete: 8, failed: 0, skipped: 0 }
+  tests: { command: "local `npm run test:all` at d91215e: 740 pass, 0 fail, 1 skipped)'", result: pass }
+  amendments: 0
+  spec_edits_after_ship: 0
+  diff: { base: cc1752c450521c0920f84ec7321c1b2abf5399a3, commits: 17, buckets: { docs: { files: 4, insertions: 42, deletions: 23 }, code: { files: 5, insertions: 458, deletions: 108 }, test: { files: 8, insertions: 557, deletions: 79 } } }
+  modified_files:
+    - CHANGELOG.md
+    - README.md
+    - doc/doc-to-md.md
+    - doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md
+    - extensions/doc_to_md.ts
+    - lib/doc-to-md-core.ts
+    - lib/doc-to-md-handle.ts
+    - lib/doc-to-md-options.ts
+    - scripts/doc_to_md.py
+    - test/doc-to-md-handle.test.ts
+    - test/doc-to-md-options.test.ts
+    - test/doc_to_md.child.test.ts
+    - test/doc_to_md.python.test.ts
+    - test/doc_to_md.test.ts
+    - test/fixtures/bold-headings.docx
+    - test/fixtures/generate.py
+    - test/fixtures/headings.docx
+  council:
+    chair: { model: github-copilot/gpt-6-sol:medium, dispatches: 1, clusters: 10, members_reported: 1 }
+    members:
+      github-copilot/grok-4.7:xhigh: { dispatches: 1, total: { blocker: 1, major: 7, minor: 2 }, unique: { blocker: 1, major: 7, minor: 2 }, applied: { blocker: 1, major: 7, minor: 2 }, unique_applied: { blocker: 1, major: 7, minor: 2 }, deferred: { blocker: 0, major: 0, minor: 0 }, rejected: { blocker: 0, major: 0, minor: 0 } }
+  spec_writes:
+    brainstorm: { count: 7, last_sha256: 22ff8b18dc3ac6d3f578049ae99e120e4c608accc530bb801345632c04534332 }
+  events_dropped: 0
+accumulators:
+  01a0e9aa-bd1d-73b5-8051-ec6770572245:
+    phases:
+      brainstorm: { tokens: { input: 1100924, output: 276989, cache_read: 14524619, cache_write: 1057018, cost: 29.352856395 }, peak_context: 135789 }
+      unphased: { peak_context: 395952, tokens: { input: 18, output: 3091, cache_read: 2334986, cache_write: 42051, cost: 1.5794965 } }
+      plan: { peak_context: 279740, tokens: { input: 116, output: 97968, cache_read: 7932215, cache_write: 443441, cost: 12.917939989999995 } }
+      implement: { peak_context: 331859, tokens: { input: 1026, output: 214439, cache_read: 32036792, cache_write: 1749563, cost: 36.81600549999997 }, user_messages: 1 }
+      verify: { peak_context: 388213, tokens: { input: 351, output: 82402, cache_read: 14163128, cache_write: 454190, cost: 12.06030675 } }
+      ship: { peak_context: 401615, tokens: { input: 12, output: 2443, cache_read: 1219609, cache_write: 344819, cost: 7.3235522500000005 }, user_messages: 1 }
+    personas:
+      scout: { dispatches: 2, models: [ github-copilot/gpt-6-luna:medium ], tokens: { input: 120, output: 33107, cache_read: 1750936, cache_write: 262871, cost: 0.066933735 } }
+      context-builder: { dispatches: 1, models: [ github-copilot/gpt-6-sol:medium ], tokens: { input: 30, output: 6153, cache_read: 340930, cache_write: 55061, cost: 0.2674285 } }
+      spec-council-member: { dispatches: 5, models: [ anthropic/claude-opus-5-5:xhigh, github-copilot/gpt-6-astra:xhigh, anthropic-fable/claude-fable-5-1:high, github-copilot/grok-4.7:xhigh, anthropic-fable/claude-fable-5-1:medium ], tokens: { input: 1100635, output: 161093, cache_read: 8173925, cache_write: 324034, cost: 13.70222415 } }
+      spec-council-synthesizer: { dispatches: 2, models: [ github-copilot/gpt-6-sol:medium ], tokens: { input: 15, output: 4573, cache_read: 36765, cache_write: 30359, cost: 0.1290105 } }
+      spec-summarizer: { dispatches: 2, models: [ anthropic-fable/claude-fable-5-1:medium ], tokens: { input: 12, output: 7702, cache_read: 26388, cache_write: 30744, cost: 1.006697 } }
+      implementer: { dispatches: 22, models: [ github-copilot/gpt-6-sol:low ], tokens: { input: 711, output: 64724, cache_read: 4189193, cache_write: 452177, cost: 2.6169431 } }
+      spec-reviewer: { dispatches: 16, models: [ anthropic/claude-opus-5-5:low ], tokens: { input: 142, output: 50646, cache_read: 971820, cache_write: 303082, cost: 3.632508 } }
+      code-reviewer: { dispatches: 8, models: [ anthropic/claude-opus-5-5:medium ], tokens: { input: 132, output: 54242, cache_read: 2083527, cache_write: 250170, cost: 3.5034334000000005 } }
+      conformance-reviewer: { dispatches: 2, models: [ github-copilot/gpt-6-astra:xhigh ], tokens: { input: 66, output: 29397, cache_read: 891757, cache_write: 215478, cost: 5.055742 } }
+    reviews:
+      spec-reviewer: { dispatches: 16, nonzero_exit: 0 }
+      code-reviewer: { dispatches: 8, nonzero_exit: 0, findings: { blocker: 0, major: 0, minor: 22 } }
+      conformance-reviewer: { dispatches: 2, nonzero_exit: 0 }
+    spec_writes:
+      brainstorm: { count: 7, last_sha256: 22ff8b18dc3ac6d3f578049ae99e120e4c608accc530bb801345632c04534332 }
+    gates: { spec_rounds: 2, plan_rounds: 4, fix_round_grants: 0, task_reopens: 3 }
+    conformance_loops: 2
+    amendments: 0
+    spec_edits_after_ship: 0
+    events_dropped: 0
+    conformance_open_gaps: 4
+events:
+  - { ts: 2026-09-28T20:24:52Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: unphased, kind: phase, action: start, name: brainstorm, model: anthropic-fable/claude-fable-5-1, thinking: medium }
+  - { ts: 2026-09-28T20:31:40Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: scout, model: github-copilot/gpt-6-luna:medium }
+  - { ts: 2026-09-28T20:31:40Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: context-builder, model: github-copilot/gpt-6-sol:medium }
+  - { ts: 2026-09-28T20:59:45Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: spec_renamed, from: doc/specs/2026-09-28-gh-24-direct-docx-pptx-conversion.md, to: doc/specs/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md }
+  - { ts: 2026-09-28T21:11:04Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-member, model: anthropic/claude-opus-5-5:xhigh }
+  - { ts: 2026-09-28T21:11:04Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-member, model: github-copilot/gpt-6-astra:xhigh }
+  - { ts: 2026-09-28T21:11:04Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-member, model: anthropic-fable/claude-fable-5-1:high }
+  - { ts: 2026-09-28T21:12:42Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-synthesizer, model: github-copilot/gpt-6-sol:medium }
+  - { ts: 2026-09-28T21:16:08Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-summarizer, model: anthropic-fable/claude-fable-5-1:medium }
+  - { ts: 2026-09-28T21:35:59Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-member, model: github-copilot/grok-4.7:xhigh }
+  - { ts: 2026-09-28T21:36:50Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-council-synthesizer, model: github-copilot/gpt-6-sol:medium }
+  - { ts: 2026-09-28T21:39:15Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: dispatch, agent: spec-summarizer, model: anthropic-fable/claude-fable-5-1:medium }
+  - { ts: 2026-09-28T21:40:43Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: brainstorm, kind: phase, action: complete, name: brainstorm }
+  - { ts: 2026-09-28T21:40:51Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: unphased, kind: phase, action: start, name: plan, model: anthropic-fable/claude-fable-5-1, thinking: medium }
+  - { ts: 2026-09-28T21:43:12Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: plan, kind: dispatch, agent: scout, model: github-copilot/gpt-6-luna:medium }
+  - { ts: 2026-09-28T21:55:52Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: plan, kind: plan_check, pass: false, plan: doc/plans/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md }
+  - { ts: 2026-09-28T22:00:14Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: plan, kind: plan_check, pass: false, plan: doc/plans/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md }
+  - { ts: 2026-09-28T22:00:26Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: plan, kind: plan_check, pass: true, spec: doc/specs/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md, plan: doc/plans/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md }
+  - { ts: 2026-09-28T22:00:51Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: plan, kind: phase, action: complete, name: plan }
+  - { ts: 2026-09-28T22:01:18Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: unphased, kind: phase, action: start, name: implement, model: anthropic-fable/claude-fable-5-1, thinking: medium }
+  - { ts: 2026-09-28T22:04:37Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:04:37Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:04:37Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:06:18Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:06:18Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:06:18Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:08:37Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:10:32Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-28T22:15:17Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:15:17Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:17:00Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:17:00Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:20:54Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:20:54Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:22:19Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:22:19Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:25:12Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:26:30Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:30:29Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-28T22:33:23Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:33:23Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-28T22:35:14Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:35:14Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-28T22:38:24Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-council-member, model: anthropic-fable/claude-fable-5-1:medium }
+  - { ts: 2026-09-28T22:38:24Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T06:48:53Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: plan_check, pass: true, spec: doc/specs/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md, plan: doc/plans/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md }
+  - { ts: 2026-09-29T06:50:28Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T06:50:28Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T06:52:41Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T06:55:53Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T06:55:53Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T06:57:06Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T06:57:06Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T07:03:29Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T07:04:45Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low, exit: 1 }
+  - { ts: 2026-09-29T07:05:57Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:08:15Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:10:05Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T07:10:57Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:11:49Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: dispatch, agent: spec-reviewer, model: anthropic/claude-opus-5-5:low }
+  - { ts: 2026-09-29T07:11:58Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: implement, kind: phase, action: complete, name: implement }
+  - { ts: 2026-09-29T07:12:01Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: unphased, kind: phase, action: start, name: verify, model: anthropic-fable/claude-fable-5-1, thinking: medium }
+  - { ts: 2026-09-29T07:20:15Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T07:20:34Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: gate, gate: task_reopen }
+  - { ts: 2026-09-29T07:20:42Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: gate, gate: task_reopen }
+  - { ts: 2026-09-29T07:20:45Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: gate, gate: task_reopen }
+  - { ts: 2026-09-29T07:22:42Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:26:30Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T07:27:36Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:29:55Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T07:37:15Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: high }
+  - { ts: 2026-09-29T07:37:17Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: xhigh }
+  - { ts: 2026-09-29T07:37:17Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: max }
+  - { ts: 2026-09-29T07:37:17Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: minimal }
+  - { ts: 2026-09-29T07:37:18Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: low }
+  - { ts: 2026-09-29T07:37:19Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: config_change, thinking: medium }
+  - { ts: 2026-09-29T07:39:51Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: conformance-reviewer, model: github-copilot/gpt-6-astra:xhigh }
+  - { ts: 2026-09-29T07:43:13Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:43:13Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: implementer, model: github-copilot/gpt-6-sol:low }
+  - { ts: 2026-09-29T07:47:40Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: conformance-reviewer, model: github-copilot/gpt-6-astra:xhigh }
+  - { ts: 2026-09-29T07:50:28Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: dispatch, agent: code-reviewer, model: anthropic/claude-opus-5-5:medium }
+  - { ts: 2026-09-29T07:50:39Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: verify, kind: phase, action: complete, name: verify }
+  - { ts: 2026-09-29T07:51:13Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: unphased, kind: phase, action: start, name: ship, model: anthropic-fable/claude-fable-5-1, thinking: medium }
+  - { ts: 2026-09-29T07:56:31Z, session: 01a0e9aa-bd1d-73b5-8051-ec6770572245, phase: ship, kind: ship, option: squash }

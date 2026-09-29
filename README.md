@@ -65,7 +65,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | Extension | Tool | What it does |
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `fetch`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
-| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk (`<stem>.md` + `images/` and spreadsheet `sheets/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` mode inspects first; `pages` selects 1-based pages; every page ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. Settings under `quiver.docToMd`. |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS to a Markdown bundle on disk (`<stem>.md` + `images/` and spreadsheet `sheets/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` mode inspects first; `pages` selects 1-based pages (DOCX: explicit-page-break segments); every selected PDF/PPTX page or DOCX segment when `pageCount > 1` ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. DOCX converts directly (mammoth, python-docx fallback); LibreOffice pagination marks the degraded route. The Outline lists `L<line>` and `p<page>` per heading. Settings under `quiver.docToMd`. |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty/Herdr tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -133,8 +133,8 @@ The npm package's bundled JS deps install automatically on `pi install`. A few *
 | Prerequisite | Needed by | If absent |
 | --- | --- | --- |
 | `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo/actions-run/actions-job routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
-| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF and Excel conversion (preferred route), with `pymupdf4llm`, `openpyxl`, `xlrd`, and `pillow` | Falls back to a system Python >= 3.12 or one-time managed venv; PDF degrades to `unpdf` only when no capable Python exists. Excel requires the Python backend (no JS fallback). |
-| LibreOffice (`soffice` on `PATH`) | `doc_to_md` DOCX/PPTX conversion | Office inputs error (no JS fallback for office->PDF); PDFs unaffected. |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF and Excel conversion and DOCX (preferred route), with `pymupdf4llm`, `openpyxl`, `xlrd`, `pillow`, `mammoth`, `markdownify`, and `python-docx` | Falls back to a system Python >= 3.12 or one-time managed venv; PDF degrades to `unpdf` only when no capable Python exists. Excel requires the Python backend (no JS fallback). |
+| LibreOffice (`soffice` on `PATH`) | `doc_to_md` PPTX conversion, the DOCX fallback route, and Excel rendered views | PPTX errors with a remedy; DOCX converts directly via the Python backend (LibreOffice fills in when that backend lacks the DOCX packages or its DOCX child exits 1); Excel omits rendered views. |
 
 None is a hard install-time dependency of the package; they are tools you provide in the environment where pi runs.
 
@@ -294,9 +294,9 @@ Each setting can also be overridden per-process via `PI_QUIVER_SLACK_ENABLED`, `
 
 | Key | Default | Meaning |
 |---|---|---|
-| `primaryTimeoutMs` | `60000` | pymupdf4llm tier and unpdf tier deadline. |
-| `fallbackTimeoutMs` | `30000` | PyMuPDF text tier, PDF info, and Excel rendered-view rasterization deadline. |
-| `sofficeTimeoutMs` | `120000` | DOCX/PPTX -> PDF deadline; also the Excel rendered-view export. |
+| `primaryTimeoutMs` | `60000` | pymupdf4llm tier, DOCX child (`docx` mode), and unpdf tier deadline. |
+| `fallbackTimeoutMs` | `30000` | PyMuPDF text tier (including the DOCX LibreOffice fallback), PDF and DOCX info, and Excel rendered-view rasterization deadline. |
+| `sofficeTimeoutMs` | `120000` | PPTX -> PDF, the DOCX LibreOffice fallback, and the Excel rendered-view export deadline. |
 | `excelTimeoutMs` | `60000` | Excel child and Excel info deadline. |
 | `warmTimeoutMs` | `120000` | Absolute first-call backend discovery/bootstrap deadline. |
 | `pymupdfVersion` | `1.27.2.3` | pymupdf4llm pin, minimum `1.27.0`. |
@@ -309,7 +309,7 @@ A bundle is `<outputDir>/<stem>.md` plus `<outputDir>/images/` and, for spreadsh
 
 Excel needs a Python backend with openpyxl, xlrd and pillow - otherwise the call fails with `Remedy: install uv, or pip install openpyxl xlrd pillow`. The Markdown opens with a `## Sheets` table listing every sheet in workbook order (0-based `#`, `worksheet`/`chartsheet`, size, hidden, chart and image counts, rendered view, CSV link for non-empty worksheets), then one section per sheet: a `Data:` line linking the full-content CSV under `sheets/` for non-empty worksheets, chart metadata from the workbook model, embedded images, an optional rendered view, a preview of at most the first 100 rows x 50 columns, and - only when the preview is truncated - a `Columns:` profile (type, non-empty count, min/max, distinct up to 50). Sizes are the extent of non-empty cells (the `info` handle reports the raw worksheet dimensions instead, which may be larger). Rendered views (`images/<stem>-s<idx>.<fmt>`) are produced for sheets carrying charts or images when LibreOffice is on `PATH`: the workbook is exported one PDF page per sheet and rasterized under a 16 Mpx budget. Any LibreOffice or rasterization failure degrades to `Rendered view: unavailable (<reason>)` and a handle note; it never fails the conversion. Workbooks whose chartsheet drawings carry a zero-size anchor (openpyxl-authored files; Excel-authored files are unaffected) render as a degenerate page and are reported as such. `.xls` gets the inventory, CSVs and previews but no visual detection or rendering.
 
-Worst-case wall time is `warmTimeoutMs (first call) + sofficeTimeoutMs (Office only) + primaryTimeoutMs + fallbackTimeoutMs + KILL_GRACE_MS x kills` (Excel: `warmTimeoutMs + excelTimeoutMs + sofficeTimeoutMs + fallbackTimeoutMs + 2 * KILL_GRACE_MS`). There is no cap on image count, image bytes, cell count or workbook memory - deliberately; the per-tier timeouts, the rendered-view pixel budget and `maxOutputBytes` are the bounds.
+Worst-case wall time: PDF `warmTimeoutMs (first call) + primaryTimeoutMs + fallbackTimeoutMs`; PPTX adds `sofficeTimeoutMs`; DOCX on the Python path `warmTimeoutMs + primaryTimeoutMs` (success or a terminal child failure), DOCX child exit 1 then LibreOffice `warmTimeoutMs + primaryTimeoutMs + sofficeTimeoutMs + primaryTimeoutMs + fallbackTimeoutMs`, DOCX without a DOCX-capable backend `warmTimeoutMs + sofficeTimeoutMs + primaryTimeoutMs + fallbackTimeoutMs`; Excel `warmTimeoutMs + excelTimeoutMs + sofficeTimeoutMs + fallbackTimeoutMs`. Add `KILL_GRACE_MS` (2000 ms) per kill. There is no cap on image count, image bytes, cell count or workbook memory - deliberately; the per-tier timeouts, the rendered-view pixel budget and `maxOutputBytes` are the bounds.
 
 ### Migrating from flat keys
 

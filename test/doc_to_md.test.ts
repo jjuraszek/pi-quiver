@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolveOptions, TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
-import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAME, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, convertOffice, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
+import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAMES, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, officeFailure, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
@@ -142,17 +142,17 @@ test("findPackageRoot: throws when no package.json exists upward", () => {
 	}
 });
 
-test("parseProbeOutput: PY/PDF/XLSX grammar", () => {
-	assert.deepEqual(parseProbeOutput("PY 3 12\nPDF yes\nXLSX no\n"), { major: 3, minor: 12, pdf: true, xlsx: false });
-	assert.deepEqual(parseProbeOutput("PY 3 14\r\nPDF yes\r\nXLSX yes\r\n"), { major: 3, minor: 14, pdf: true, xlsx: true });
-	assert.equal(parseProbeOutput("PY 3 12\nPKG 1.27.0\n"), null);
+test("parseProbeOutput: PY/PDF/XLSX/DOCX grammar", () => {
+	assert.deepEqual(parseProbeOutput("PY 3 12\nPDF yes\nXLSX no\nDOCX no\n"), { major: 3, minor: 12, pdf: true, xlsx: false, docx: false });
+	assert.deepEqual(parseProbeOutput("PY 3 14\r\nPDF yes\r\nXLSX yes\r\nDOCX yes\r\n"), { major: 3, minor: 14, pdf: true, xlsx: true, docx: true });
+	assert.equal(parseProbeOutput("PY 3 12\nPDF yes\nXLSX yes\n"), null);
 });
 
 test("meetsFloor: >= 3.12 only", () => {
-	assert.equal(meetsFloor({ major: 3, minor: 12, pdf: false, xlsx: false }), true);
-	assert.equal(meetsFloor({ major: 4, minor: 0, pdf: false, xlsx: false }), true);
-	assert.equal(meetsFloor({ major: 3, minor: 11, pdf: false, xlsx: false }), false);
-	assert.equal(meetsFloor({ major: 2, minor: 7, pdf: false, xlsx: false }), false);
+	assert.equal(meetsFloor({ major: 3, minor: 12, pdf: false, xlsx: false, docx: false }), true);
+	assert.equal(meetsFloor({ major: 4, minor: 0, pdf: false, xlsx: false, docx: false }), true);
+	assert.equal(meetsFloor({ major: 3, minor: 11, pdf: false, xlsx: false, docx: false }), false);
+	assert.equal(meetsFloor({ major: 2, minor: 7, pdf: false, xlsx: false, docx: false }), false);
 });
 
 test("cacheDir: per-platform, env-driven", () => {
@@ -198,7 +198,7 @@ const FAKE_VENV_TMP_EXE = venvPython(FAKE_VENV_TMP_DIR, process.platform);
 
 test("resolver: injected env is threaded into the run seam", async () => {
 	const seenEnvs: (NodeJS.ProcessEnv | undefined)[] = [];
-	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n") });
 	const injectedEnv = { FOO: "bar" };
 	const wrapped: ResolverDeps = {
 		...d,
@@ -211,51 +211,58 @@ test("resolver: injected env is threaded into the run seam", async () => {
 
 test("resolver: uv warm success -> uv backend", async () => {
 	const d = fakeDeps({ uv: ok("") });
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "uv", pdf: true, xlsx: true });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "uv", pdf: true, xlsx: true, docx: true });
 });
 
 test("resolver: uv absent, python3 importable -> python backend, python not probed", async () => {
-	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: true });
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: true, docx: true });
 	assert.ok(!d.calls.includes("python"));
 });
 
 test("resolver: uv warm FAILURE (present) still continues to python", async () => {
-	const d = fakeDeps({ uv: fail("warm exploded"), python3: ok("PY 3 13\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: true });
+	const d = fakeDeps({ uv: fail("warm exploded"), python3: ok("PY 3 13\nPDF yes\nXLSX yes\nDOCX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: true, docx: true });
 });
 
 test("resolver: python3 too old is skipped entirely; python picks up", async () => {
-	const d = fakeDeps({ python3: ok("PY 3 11\nPDF yes\nXLSX yes\n"), python: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python", pdf: true, xlsx: true });
+	const d = fakeDeps({ python3: ok("PY 3 11\nPDF yes\nXLSX yes\nDOCX yes\n"), python: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python", pdf: true, xlsx: true, docx: true });
 });
 
 test("resolver: all candidates package-less -> bootstrap from first eligible; venv backend at pin", async () => {
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		python: ok("PY 3 13\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
+		python: ok("PY 3 13\nPDF no\nXLSX no\nDOCX no\n"),
 		[FAKE_VENV_EXE]: enoent(),
 		[FAKE_VENV_TMP_EXE]: ok(""), // pip install
 	});
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
 	assert.deepEqual(d.renames, [[FAKE_VENV_TMP_DIR, FAKE_VENV_DIR]]);
 	// python (second candidate) still probed before bootstrap chose python3
 	assert.ok(d.calls.includes("python"));
 });
 
+test("resolver: cached venv without DOCX packages is rebuilt", async () => {
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"), [FAKE_VENV_EXE]: ok("PY 3 14\nPDF yes\nXLSX yes\nDOCX no\n"), [FAKE_VENV_TMP_EXE]: ok("") });
+	const b = await resolveBackend(CFG, d);
+	assert.deepEqual(b, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
+	assert.ok(d.renames.length === 1);
+});
+
 test("resolver: cached venv wins over bootstrap, loses to importable system python", async () => {
-	const cachedOnly = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, cachedOnly), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
-	const sysWins = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n") });
-	assert.deepEqual(await resolveBackend(CFG, sysWins), { kind: "python", exe: "python3", pdf: true, xlsx: true });
+	const cachedOnly = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, cachedOnly), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
+	const sysWins = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n"), [FAKE_VENV_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n") });
+	assert.deepEqual(await resolveBackend(CFG, sysWins), { kind: "python", exe: "python3", pdf: true, xlsx: true, docx: true });
 });
 
 test("resolver: broken cached venv is removed and re-bootstrapped", async () => {
 	// First rename attempt fails because the stale broken venvDir is still present; the winner probe finds it still
 	// broken, so venvDir is rmrf'd and the rename is retried.
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
 		[FAKE_VENV_EXE]: fail("dyld: missing"),
 		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: (() => { let n = 0; return () => { n++; if (n === 1) throw new Error("EEXIST"); }; })() });
@@ -266,19 +273,19 @@ test("resolver: broken cached venv is removed and re-bootstrapped", async () => 
 
 test("resolver: winner publishes after our build starts — first rename fails, healthy winner adopted, never rmrf'd", async () => {
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
 		// cached probe + recheck: absent (no winner yet); post-rename-failure probe: winner has published
-		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")],
+		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n")],
 		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: () => { throw new Error("EEXIST"); } });
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
 	assert.deepEqual(d.rms, [FAKE_VENV_TMP_DIR]); // only our tmp cleaned up, winner's venvDir untouched
 });
 
 test("resolver: bootstrap pip failure -> none with closed-list reason", async () => {
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
 		[FAKE_VENV_TMP_EXE]: fail("No matching distribution"),
 	});
 	const r = await resolveBackend(CFG, d);
@@ -300,20 +307,20 @@ test("resolver: uv present-but-failed and no python -> uv warm-up reason", async
 
 test("resolver: rename race — competing publish wins, winner probed", async () => {
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; pre-rmrf recheck: absent; post-race probe: winner
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
+		[FAKE_VENV_EXE]: [enoent(), enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n")], // first probe: absent; pre-rmrf recheck: absent; post-race probe: winner
 		[FAKE_VENV_TMP_EXE]: ok(""),
 	}, { rename: () => { throw new Error("EEXIST"); } });
 	const r = await resolveBackend(CFG, d);
-	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(r, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
 });
 
 test("resolver: competing venv published between probe and bootstrap is adopted, not deleted", async () => {
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
-		[FAKE_VENV_EXE]: [enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\n")], // first probe: absent; recheck: winner appeared
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
+		[FAKE_VENV_EXE]: [enoent(), ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n")], // first probe: absent; recheck: winner appeared
 	});
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
 	assert.deepEqual(d.rms, []); // never deleted the winner
 	assert.deepEqual(d.renames, []); // never bootstrapped
 });
@@ -345,12 +352,12 @@ test("getBackend: sticky none — a none resolution is cached for the session", 
 test("getBackend: concurrent first calls bootstrap the venv once", async () => {
 	resetBackendCacheForTests();
 	const d = fakeDeps({
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
 		[FAKE_VENV_EXE]: enoent(),
 		[FAKE_VENV_TMP_EXE]: ok(""),
 	});
 	const [a, b] = await Promise.all([getBackend(CFG, d), getBackend(CFG, d)]);
-	const expected = { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true };
+	const expected = { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true };
 	assert.deepEqual(a, expected);
 	assert.deepEqual(b, expected);
 	assert.equal(d.renames.length, 1);
@@ -375,7 +382,7 @@ test("getBackend: an aborted first resolution does not poison the session for la
 	const badDeps = fakeDeps({ uv: ok("") });
 	await assert.rejects(getBackend(CFG, badDeps, ac.signal), /aborted/);
 	const goodDeps = fakeDeps({ uv: ok("") });
-	assert.deepEqual(await getBackend(CFG, goodDeps), { kind: "uv", pdf: true, xlsx: true });
+	assert.deepEqual(await getBackend(CFG, goodDeps), { kind: "uv", pdf: true, xlsx: true, docx: true });
 	resetBackendCacheForTests();
 });
 
@@ -386,20 +393,22 @@ test("getBackend: a non-creator's abort signal is ignored — creator-only bindi
 	ac.abort();
 	const first = await getBackend(CFG, d); // creates backendPromise, no signal
 	const second = await getBackend(CFG, undefined, ac.signal); // finds existing promise, aborted signal must be ignored
-	assert.deepEqual(first, { kind: "uv", pdf: true, xlsx: true });
-	assert.deepEqual(second, { kind: "uv", pdf: true, xlsx: true });
+	assert.deepEqual(first, { kind: "uv", pdf: true, xlsx: true, docx: true });
+	assert.deepEqual(second, { kind: "uv", pdf: true, xlsx: true, docx: true });
 	resetBackendCacheForTests();
 });
 
-test("convertOffice: soffice ran (code 0) but produced no PDF — hard error naming LibreOffice", async () => {
+test("tryConvertOffice: soffice ran (code 0) but produced no PDF - failure names LibreOffice", async () => {
 	const run = async (): Promise<CR> => ({ stdout: "", stderr: "", code: 0, timedOut: false, capped: false });
-	await assert.rejects(convertOffice(120_000, join(process.cwd(), "test/fixtures/sample.docx"), undefined, run), /LibreOffice/);
+	const result = await tryConvertOffice(120_000, join(process.cwd(), "test/fixtures/sample.docx"), undefined, run);
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.match(officeFailure(result).message, /LibreOffice/);
 });
 
 
 
 test("warmArgs: pins the full package set + python 3.14 + import probe", () => {
-	assert.deepEqual(warmArgs(CFG), ["run", "--with", "pymupdf4llm==1.27.2.3", "--with", "openpyxl==3.1.5", "--with", "xlrd==2.0.2", "--with", "pillow==12.3.0", "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL"]);
+	assert.deepEqual(warmArgs(CFG), ["run", "--with", "pymupdf4llm==1.27.2.3", "--with", "openpyxl==3.1.5", "--with", "xlrd==2.0.2", "--with", "pillow==12.3.0", "--with", "mammoth==1.13.0", "--with", "markdownify==1.2.3", "--with", "python-docx==1.2.0", "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL, mammoth, markdownify, docx"]);
 });
 
 test("uvChildArgs / pythonChildArgs: mode only on argv, script resolved from package root", () => {
@@ -408,10 +417,11 @@ test("uvChildArgs / pythonChildArgs: mode only on argv, script resolved from pac
 	assert.ok(scriptPath().endsWith(join("scripts", "doc_to_md.py")));
 });
 
-test("PROBE_PROGRAM gates PDF on pymupdf import + pymupdf4llm >= 1.27.0 and XLSX on openpyxl/xlrd/PIL", () => {
+test("PROBE_PROGRAM gates PDF, XLSX, and DOCX on their imports", () => {
 	assert.match(PROBE_PROGRAM, /import pymupdf\b/);
 	assert.match(PROBE_PROGRAM, /1\.27\.0/);
 	assert.match(PROBE_PROGRAM, /import openpyxl, xlrd, PIL/);
+	assert.match(PROBE_PROGRAM, /import mammoth, markdownify, docx\n\s+print\("DOCX", "yes"\)/);
 });
 
 test("runCapped: stdin is delivered to the child", async () => {
@@ -445,7 +455,7 @@ test("runCapped: timeout kills the child AND its grandchild; settles within time
 test("resolver: absolute deadline stops discovery after the warm call exhausts it", async () => {
 	let t = 0;
 	const seen: number[] = [];
-	const d = fakeDeps({ uv: fail("warm failed"), python3: ok("PY 3 12\nPDF no\nXLSX no\n") }, { now: () => t });
+	const d = fakeDeps({ uv: fail("warm failed"), python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n") }, { now: () => t });
 	const wrapped: ResolverDeps = { ...d, run: async (cmd, args, opts) => { seen.push(opts.timeoutMs); t += 3000; return d.run(cmd, args, opts); } };
 	const backend = await resolveBackend({ ...CFG, warmTimeoutMs: 5000 }, wrapped);
 	assert.deepEqual(seen, [5000, 2000]);
@@ -456,7 +466,7 @@ test("resolver: absolute deadline stops discovery after the warm call exhausts i
 test("resolver: uv elapsed time bounds discovery before fake bootstrap stages can run", async () => {
 	let t = 0;
 	const timeouts: number[] = [];
-	const d = fakeDeps({ uv: fail("warm failed"), python3: ok("PY 3 12\nPDF no\nXLSX no\n") }, { now: () => t });
+	const d = fakeDeps({ uv: fail("warm failed"), python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n") }, { now: () => t });
 	const wrapped: ResolverDeps = {
 		...d,
 		run: async (cmd, args, runOpts) => {
@@ -479,9 +489,9 @@ test("resolver: bootstrap stays within its absolute simulated deadline", async (
 	const timeouts: { left: number; timeout: number }[] = [];
 	const d = fakeDeps({
 		uv: fail("warm failed"),
-		python3: ok("PY 3 12\nPDF no\nXLSX no\n"),
+		python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"),
 		[FAKE_VENV_EXE]: [enoent(), enoent()],
-		[FAKE_VENV_TMP_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\n"),
+		[FAKE_VENV_TMP_EXE]: ok("PY 3 12\nPDF yes\nXLSX yes\nDOCX yes\n"),
 	}, { now: () => t });
 	const wrapped: ResolverDeps = {
 		...d,
@@ -497,31 +507,33 @@ test("resolver: bootstrap stays within its absolute simulated deadline", async (
 	};
 	const t0 = t;
 	const backend = await resolveBackend({ ...CFG, warmTimeoutMs: 5000 }, wrapped);
-	assert.deepEqual(backend, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
+	assert.deepEqual(backend, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
 	assert.ok(t - t0 <= 5000 + KILL_GRACE_MS, `simulated elapsed ${t - t0}ms`);
 	assert.ok(timeouts.every(({ left, timeout }) => timeout <= left), JSON.stringify(timeouts));
 });
 
 test("resolver: python with PDF but not XLSX is a valid python backend with xlsx=false", async () => {
-	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX no\n") });
-	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: false });
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF yes\nXLSX no\nDOCX no\n") });
+	assert.deepEqual(await resolveBackend(CFG, d), { kind: "python", exe: "python3", pdf: true, xlsx: false, docx: false });
 });
 
-test("resolver: bootstrap installs the full package set into doc-to-md-venv-v2 and removes the legacy pymupdf-venv", async () => {
-	const d = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\n"), [FAKE_VENV_TMP_EXE]: ok("") });
+test("resolver: bootstrap installs the full package set into doc-to-md-venv-v3 and removes both legacy venvs", async () => {
+	const d = fakeDeps({ python3: ok("PY 3 12\nPDF no\nXLSX no\nDOCX no\n"), [FAKE_VENV_TMP_EXE]: ok("") });
 	const seenArgs: string[][] = [];
 	const wrapped: ResolverDeps = { ...d, run: async (cmd, args, opts) => { seenArgs.push(args); return d.run(cmd, args, opts); } };
 	const b = await resolveBackend(CFG, wrapped);
-	assert.deepEqual(b, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true });
-	assert.ok(seenArgs.some((a) => a.join(" ") === "-m pip install pymupdf4llm==1.27.2.3 openpyxl==3.1.5 xlrd==2.0.2 pillow==12.3.0"));
+	assert.deepEqual(b, { kind: "venv", exe: FAKE_VENV_EXE, pdf: true, xlsx: true, docx: true });
+	assert.ok(seenArgs.some((a) => a.join(" ") === "-m pip install pymupdf4llm==1.27.2.3 openpyxl==3.1.5 xlrd==2.0.2 pillow==12.3.0 mammoth==1.13.0 markdownify==1.2.3 python-docx==1.2.0"));
 	assert.deepEqual(d.renames, [[FAKE_VENV_TMP_DIR, FAKE_VENV_DIR]]);
-	assert.ok(d.rms.includes(join(FAKE_CACHE_ROOT, LEGACY_VENV_DIR_NAME)));
+	assert.equal(VENV_DIR_NAME, "doc-to-md-venv-v3");
+	for (const legacy of ["pymupdf-venv", "doc-to-md-venv-v2"]) assert.ok(d.rms.includes(join(FAKE_CACHE_ROOT, legacy)), legacy);
+	assert.deepEqual(LEGACY_VENV_DIR_NAMES, ["pymupdf-venv", "doc-to-md-venv-v2"]);
 });
 
 const MULTIPAGE = fileURLToPath(new URL("../test/fixtures/multipage.pdf", import.meta.url));
 const opts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: MULTIPAGE, ...extra } as never, {}, {});
 const okTier = (markdown: string, pages: number[]): TierResult => ({ ok: true, json: { markdown, pages, pageCount: 6, emptyPages: [], failedPages: [], notes: [] } });
-const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind: "uv", pdf: true, xlsx: true }): Partial<PipelineSeams> => ({ backend: async () => backend, runTier });
+const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind: "uv", pdf: true, xlsx: true, docx: true }): Partial<PipelineSeams> => ({ backend: async () => backend, runTier });
 
 function parseHandle(text: string): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -537,7 +549,7 @@ test("convertDocument: primary success -> bundle on disk, handle, separators kep
 	assert.ok(h["Saved-To"].includes("pi-quiver-doc-to-md-") && h["Saved-To"].endsWith(`${sep}multipage.md`));
 	assert.match(r.output, /^Type: pdf   Engine: pymupdf4llm   Tier: primary$/m);
 	assert.match(r.output, /^Page-Count: 6   Pages: 2, 5   Images: 0/m);
-	assert.ok(r.output.includes("Outline:\n  L1  # H") || r.output.includes("Outline:\n  L1   # H"));
+	assert.ok(r.output.includes("Outline:\n  L1   p2  # H"), r.output);
 	assert.ok(readFileSync(h["Saved-To"], "utf8").includes("--- end of page.page_number=5 ---"));
 	assert.ok(!existsSync(`${h["Saved-To"]}.lock`));
 	assert.equal(r.details.inputType, "pdf");
@@ -637,7 +649,7 @@ test("convertDocument: missing Python executable maps spawn failures to exit -1 
 	try {
 		await assert.rejects(
 			convertDocument(opts({ outputDir: out, primaryTimeoutMs: 5000, fallbackTimeoutMs: 5000 }), undefined, {
-				backend: async () => ({ kind: "python", exe: "/nonexistent/python-binary", pdf: true, xlsx: true }),
+				backend: async () => ({ kind: "python", exe: "/nonexistent/python-binary", pdf: true, xlsx: true, docx: true }),
 			}),
 			/Conversion failed: primary exit -1; fallback exit -1/,
 		);
@@ -690,7 +702,7 @@ test("convertDocument: xlsx tier only gives timeout/output-cap remedy for those 
 
 test("convertDocument: xlsx with python backend lacking XLSX -> remedy; no backend -> remedy", async () => {
 	const xl = fileURLToPath(new URL("../test/fixtures/workbook.xlsx", import.meta.url));
-	await assert.rejects(convertDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => okTier("", []), { kind: "python", exe: "python3", pdf: true, xlsx: false })), /Remedy: install uv, or pip install openpyxl xlrd pillow/);
+	await assert.rejects(convertDocument(resolveOptions({ path: xl }, {}, {}), undefined, seamsWith(async () => okTier("", []), { kind: "python", exe: "python3", pdf: true, xlsx: false, docx: false })), /Remedy: install uv, or pip install openpyxl xlrd pillow/);
 	await assert.rejects(convertDocument(resolveOptions({ path: xl }, {}, {}), undefined, { backend: async () => ({ kind: "none", reason: "x" }) }), /Remedy: install uv, or pip install openpyxl xlrd pillow/);
 });
 
@@ -731,16 +743,18 @@ test("soffArgs: default pdf filter and explicit Calc filter", () => {
 	assert.equal(a[a.indexOf("--convert-to") + 1], EXCEL_PDF_FILTER);
 });
 
-test("tryConvertOffice: failures are results; convertOffice keeps thrown messages", async () => {
+test("tryConvertOffice: failures are results with officeFailure messages", async () => {
 	const docx = join(process.cwd(), "test/fixtures/sample.docx");
 	const mk = (r: Partial<{ code: number | null; timedOut: boolean }>) => async () => ({ code: 0, timedOut: false, capped: false, stdout: "", stderr: "boom", ...r });
 	assert.deepStrictEqual(await tryConvertOffice(1000, docx, undefined, mk({ code: null })), { ok: false, kind: "missing", code: null, timedOut: false, stderr: "boom" });
 	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({ timedOut: true, code: null })) as { kind: string }).kind, "timeout");
 	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({ code: 7 })) as { kind: string }).kind, "exit");
 	assert.equal((await tryConvertOffice(1000, docx, undefined, mk({})) as { kind: string }).kind, "no-pdf");
-	await assert.rejects(convertOffice(1000, docx, undefined, mk({ code: null })), /was not found on PATH/);
-	await assert.rejects(convertOffice(1000, docx, undefined, mk({ code: 7 })), /soffice failed \(code=7 timedOut=false\): boom/);
-	await assert.rejects(convertOffice(1000, docx, undefined, mk({})), /produced no usable PDF/);
+	for (const [input, expected] of [[{ code: null }, /was not found on PATH/], [{ code: 7 }, /soffice failed \(code=7 timedOut=false\): boom/], [{}, /produced no usable PDF/]] as const) {
+		const result = await tryConvertOffice(1000, docx, undefined, mk(input));
+		if (!result.ok) assert.match(officeFailure(result).message, expected);
+		else assert.fail("expected office failure");
+	}
 });
 
 test("reconcileRenderMarkers: resolves by index and rejects leftovers", () => {
@@ -759,6 +773,80 @@ function stageXl(bundle: { stagingDir: string }, childOptions: Record<string, un
 	writeFileSync(join(String(childOptions.sheetsStagingDir), "s0-data.csv"), "a\r\nb\r\n");
 }
 const fakeOffice = (result: Awaited<ReturnType<typeof tryConvertOffice>>): PipelineSeams["office"] => async () => result;
+const DOCX = fileURLToPath(new URL("../test/fixtures/multipage.docx", import.meta.url));
+const PPTX = fileURLToPath(new URL("../test/fixtures/multislide.pptx", import.meta.url));
+const docxOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: DOCX, ...extra } as never, {}, {});
+const UV: Backend = { kind: "uv", pdf: true, xlsx: true, docx: true };
+const PY_NO_DOCX: Backend = { kind: "python", exe: "python3", pdf: true, xlsx: true, docx: false };
+const MISSING = { ok: false as const, kind: "missing" as const, code: null, timedOut: false, stderr: "" };
+const okDocx = (markdown: string, extra: Record<string, unknown> = {}): TierResult => ({ ok: true, json: { markdown, pages: [1, 2], pageCount: 2, explicitBreaks: 1, engine: "mammoth", degraded: false, fallbackReason: null, ...extra } });
+
+test("DOCX direct conversion publishes images and reports child fallback", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-docx-"));
+ try {
+  const modes: string[] = [];
+  const r = await convertDocument(docxOpts({ outputDir: out }), undefined, { backend: async () => UV, office: async () => { throw Error("office called"); }, runTier: async (mode, _o, b) => {
+   modes.push(mode); mkdirSync(join(b.stagingDir, "p1")); writeFileSync(join(b.stagingDir, "p1", "img.png"), "1"); writeFileSync(join(b.stagingDir, "p1", ".done"), "");
+   return okDocx("# A\n\n![](p1/img.png)\n\n--- end of page.page_number=1 ---\n", { engine: "python-docx", degraded: true, fallbackReason: "mammoth boom" });
+  } });
+  assert.deepEqual(modes, ["docx"]); assert.equal(r.details.explicitBreaks, 1);
+  assert.match(r.output, /Engine: python-docx   Tier: docx/); assert.match(r.output, /Page-Count: 2 \(explicit page breaks, not printed pages\)/);
+  assert.equal(parseHandle(r.output)["Fallback-Reason"], "mammoth boom");
+  assert.equal(parseHandle(r.output)["Degraded"], "python-docx text extraction - footnotes, hyperlinks, images not preserved");
+  assert.ok(existsSync(join(out, "images", "multipage-p1-1.png")));
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("DOCX exit 1 clears staging and uses office; user errors and timeouts never retry", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-docx-"));
+ try {
+  let staging = ""; let officeCalls = 0; const modes: string[] = [];
+  const r = await convertDocument(docxOpts({ outputDir: out }), undefined, { backend: async () => UV, office: async () => { officeCalls++; assert.deepEqual(readdirSync(staging), []); return { ok: true, pdfPath: MULTIPAGE, cleanup: () => {} }; }, runTier: async (mode, _o, b) => { modes.push(mode); staging = b.stagingDir; if (mode === "docx") { writeFileSync(join(staging, "partial"), "x"); return { ok: false, reason: "exit 1", detail: "both failed" }; } return okTier("text", [1]); } });
+  assert.deepEqual(modes, ["docx", "pdf-primary"]); assert.equal(officeCalls, 1);
+  assert.equal(parseHandle(r.output)["Fallback-Reason"], "docx exit 1 (both failed)");
+  assert.equal(parseHandle(r.output)["Degraded"], "LibreOffice PDF route - heading styles and explicit page breaks not preserved; page numbers are LibreOffice pagination");
+  assert.match(r.output, /^Page-Count: 6 \(LibreOffice pagination\)/m);
+  for (const fail of [{ ok: false as const, userError: "bad pages" }, { ok: false as const, reason: "timeout after 5ms" }]) {
+   await assert.rejects(convertDocument(docxOpts(), undefined, { backend: async () => UV, office: async () => { officeCalls++; return { ok: true, pdfPath: MULTIPAGE, cleanup: () => {} }; }, runTier: async () => fail }), fail && "userError" in fail ? /bad pages/ : /Conversion failed: docx timeout after 5ms/);
+  }
+  assert.equal(officeCalls, 1);
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("DOCX missing backend uses office, but missing office or failed child gives targeted errors", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-docx-"));
+ try {
+  const modes: string[] = [];
+  const r = await convertDocument(docxOpts({ outputDir: out }), undefined, { backend: async () => PY_NO_DOCX, office: fakeOffice({ ok: true, pdfPath: MULTIPAGE, cleanup: () => {} }), runTier: async (mode) => { modes.push(mode); return okTier("text", [1]); } });
+  assert.deepEqual(modes, ["pdf-primary"]); assert.equal(parseHandle(r.output)["Fallback-Reason"], "python backend lacks DOCX packages");
+  assert.equal(parseHandle(r.output)["Degraded"], "LibreOffice PDF route - heading styles and explicit page breaks not preserved; page numbers are LibreOffice pagination");
+  await assert.rejects(convertDocument(docxOpts(), undefined, { backend: async () => UV, office: fakeOffice(MISSING), runTier: async () => ({ ok: false, reason: "exit 1", detail: "mammoth failed; python-docx failed" }) }), /Conversion failed: docx exit 1 \(mammoth failed; python-docx failed\); LibreOffice \(soffice\) not found on PATH/);
+  await assert.rejects(convertDocument(docxOpts(), undefined, { backend: async () => UV, office: async () => { throw Error("office called"); }, runTier: async () => ({ ok: false, reason: "invalid-json" }) }), /Conversion failed: docx invalid-json/);
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("DOCX child exit retains its reason when pages or office PDF production fails", async () => {
+	const child = async (): Promise<TierResult> => ({ ok: false, reason: "exit 1", detail: "mammoth failed; python-docx failed" });
+	await assert.rejects(convertDocument(docxOpts({ pages: "1" }), undefined, { backend: async () => UV, office: async () => { throw Error("office called"); }, runTier: child }), /docx exit 1 \(mammoth failed; python-docx failed\)/);
+	await assert.rejects(convertDocument(docxOpts(), undefined, { backend: async () => UV, office: fakeOffice({ ok: false, kind: "no-pdf", code: 0, timedOut: false, stderr: "" }), runTier: child }), (error: Error) => {
+		assert.match(error.message, /docx exit 1 \(mammoth failed; python-docx failed\)/);
+		assert.match(error.message, /LibreOffice \(soffice\) ran but produced no usable PDF/);
+		return true;
+	});
+});
+
+test("DOCX and PPTX prerequisite errors and DOCX info stay on seams", async () => {
+ await assert.rejects(convertDocument(docxOpts(), undefined, { backend: async () => PY_NO_DOCX, office: fakeOffice(MISSING) }), /DOCX conversion needs the Python DOCX packages or LibreOffice.*found without mammoth\/markdownify\/python-docx/);
+ let officeCalls = 0;
+ await assert.rejects(convertDocument(docxOpts({ pages: "2" }), undefined, { backend: async () => PY_NO_DOCX, office: async () => { officeCalls++; return MISSING; } }), /--pages on a DOCX needs the Python DOCX backend/);
+ assert.equal(officeCalls, 0);
+ await assert.rejects(convertDocument(resolveOptions({ path: PPTX } as never, {}, {}), undefined, { backend: async () => UV, office: fakeOffice(MISSING) }), /PPTX conversion needs LibreOffice.*Python backend: available/);
+ const r = await inspectDocument(docxOpts({ info: true }), undefined, { backend: async () => UV, office: async () => { throw Error("office called"); }, runTier: async (mode) => { assert.equal(mode, "info"); return { ok: true, json: { pageCount: 1, metadata: { title: "T" }, toc: [[1, "Intro", null]] } }; } });
+ assert.match(r.output, /L1 Intro \(p\?\)/);
+ let inspectOfficeCalls = 0;
+ await assert.rejects(inspectDocument(docxOpts({ info: true }), undefined, { backend: async () => PY_NO_DOCX, office: async () => { inspectOfficeCalls++; return MISSING; } }), /DOCX inspection needs the Python DOCX packages/);
+ assert.equal(inspectOfficeCalls, 0);
+});
 
 test("convertDocument xlsx: rendered views and CSV are published into manifests and handle", async () => {
 	const out = mkdtempSync(join(tmpdir(), "quiver-xl-"));

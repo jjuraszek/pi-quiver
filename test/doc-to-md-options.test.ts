@@ -26,6 +26,11 @@ test("descriptors: every tunable has a flag, default and help; per-call intents 
 	assert.strictEqual(TUNABLE_DEFAULTS.outlineMaxEntries, 40);
 });
 
+test("pages help names DOCX explicit-page-break segments", () => {
+	const pages = DOC_TO_MD_OPTIONS.find((d) => d.key === "pages")!;
+	assert.ok(pages.help.includes("DOCX: selects explicit-page-break segments; rejected when the file has none"), pages.help);
+});
+
 test("resolveOptions: per-call > settings > env > default", () => {
 	const env = { PI_DOC_TO_MD_CONVERT_TIMEOUT_MS: "1000", PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS: "2000", PI_DOC_TO_MD_WARM_TIMEOUT_MS: "3000", PI_DOC_TO_MD_PYMUPDF_VERSION: "1.27.0" };
 	const r = resolveOptions({ path: "a.pdf", primaryTimeoutMs: 5 }, { primaryTimeoutMs: 7, sofficeTimeoutMs: 9 }, env);

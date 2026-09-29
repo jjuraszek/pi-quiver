@@ -4,8 +4,8 @@ import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline,
 
 const base: HandleData = {
 	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
-	pageCount: 42, pages: [3, 4, 5], imageCount: 4, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
-	failedPages: [], emptyPages: [], notes: [], outline: [{ line: 1, level: 1, title: "Installation" }, { line: 88, level: 2, title: "Wiring" }], outlineTotal: 2,
+	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
+	failedPages: [], emptyPages: [], notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
 };
 
 test("formatHandle: full shape, conditional lines omitted when empty", () => {
@@ -27,7 +27,7 @@ test("formatHandle: degraded/fallback/failed/empty/notes lines, Images-Dir omitt
 		...base, imagesDir: null, imageCount: 0, engine: "pymupdf-text", tier: "fallback", pages: null,
 		degraded: "PyMuPDF text extraction - layout/tables not preserved", fallbackReason: "primary timeout after 60000ms",
 		failedPages: [4, 9, 10, 11, 12], emptyPages: [4], notes: ["a", "b", "c", "d", "e", "f"],
-		outline: [{ line: 1, level: 1, title: "x".repeat(100) }], outlineTotal: 41,
+		outline: [{ line: 1, level: 1, title: "x".repeat(100), page: null }], outlineTotal: 41,
 	});
 	const lines = h.split("\n");
 	assert.ok(!lines.some((l) => l.startsWith("Images-Dir:")));
@@ -48,14 +48,40 @@ test("compactRanges: ranges, cap with +N more", () => {
 	assert.strictEqual(compactRanges([]), "");
 });
 
-test("scanOutline: ATX headings outside fences, line numbers 1-based, cap", () => {
+test("scanOutline: ATX headings outside fences, line numbers 1-based, cap, page from the next closing marker", () => {
 	const md = ["# A", "text", "```", "# not a heading", "```", "## B", "####### seven hashes is not a heading", "#nospace"].join("\n");
 	const r = scanOutline(md, 40);
-	assert.deepStrictEqual(r.entries, [{ line: 1, level: 1, title: "A" }, { line: 6, level: 2, title: "B" }]);
+	assert.deepStrictEqual(r.entries, [{ line: 1, level: 1, title: "A", page: null }, { line: 6, level: 2, title: "B", page: null }]);
 	assert.strictEqual(r.total, 2);
 	const capped = scanOutline("# a\n# b\n# c", 2);
 	assert.strictEqual(capped.entries.length, 2);
 	assert.strictEqual(capped.total, 3);
+	const paged = scanOutline(["# H", "text", "--- end of page.page_number=2 ---", "## Mid", "--- end of page.page_number=5 ---", "# Tail"].join("\n"), 40);
+	assert.deepStrictEqual(paged.entries.map((e) => [e.title, e.page]), [["H", 2], ["Mid", 5], ["Tail", null]]);
+});
+
+test("formatHandle: Outline page column, Outline: none, Page-Count suffixes", () => {
+	const paged = formatHandle({ ...base, outline: [{ line: 12, level: 2, title: "Title", page: 2 }, { line: 120, level: 1, title: "Late", page: 14 }], outlineTotal: 2 }).split("\n");
+	assert.ok(paged.includes("  L12   p2   ## Title") && paged.includes("  L120  p14  # Late"), paged.join("\n"));
+	const unpaged = formatHandle({ ...base, outline: [{ line: 12, level: 2, title: "Title", page: null }], outlineTotal: 1 }).split("\n");
+	assert.ok(unpaged.includes("  L12  ## Title"));
+	const none = formatHandle({ ...base, outline: [], outlineTotal: 0 }).split("\n");
+	assert.strictEqual(none.at(-1), "Outline: none");
+	assert.ok(none.some((l) => l.startsWith("Page-Count: 42   Pages: 3-5   Images: 4   Size: ")));
+	const docx = { ...base, type: "docx" as const, tier: "docx" as const, engine: "mammoth" as const, pages: null, pageCount: 5 };
+	assert.ok(formatHandle({ ...docx, explicitBreaks: 4 }).includes("Page-Count: 5 (explicit page breaks, not printed pages)   Pages: all"));
+	assert.ok(formatHandle({ ...docx, pageCount: 1, explicitBreaks: 0 }).includes("Page-Count: 1 (no explicit page breaks)   Pages: all"));
+	assert.ok(formatHandle({ ...docx, tier: "primary", engine: "pymupdf4llm", explicitBreaks: null }).includes("Page-Count: 5 (LibreOffice pagination)   Pages: all"));
+	assert.ok(formatHandle({ ...base, explicitBreaks: 0 }).includes("Page-Count: 42   Pages: 3-5"));
+});
+
+test("formatInfoHandle: docx TOC none line and (p?) for null pages; pdf unchanged", () => {
+	const empty = formatInfoHandle({ type: "docx", backend: "uv", pageCount: 1, metadata: {}, toc: [], tocTotal: 0, sheets: null, sheetsTotal: 0 }, 40);
+	assert.deepStrictEqual(empty.split("\n"), ["Type: docx   Page-Count: 1   Backend: uv", "TOC: none (no heading styles found)"]);
+	const nul = formatInfoHandle({ type: "docx", backend: "uv", pageCount: 1, metadata: { title: "T" }, toc: [{ level: 1, title: "Intro", page: null }], tocTotal: 1, sheets: null, sheetsTotal: 0 }, 40);
+	assert.deepStrictEqual(nul.split("\n"), ["Type: docx   Page-Count: 1   Backend: uv", "Title: T", "TOC:", "  L1 Intro (p?)"]);
+	const pdf = formatInfoHandle({ type: "pdf", backend: "uv", pageCount: 3, metadata: {}, toc: [], tocTotal: 0, sheets: null, sheetsTotal: 0 }, 40);
+	assert.deepStrictEqual(pdf.split("\n"), ["Type: pdf   Page-Count: 3   Backend: uv"]);
 });
 
 test("formatInfoHandle: pdf and xlsx shapes", () => {
@@ -70,7 +96,7 @@ test("formatInfoHandle: pdf and xlsx shapes", () => {
 });
 
 test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
-	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], notes: [], outline: [], outlineTotal: 0 };
+	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], notes: [], outline: [], outlineTotal: 0 };
 	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
 	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
 	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));

@@ -1,11 +1,11 @@
 import type { InputType } from "./doc-to-md-options.ts";
 
-export type Tier = "primary" | "fallback" | "unpdf" | "excel";
-export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd";
+export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx";
+export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx";
 export type BackendKind = "uv" | "python" | "venv" | "none";
 
-export interface OutlineEntry { line: number; level: number; title: string; }
-export interface TocEntry { level: number; title: string; page: number; }
+export interface OutlineEntry { line: number; level: number; title: string; page: number | null; }
+export interface TocEntry { level: number; title: string; page: number | null; }
 export interface SheetInfo {
 	index: number;
 	name: string;
@@ -20,7 +20,7 @@ export interface SheetInfo {
 
 export interface HandleData {
 	savedTo: string; imagesDir: string | null; sheetsDir: string | null; type: InputType; engine: Engine; tier: Tier;
-	pageCount: number | null; pages: number[] | null; imageCount: number; bytes: number; lines: number;
+	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number;
 }
@@ -57,27 +57,45 @@ export function compactRanges(nums: number[], maxEntries = 20): string {
 	return `${parts.slice(0, maxEntries).join(", ")} (+${parts.length - maxEntries} more)`;
 }
 
+const PAGE_MARKER_RE = /^--- end of page\.page_number=(\d+) ---$/;
+
 export function scanOutline(md: string, max: number): { entries: OutlineEntry[]; total: number } {
 	const entries: OutlineEntry[] = [];
+	let pending: OutlineEntry[] = [];
 	let total = 0, inFence = false;
 	md.split("\n").forEach((raw, i) => {
 		const line = raw.replace(/\r$/, "");
+		const marker = line.match(PAGE_MARKER_RE);
+		if (marker) { for (const e of pending) e.page = Number(marker[1]); pending = []; return; }
 		if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return; }
 		if (inFence) return;
 		const m = line.match(/^(#{1,6}) (.*)$/);
 		if (!m) return;
 		total++;
-		if (entries.length < max) entries.push({ line: i + 1, level: m[1].length, title: trunc(m[2].trim(), TITLE_MAX) });
+		if (entries.length < max) {
+			const e: OutlineEntry = { line: i + 1, level: m[1].length, title: trunc(m[2].trim(), TITLE_MAX), page: null };
+			entries.push(e); pending.push(e);
+		}
 	});
 	return { entries, total };
 }
 
 function outlineLines(entries: OutlineEntry[], total: number): string[] {
+	if (total === 0) return ["Outline: none"];
 	if (entries.length === 0) return [];
-	const width = Math.max(5, Math.max(...entries.map((e) => `L${e.line}`.length)) + 2);
-	const out = ["Outline:", ...entries.map((e) => `  ${`L${e.line}`.padEnd(width)}${"#".repeat(e.level)} ${trunc(e.title, TITLE_MAX)}`)];
+	const lineWidth = Math.max(3, ...entries.map((e) => `L${e.line}`.length)) + 2;
+	const paged = entries.filter((e) => e.page !== null);
+	const pageWidth = paged.length ? Math.max(...paged.map((e) => `p${e.page}`.length)) + 2 : 0;
+	const out = ["Outline:", ...entries.map((e) => `  ${`L${e.line}`.padEnd(lineWidth)}${pageWidth ? (e.page === null ? "" : `p${e.page}`).padEnd(pageWidth) : ""}${"#".repeat(e.level)} ${trunc(e.title, TITLE_MAX)}`)];
 	if (total > entries.length) out.push(`  (+${total - entries.length} more)`);
 	return out;
+}
+
+function pageCountLabel(h: HandleData): string {
+	const n = h.pageCount ?? "?";
+	if (h.type !== "docx") return String(n);
+	if (h.tier === "docx") return `${n} (${(h.explicitBreaks ?? 0) > 0 ? "explicit page breaks, not printed pages" : "no explicit page breaks"})`;
+	return `${n} (LibreOffice pagination)`;
 }
 
 export function formatHandle(h: HandleData): string {
@@ -85,7 +103,7 @@ export function formatHandle(h: HandleData): string {
 	if (h.imagesDir && h.imageCount > 0) lines.push(`Images-Dir: ${h.imagesDir}`);
 	if (h.sheetsDir) lines.push(`Sheets-Dir: ${h.sheetsDir}`);
 	lines.push(`Type: ${h.type}   Engine: ${h.engine}   Tier: ${h.tier}`);
-	lines.push(`Page-Count: ${h.pageCount ?? "?"}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);
+	lines.push(`Page-Count: ${pageCountLabel(h)}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);
 	if (h.degraded) lines.push(`Degraded: ${h.degraded}`);
 	if (h.fallbackReason) lines.push(`Fallback-Reason: ${h.fallbackReason}`);
 	const fe: string[] = [];
@@ -112,8 +130,8 @@ export function formatInfoHandle(i: InfoData, max: number): string {
 	const meta = Object.entries(i.metadata).filter(([, v]) => v).map(([k, v]) => `${k[0].toUpperCase()}${k.slice(1)}: ${trunc(v, META_MAX_CHARS)}`);
 	if (meta.length) lines.push(meta.join("   "));
 	if (i.toc.length) {
-		lines.push("TOC:", ...i.toc.slice(0, max).map((t) => `  L${t.level} ${trunc(t.title, TITLE_MAX)} (p${t.page})`));
+		lines.push("TOC:", ...i.toc.slice(0, max).map((t) => `  L${t.level} ${trunc(t.title, TITLE_MAX)} (p${t.page ?? "?"})`));
 		if (i.tocTotal > max) lines.push(`  (+${i.tocTotal - max} more)`);
-	}
+	} else if (i.type === "docx") lines.push("TOC: none (no heading styles found)");
 	return lines.join("\n");
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages); options JSON on stdin;
+"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages | docx); options JSON on stdin;
 one JSON result on stdout. Exit 0 ok, 1 conversion failure (traceback on stderr), 3 user error
 ({"error", "pageCount"} on stdout). Library chatter is redirected to stderr so stdout is the result only.
 Imports `pymupdf` / `pymupdf4llm` (never the deprecated `fitz` alias)."""
@@ -14,6 +14,11 @@ import traceback
 import warnings
 
 SEP = "\n\n--- end of page.page_number={n} ---\n\n"
+PAGEBREAK_SENTINEL = "\x00PAGEBREAK\x00"
+DOCX_NO_BREAKS = "--pages does not apply to this DOCX: it has no explicit page breaks; read the .md by Outline line offsets instead"
+DOCX_STYLE_MAP = "\n".join(["br[type='page'] => hr.pagebreak:fresh"] + [f"p[style-name='Heading {n}'] => h6:fresh" for n in (7, 8, 9)] + [f"p.Heading{n} => h6:fresh" for n in (7, 8, 9)])
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+IMG_PLACEHOLDER_RE = re.compile(r"__docximg(\d+)__")
 DEGRADED_NOTE = "degraded: PyMuPDF text extraction - layout/tables not preserved"
 MARKDOWN_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\(\s*)(?:<([^>]+)>|([^)]*?))(\s*\))")
 HTML_IMAGE_RE = re.compile(
@@ -53,12 +58,12 @@ def user_error(msg, page_count=None):
     return 3
 
 
-def check_pages(pages, page_count):
+def check_pages(pages, page_count, noun="pages"):
     if pages is None:
         return list(range(1, page_count + 1))
     bad = [p for p in pages if p < 1 or p > page_count]
     if bad:
-        raise UserError(f"pages out of range: {', '.join(map(str, bad))} (document has {page_count} pages)", page_count)
+        raise UserError(f"pages out of range: {', '.join(map(str, bad))} (document has {page_count} {noun})", page_count)
     return pages
 
 
@@ -328,6 +333,277 @@ def sheet_info(idx, name, kind, hidden, R, C, hr, hc, charts, images, csv_rel):
     return {"index": idx, "name": name, "kind": kind, "hidden": hidden, "rows": R, "cols": C, "hiddenRows": hr, "hiddenCols": hc,
             "charts": charts, "images": images, "rendered": False, "csv": csv_rel}
 
+def is_page_break(el):
+    return el.tag == f"{W}br" and el.get(f"{W}type") == "page"
+
+
+def count_explicit_breaks(body):
+    return sum(1 for el in body.iter(f"{W}br") if is_page_break(el))
+
+
+def heading_level(paragraph):
+    name = paragraph.style.name if paragraph.style is not None else ""
+    m = re.match(r"heading\s*(\d+)$", (name or "").strip(), re.IGNORECASE)
+    return min(int(m.group(1)), 6) if m else None
+
+
+def paragraph_pieces(p_el):
+    pieces = [""]
+    for el in p_el.iter():
+        if el.tag == f"{W}t":
+            pieces[-1] += el.text or ""
+        elif el.tag == f"{W}tab":
+            pieces[-1] += "\t"
+        elif is_page_break(el):
+            pieces.append("")
+    return pieces
+
+
+def docx_body_events(document):
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    def walk(child):
+        if child.tag == f"{W}p":
+            lvl = heading_level(Paragraph(child, document))
+            pieces = paragraph_pieces(child)
+            images = [False] * len(pieces)
+            part = 0
+            for el in child.iter():
+                if is_page_break(el):
+                    part += 1
+                elif el.tag in (f"{W}drawing", f"{W}pict"):
+                    images[part] = True
+            for i, piece in enumerate(pieces):
+                if i:
+                    yield "break", None, None
+                yield "paragraph", (piece, images[i]), lvl
+        elif child.tag == f"{W}tbl":
+            yield "table", Table(child, document), None
+            for _ in range(count_explicit_breaks(child)):
+                yield "break", None, None
+        elif is_page_break(child):
+            yield "break", None, None
+        else:
+            for nested in child.iterchildren():
+                yield from walk(nested)
+
+    for child in document.element.body.iterchildren():
+        yield from walk(child)
+
+
+def image_ext(content_type):
+    ct = (content_type or "").lower()
+    if ct in ("image/x-emf", "image/x-wmf"):
+        return ct[8:]
+    return ct.split("/", 1)[1] if "/" in ct else "bin"
+
+
+def finish_segments(segs):
+    if len(segs) > 1 and not segs[-1].strip():
+        segs = segs[:-1]
+    return segs
+
+
+def hoist_breaks(soup):
+    for hr in list(soup.find_all("hr", class_="pagebreak")):
+        top = hr
+        while top.parent is not None and top.parent is not soup:
+            top = top.parent
+        if top is hr:
+            continue
+        if top.name == "table":
+            hr.extract()
+            top.insert_after(hr)
+            continue
+        chain, node = [], hr
+        while node is not top:
+            chain.append(node)
+            node = node.parent
+        tail, created = None, []
+        for node in chain:
+            parent = node.parent
+            fresh = soup.new_tag(parent.name, attrs=dict(parent.attrs))
+            if tail is not None:
+                fresh.append(tail)
+            for sib in list(node.next_siblings):
+                fresh.append(sib.extract())
+            created.append(fresh)
+            tail = fresh
+        hr.extract()
+        top.insert_after(hr)
+        hr.insert_after(tail)
+        for el in created + [top]:
+            if not el.get_text(strip=True) and el.find("img") is None and el.find("hr", class_="pagebreak") is None:
+                el.decompose()
+    for n in (7, 8, 9):
+        for h in soup.find_all(f"h{n}"):
+            h.name = "h6"
+
+
+def split_footnotes(soup):
+    notes = {}
+    ols = soup.find_all("ol", recursive=False)
+    if ols:
+        ol = ols[-1]
+        items = ol.find_all("li", recursive=False)
+        if items and all((li.get("id") or "").startswith(("footnote-", "endnote-")) for li in items):
+            for li in items:
+                notes[li["id"]] = li
+            ol.extract()
+    return notes
+
+
+def docx_mammoth(path):
+    import mammoth
+    from bs4 import BeautifulSoup
+    from markdownify import MarkdownConverter
+    images = {}
+
+    def convert_image(image):
+        with image.open() as fh:
+            data = fh.read()
+        images[len(images) + 1] = (data, image_ext(image.content_type))
+        return {"src": f"__docximg{len(images)}__"}
+
+    with open(path, "rb") as fh:
+        result = mammoth.convert_to_html(fh, style_map=DOCX_STYLE_MAP, convert_image=mammoth.images.img_element(convert_image))
+    soup = BeautifulSoup(result.value, "html.parser")
+    hoist_breaks(soup)
+    notes = split_footnotes(soup)
+
+    class Converter(MarkdownConverter):
+        def convert_img(self, el, text, parent_tags):
+            # Mammoth wraps cell images in p; markdownify checks only the immediate parent.
+            if el.find_parent(["td", "th"]):
+                parent_tags = parent_tags - {"_inline"}
+            return super().convert_img(el, text, parent_tags)
+
+        def convert_hr(self, el, text, parent_tags):
+            if "pagebreak" in (el.get("class") or []):
+                return f"\n\n{PAGEBREAK_SENTINEL}\n\n"
+            return "\n\n---\n\n"
+
+    conv = Converter(heading_style="ATX", bullets="-", keep_inline_images_in=["td", "th"])
+    body = conv.convert_soup(soup)
+    segs = finish_segments([s.strip("\n") for s in re.split(r"\n*\x00PAGEBREAK\x00\n*", body)])
+    footnotes = {nid: conv.convert("".join(str(c) for c in li.children)).strip() for nid, li in notes.items()}
+    return segs, images, footnotes
+
+
+def docx_fallback(path):
+    import docx
+    document = docx.Document(path)
+    segs, cur = [], []
+
+    def close():
+        segs.append("\n\n".join(cur))
+        cur.clear()
+
+    for kind, value, lvl in docx_body_events(document):
+        if kind == "break":
+            close()
+        elif kind == "paragraph":
+            text = value[0].strip()
+            if text:
+                cur.append(f"{'#' * lvl} {text}" if lvl else text)
+        else:
+            rows = [[c.text.replace("|", "\\|").replace("\n", " ").strip() for c in r.cells] for r in value.rows]
+            if rows:
+                cur.append("| " + " | ".join(rows[0]) + " |\n|" + "---|" * len(rows[0]) + "\n" + "\n".join("| " + " | ".join(r) + " |" for r in rows[1:]))
+    close()
+    return finish_segments(segs)
+
+
+def assemble_docx(segs, selected, images, footnotes, staging, all_notes):
+    out = []
+    for n in selected:
+        seg = segs[n - 1]
+        d = page_dir(staging, n)
+        if images and IMG_PLACEHOLDER_RE.search(seg):
+            j = 0
+
+            def place(m):
+                nonlocal j
+                j += 1
+                data, ext = images[int(m.group(1))]
+                name = f"img{j}.{ext}"
+                with open(os.path.join(d, name), "wb") as fh:
+                    fh.write(data)
+                return f"p{n}/{name}"
+
+            seg = IMG_PLACEHOLDER_RE.sub(place, seg)
+        mark_done(d)
+        out.append(seg)
+        if len(segs) > 1:
+            out.append(SEP.format(n=n).strip("\n"))
+    md = "\n\n".join(out)
+    wanted = list(footnotes) if all_notes else [nid for nid in footnotes if any(f"(#{nid})" in segs[n - 1] for n in selected)]
+    if wanted:
+        md += "\n\n" + "\n".join(f"{nid.split('-', 1)[1]}. {footnotes[nid]}" for nid in wanted)
+    return md
+
+
+def mode_docx(o):
+    staging = o["stagingDir"]
+    engine, degraded, reason = "mammoth", False, None
+    try:
+        if os.environ.get("DOC_TO_MD_FORCE_DOCX_FALLBACK") == "1":
+            raise RuntimeError("forced by DOC_TO_MD_FORCE_DOCX_FALLBACK")
+        segs, images, footnotes = docx_mammoth(o["path"])
+    except Exception as exc:  # noqa: BLE001
+        first = f"{type(exc).__name__}: {exc}"
+        try:
+            segs = docx_fallback(o["path"])
+            images, footnotes = {}, {}
+        except Exception as exc2:  # noqa: BLE001
+            raise RuntimeError(f"mammoth failed: {first}; python-docx failed: {type(exc2).__name__}: {exc2}") from exc2
+        engine, degraded, reason = "python-docx", True, f"mammoth {first}"
+    import docx
+    explicit = count_explicit_breaks(docx.Document(o["path"]).element.body)
+    page_count = len(segs)
+    pages = o.get("pages")
+    if pages is not None and explicit == 0:
+        raise UserError(DOCX_NO_BREAKS, page_count)
+    selected = check_pages(pages, page_count, "segments")
+    try:
+        md = assemble_docx(segs, selected, images, footnotes, staging, pages is None)
+    except Exception:
+        for n in selected:
+            shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
+        raise
+    return {"markdown": md + "\n", "pages": selected, "pageCount": page_count, "explicitBreaks": explicit,
+            "engine": engine, "degraded": degraded, "fallbackReason": reason, "emptyPages": [], "failedPages": [], "notes": []}
+
+
+def mode_info_docx(o):
+    import docx
+    document = docx.Document(o["path"])
+    body = document.element.body
+    explicit = count_explicit_breaks(body)
+    seg, toc, filled = 1, [], [False]
+    for kind, value, lvl in docx_body_events(document):
+        if kind == "break":
+            seg += 1
+            filled.append(False)
+        elif kind == "table":
+            filled[-1] = True
+        else:
+            text, image = value
+            text = text.strip()
+            if text or image:
+                filled[-1] = True
+            if text and lvl:
+                toc.append([lvl, text, seg if explicit else None])
+    page_count = seg - (1 if seg > 1 and not filled[-1] else 0)
+    cp = document.core_properties
+    meta = {k: v for k, v in (("title", cp.title), ("author", cp.author)) if v}
+    for k in ("created", "modified"):
+        v = getattr(cp, k)
+        if v is not None:
+            meta[k] = v.isoformat()
+    return {"pageCount": page_count, "explicitBreaks": explicit, "metadata": meta, "toc": toc}
+
+
 def mode_xlsx(o):
     path, staging, csv_dir = o["path"], o["stagingDir"], o["sheetsStagingDir"]
     if path.lower().endswith(".xls"):
@@ -527,12 +803,12 @@ def mode_render_pages(o):
     return {"ok": True, "rendered": rendered, "failed": failed}
 
 
-MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages}
+MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx}
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in MODES:
-        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages>  (options JSON on stdin)", file=sys.stderr)
+        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx>  (options JSON on stdin)", file=sys.stderr)
         return 1
     mode = sys.argv[1]
     o = json.loads(sys.stdin.read() or "{}")
@@ -541,7 +817,13 @@ def main():
             warnings.simplefilter("always")
             with contextlib.redirect_stdout(sys.stderr):
                 if mode == "info":
-                    result = mode_info_excel(o) if o["path"].lower().endswith((".xlsx", ".xls")) else mode_info(o)
+                    lower = o["path"].lower()
+                    if lower.endswith((".xlsx", ".xls")):
+                        result = mode_info_excel(o)
+                    elif lower.endswith(".docx"):
+                        result = mode_info_docx(o)
+                    else:
+                        result = mode_info(o)
                 else:
                     result = MODES[mode](o)
         if "notes" in result:

@@ -99,15 +99,100 @@ test("encrypted.pdf -> password error, no fallback", T, async () => {
 	});
 });
 
-test("docx info + pages + bounds", { ...T, skip: T.skip || (!HAS_SOFFICE && "soffice not on PATH") }, async () => {
-	const i = await inspectDocument(opts(fx("multipage.docx"), { info: true }));
-	assert.match(i.output, /Type: docx   Page-Count: 5/);
-	const r = await convertDocument(opts(fx("multipage.docx"), { pages: "2", outputDir: tmp }));
+const markers = (md: string) => [...md.matchAll(/--- end of page\.page_number=(\d+) ---/g)].map((m) => Number(m[1]));
+
+test("docx: headings, outline offsets, hyperlink, footnote, and two linked images", T, async () => {
+	const r = await convertDocument(opts(fx("headings.docx"), { outputDir: tmp }));
 	const h = parseHandle(r.output);
+	assert.match(r.output, /^Type: docx   Engine: mammoth   Tier: docx$/m);
+	assert.match(r.output, /^Page-Count: 3 \(explicit page breaks, not printed pages\)   Pages: all   Images: 2/m);
 	const md = linksResolve(h["Saved-To"]);
-	assert.ok(md.includes("PAGE-2") && !md.includes("PAGE-1") && !md.includes("PAGE-3"));
-	assert.match(r.output, /Images: [1-9]/);
-	await assert.rejects(convertDocument(opts(fx("multipage.docx"), { pages: "9", outputDir: join(tmp, "b") })), /pages out of range: 9 \(document has 5 pages\)/);
+	assert.match(md, /^# Chapter One$/m);
+	assert.match(md, /^## Section A$/m);
+	assert.match(md, /^### Detail A1$/m);
+	assert.ok(md.includes("[pi-quiver](https://github.com/jjuraszek/pi-quiver)"));
+	assert.ok(md.includes("FOOTNOTE-TEXT about provenance") && !md.includes("data:"));
+	assert.deepStrictEqual(markers(md), [1, 2, 3]);
+	assert.match(md, /^# Chapter Two$\n\n--- end of page\.page_number=1 ---\n\n# Continued$/m);
+	assert.match(md, /- beta\n\n--- end of page\.page_number=2 ---\n\n- gamma/);
+	const outline = r.output.slice(r.output.indexOf("Outline:"));
+	assert.match(outline, /^  L\d+\s+p1\s+# Chapter One$/m);
+	assert.match(outline, /^  L\d+\s+p1\s+## Section A$/m);
+	assert.match(outline, /^  L\d+\s+p1\s+### Detail A1$/m);
+	assert.match(outline, /^  L\d+\s+p2\s+# Continued$/m);
+	const imgs = readdirSyncSafe(join(dirname(h["Saved-To"]), "images")).sort();
+	assert.deepStrictEqual(imgs, ["headings-p1-1.png", "headings-p3-1.png"]);
+	assert.ok(md.includes("![](images/headings-p3-1.png)"), "table-cell picture link kept");
+});
+
+test("docx: pages selects segments and referenced footnotes; bounds name segments", T, async () => {
+	const one = await convertDocument(opts(fx("headings.docx"), { pages: "1", outputDir: tmp }));
+	const mdOne = linksResolve(parseHandle(one.output)["Saved-To"]);
+	assert.deepStrictEqual(markers(mdOne), [1]);
+	assert.ok(mdOne.includes("FOOTNOTE-TEXT"));
+	const three = await convertDocument(opts(fx("headings.docx"), { pages: "3", outputDir: join(tmp, "three") }));
+	const mdThree = linksResolve(parseHandle(three.output)["Saved-To"]);
+	assert.deepStrictEqual(markers(mdThree), [3]);
+	assert.ok(!mdThree.includes("FOOTNOTE-TEXT"));
+	const r = await convertDocument(opts(fx("multipage.docx"), { pages: "2-3", outputDir: join(tmp, "mp") }));
+	const md = linksResolve(parseHandle(r.output)["Saved-To"]);
+	assert.deepStrictEqual(markers(md), [2, 3]);
+	assert.ok(md.includes("PAGE-2") && md.includes("PAGE-3") && !md.includes("PAGE-1") && !md.includes("PAGE-4"));
+	assert.match(r.output, /^Page-Count: 5 \(explicit page breaks, not printed pages\)   Pages: 2-3   Images: 1/m);
+	assert.match(r.output, /^  L\d+\s+p2\s+# Heading 2$/m);
+	assert.match(r.output, /^  L\d+\s+p3\s+# Heading 3$/m);
+	await assert.rejects(convertDocument(opts(fx("multipage.docx"), { pages: "9", outputDir: join(tmp, "b") })), /pages out of range: 9 \(document has 5 segments\)/);
+	await assert.rejects(convertDocument(opts(fx("sample.docx"), { pages: "1", outputDir: join(tmp, "s") })), /--pages does not apply to this DOCX: it has no explicit page breaks; read the \.md by Outline line offsets instead/);
+});
+
+test("docx: multipage converts without soffice and has five markers", T, async () => {
+	const saved = process.env.PATH;
+	process.env.PATH = NO_SOFFICE_ENV().PATH;
+	try {
+		const r = await convertDocument(opts(fx("multipage.docx"), { outputDir: tmp }));
+		const h = parseHandle(r.output);
+		assert.ok(h["Saved-To"]);
+		assert.deepStrictEqual(markers(linksResolve(h["Saved-To"])), [1, 2, 3, 4, 5]);
+		assert.match(r.output, /Tier: docx/);
+		assert.match(r.output, /^Page-Count: 5 \(explicit page breaks, not printed pages\)/m);
+		for (let n = 1; n <= 5; n++) assert.match(r.output, new RegExp(`^  L\\d+\\s+p${n}\\s+# Heading ${n}$`, "m"));
+	} finally { process.env.PATH = saved; }
+});
+
+test("docx: bold headings have no outline; sample has no explicit page breaks", T, async () => {
+	const r = await convertDocument(opts(fx("bold-headings.docx"), { outputDir: tmp }));
+	assert.match(r.output, /^Page-Count: 1 \(no explicit page breaks\)   Pages: all   Images: 0   Size: \d+(\.\d+)?(B|KB|MB) \/ \d+ lines$/m);
+	assert.ok(r.output.split("\n").includes("Outline: none"));
+	const s = await convertDocument(opts(fx("sample.docx"), { outputDir: join(tmp, "s") }));
+	assert.match(s.output, /^Page-Count: 1 \(no explicit page breaks\)/m);
+});
+
+test("docx: forced python-docx fallback keeps headings and markers", T, async () => {
+	process.env.DOC_TO_MD_FORCE_DOCX_FALLBACK = "1";
+	try {
+		const r = await convertDocument(opts(fx("headings.docx"), { outputDir: tmp }));
+		assert.match(r.output, /Engine: python-docx   Tier: docx/);
+		assert.match(r.output, /^Degraded: python-docx text extraction - footnotes, hyperlinks, images not preserved$/m);
+		assert.match(r.output, /^Fallback-Reason: mammoth RuntimeError: forced by DOC_TO_MD_FORCE_DOCX_FALLBACK$/m);
+		const md = readFileSync(parseHandle(r.output)["Saved-To"], "utf8");
+		assert.deepStrictEqual(markers(md), [1, 2, 3]);
+		assert.match(md, /^# Chapter One$/m);
+	} finally { delete process.env.DOC_TO_MD_FORCE_DOCX_FALLBACK; }
+});
+
+test("docx info: metadata, paged TOC, no headings, and no soffice dependency", T, async () => {
+	const saved = process.env.PATH;
+	process.env.PATH = NO_SOFFICE_ENV().PATH;
+	try {
+		const i = await inspectDocument(opts(fx("headings.docx"), { info: true }));
+		assert.match(i.output, /^Type: docx   Page-Count: 3   Backend: (uv|python|venv)$/m);
+		assert.match(i.output, /Title: Headings Fixture   Author: pi-quiver tests/);
+		assert.match(i.output, /Created: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+		assert.ok(i.output.includes("TOC:\n  L1 Chapter One (p1)\n  L2 Section A (p1)\n  L3 Detail A1 (p1)\n  L1 Chapter Two (p1)\n  L1 Continued (p2)"), i.output);
+		const s = await inspectDocument(opts(fx("sample.docx"), { info: true }));
+		assert.match(s.output, /^Type: docx   Page-Count: 1   Backend: /m);
+		assert.ok(s.output.split("\n").includes("TOC: none (no heading styles found)"));
+	} finally { process.env.PATH = saved; }
 });
 
 test("pptx --pages 3", { ...T, skip: T.skip || (!HAS_SOFFICE && "soffice not on PATH") }, async () => {

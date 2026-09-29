@@ -3,11 +3,11 @@
  *
  * Converts local PDF, DOCX, PPTX, XLSX, and XLS documents into disk bundles
  * with concise handles. PDF uses primary pymupdf4llm, PyMuPDF-text fallback,
- * then unpdf when no Python backend exists. DOCX/PPTX convert through
- * headless soffice before entering the PDF pipeline.
+ * then unpdf when no Python backend exists. DOCX converts directly in the Python child (mammoth, python-docx fallback)
+ * and falls back to headless soffice -> PDF; PPTX always goes through soffice.
  */
 
-import { existsSync, mkdtempSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -22,10 +22,10 @@ export type { Engine, HandleData, InfoData, OutlineEntry, SheetInfo, Tier, TocEn
 
 // --- Types ---
 
-export const PACKAGE_PINS = { pymupdf4llm: TUNABLE_DEFAULTS.pymupdfVersion, openpyxl: "3.1.5", xlrd: "2.0.2", pillow: "12.3.0" } as const;
+export const PACKAGE_PINS = { pymupdf4llm: TUNABLE_DEFAULTS.pymupdfVersion, openpyxl: "3.1.5", xlrd: "2.0.2", pillow: "12.3.0", mammoth: "1.13.0", markdownify: "1.2.3", "python-docx": "1.2.0" } as const;
 export const KILL_GRACE_MS = 2000;
-export const VENV_DIR_NAME = "doc-to-md-venv-v2";
-export const LEGACY_VENV_DIR_NAME = "pymupdf-venv";
+export const VENV_DIR_NAME = "doc-to-md-venv-v3";
+export const LEGACY_VENV_DIR_NAMES = ["pymupdf-venv", "doc-to-md-venv-v2"] as const;
 const STDERR_CAP = 1_000_000;
 export const OUTPUT_MAX_BYTES = 20_000_000;
 export const EXCEL_PDF_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}';
@@ -42,16 +42,14 @@ export interface CappedResult {
 
 // --- Subprocess argv builders ---
 
-function withArgs(cfg: BackendConfig): string[] {
-	return ["--with", `pymupdf4llm==${cfg.pymupdfVersion}`, "--with", `openpyxl==${PACKAGE_PINS.openpyxl}`, "--with", `xlrd==${PACKAGE_PINS.xlrd}`, "--with", `pillow==${PACKAGE_PINS.pillow}`];
-}
+const pinSpecs = (cfg: BackendConfig) => [`pymupdf4llm==${cfg.pymupdfVersion}`, `openpyxl==${PACKAGE_PINS.openpyxl}`, `xlrd==${PACKAGE_PINS.xlrd}`, `pillow==${PACKAGE_PINS.pillow}`, `mammoth==${PACKAGE_PINS.mammoth}`, `markdownify==${PACKAGE_PINS.markdownify}`, `python-docx==${PACKAGE_PINS["python-docx"]}`];
 
-export function pipInstallArgs(cfg: BackendConfig): string[] {
-	return ["-m", "pip", "install", `pymupdf4llm==${cfg.pymupdfVersion}`, `openpyxl==${PACKAGE_PINS.openpyxl}`, `xlrd==${PACKAGE_PINS.xlrd}`, `pillow==${PACKAGE_PINS.pillow}`];
-}
+function withArgs(cfg: BackendConfig): string[] { return pinSpecs(cfg).flatMap((spec) => ["--with", spec]); }
+
+export function pipInstallArgs(cfg: BackendConfig): string[] { return ["-m", "pip", "install", ...pinSpecs(cfg)]; }
 
 export function warmArgs(cfg: BackendConfig): string[] {
-	return ["run", ...withArgs(cfg), "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL"];
+	return ["run", ...withArgs(cfg), "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL, mammoth, markdownify, docx"];
 }
 
 export function uvChildArgs(cfg: BackendConfig, script: string, mode: string): string[] {
@@ -201,6 +199,11 @@ try:
     print("XLSX", "yes")
 except Exception:
     print("XLSX", "no")
+try:
+    import mammoth, markdownify, docx
+    print("DOCX", "yes")
+except Exception:
+    print("DOCX", "no")
 `;
 export const PROBE_TIMEOUT_MS = 5000;
 
@@ -211,16 +214,16 @@ export const PYTHON_CANDIDATES = ["python3", "python"] as const;
 
 export type BackendKind = "uv" | "python" | "venv" | "none";
 export type Backend =
-	| { kind: "uv"; pdf: true; xlsx: true }
-	| { kind: "python"; exe: string; pdf: boolean; xlsx: boolean }
-	| { kind: "venv"; exe: string; pdf: true; xlsx: true }
+	| { kind: "uv"; pdf: true; xlsx: true; docx: true }
+	| { kind: "python"; exe: string; pdf: boolean; xlsx: boolean; docx: boolean }
+	| { kind: "venv"; exe: string; pdf: true; xlsx: true; docx: true }
 	| { kind: "none"; reason: string };
 
-export interface ProbeResult { major: number; minor: number; pdf: boolean; xlsx: boolean; }
+export interface ProbeResult { major: number; minor: number; pdf: boolean; xlsx: boolean; docx: boolean; }
 
 export function parseProbeOutput(stdout: string): ProbeResult | null {
-	const m = stdout.match(/^PY (\d+) (\d+)\r?\nPDF (yes|no)\r?\nXLSX (yes|no)\s*$/);
-	return m ? { major: Number(m[1]), minor: Number(m[2]), pdf: m[3] === "yes", xlsx: m[4] === "yes" } : null;
+	const m = stdout.match(/^PY (\d+) (\d+)\r?\nPDF (yes|no)\r?\nXLSX (yes|no)\r?\nDOCX (yes|no)\s*$/);
+	return m ? { major: Number(m[1]), minor: Number(m[2]), pdf: m[3] === "yes", xlsx: m[4] === "yes", docx: m[5] === "yes" } : null;
 }
 
 export function meetsFloor(p: ProbeResult): boolean {
@@ -263,7 +266,7 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 	};
 	const warm = await deps.run("uv", warmArgs(cfg), { timeoutMs: left(), capBytes: OUTPUT_MAX_BYTES, env: deps.env, signal });
 	if (signal?.aborted) throw new Error("aborted");
-	if (warm.code === 0 && !warm.timedOut) return { kind: "uv", pdf: true, xlsx: true };
+	if (warm.code === 0 && !warm.timedOut) return { kind: "uv", pdf: true, xlsx: true, docx: true };
 	const uvAbsent = warm.code === null && !warm.timedOut; // spawn error (ENOENT)
 
 	type ProbeOutcome = ProbeResult | Extract<Backend, { kind: "none" }> | null;
@@ -282,20 +285,21 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 		const p = await probe(exe);
 		if (isDeadline(p)) return p;
 		if (!p || !meetsFloor(p)) continue;
-		if (p.pdf) return { kind: "python", exe, pdf: true, xlsx: p.xlsx };
+		if (p.pdf) return { kind: "python", exe, pdf: true, xlsx: p.xlsx, docx: p.docx };
 		eligible ??= { exe, version: `${p.major}.${p.minor}` };
 	}
 
+	const healthy = (p: ProbeResult) => meetsFloor(p) && p.pdf && p.xlsx && p.docx;
 	const venvDir = join(deps.cacheRoot, VENV_DIR_NAME);
 	const venvExe = venvPython(venvDir, deps.platform);
 	const cached = await probe(venvExe);
 	if (isDeadline(cached)) return cached;
-	if (cached && meetsFloor(cached) && cached.pdf && cached.xlsx) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true };
+	if (cached && healthy(cached)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
 
 	if (eligible) {
 		const recheck = await probe(venvExe); // a competing process may have published since the first probe
 		if (isDeadline(recheck)) return recheck;
-		if (recheck && meetsFloor(recheck) && recheck.pdf && recheck.xlsx) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true };
+		if (recheck && healthy(recheck)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
 		// Build in a sibling tmp dir without touching venvDir - a concurrent process can never probe a half-built venv.
 		const tmp = `${venvDir}.tmp-${deps.pid}`;
 		const bootFail = (stderr: string): Backend => {
@@ -316,20 +320,20 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 			try { deps.rename(tmp, venvDir); return true; } catch { return false; }
 		};
 		if (publish()) {
-			deps.rmrf(join(deps.cacheRoot, LEGACY_VENV_DIR_NAME));
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true };
+			for (const legacy of LEGACY_VENV_DIR_NAMES) deps.rmrf(join(deps.cacheRoot, legacy));
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
 		}
 		// Rename failed - a competing process may have published first, or venvDir holds a stale/broken dir.
 		const winner = await probe(venvExe, tmp);
 		if (isDeadline(winner)) return winner;
-		if (winner && meetsFloor(winner) && winner.pdf && winner.xlsx) {
+		if (winner && healthy(winner)) {
 			deps.rmrf(tmp); // healthy winner - clean up our loser
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true };
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
 		}
 		deps.rmrf(venvDir); // unhealthy/absent dest - clear it and retry the rename once
 		if (publish()) {
-			deps.rmrf(join(deps.cacheRoot, LEGACY_VENV_DIR_NAME));
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true };
+			for (const legacy of LEGACY_VENV_DIR_NAMES) deps.rmrf(join(deps.cacheRoot, legacy));
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
 		}
 		return bootFail("rename after competing bootstrap");
 	}
@@ -391,23 +395,28 @@ export async function tryConvertOffice(sofficeTimeoutMs: number, src: string, si
 	} catch (e) { cleanup(); throw e; }
 }
 
-export async function convertOffice(sofficeTimeoutMs: number, src: string, signal?: AbortSignal, run: RunFn = runCapped): Promise<{ pdfPath: string; cleanup: () => void }> {
-	const r = await tryConvertOffice(sofficeTimeoutMs, src, signal, run);
-	if (r.ok) return r;
-	if (r.kind === "missing") throw new Error("LibreOffice (soffice) is required to convert .docx/.pptx but was not found on PATH. Install LibreOffice or convert the file to PDF first.");
-	if (r.kind === "no-pdf") throw new Error("LibreOffice (soffice) ran but produced no usable PDF for this file. Ensure LibreOffice can open the document, or convert it to PDF manually first.");
-	throw new Error(`soffice failed (code=${r.code} timedOut=${r.timedOut}): ${r.stderr}`);
+export function officeFailure(r: Extract<OfficeResult, { ok: false }>): Error {
+	if (r.kind === "missing") return new Error("LibreOffice (soffice) is required to convert .docx/.pptx but was not found on PATH. Install LibreOffice or convert the file to PDF first.");
+	if (r.kind === "no-pdf") return new Error("LibreOffice (soffice) ran but produced no usable PDF for this file. Ensure LibreOffice can open the document, or convert it to PDF manually first.");
+	return new Error(`soffice failed (code=${r.code} timedOut=${r.timedOut}): ${r.stderr}`);
 }
-
 
 // --- Conversion tiers and bundle orchestration ---
 
 export const DEGRADED_TEXT = "PyMuPDF text extraction - layout/tables not preserved";
 export const DEGRADED_UNPDF = "unpdf text extraction - structure not preserved";
+export const DEGRADED_DOCX_TEXT = "python-docx text extraction - footnotes, hyperlinks, images not preserved";
+export const DEGRADED_DOCX_OFFICE = "LibreOffice PDF route - heading styles and explicit page breaks not preserved; page numbers are LibreOffice pagination";
+export const DOCX_PIP = "pip install mammoth markdownify python-docx";
+export const DOCX_PAGES_OFFICE = `--pages on a DOCX needs the Python DOCX backend (explicit page-break segments); the LibreOffice route has none. Remedy: install uv, or ${DOCX_PIP}`;
+const docxRemedy = `Remedy: install uv, or ${DOCX_PIP} into a Python that already has pymupdf4llm`;
+const backendState = (b: Backend, missing: string) => b.kind === "none" ? b.reason : missing;
+const lacksDocx = (b: Backend) => b.kind === "none" || !b.docx;
+const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdirSync(b.stagingDir)) rmSync(join(b.stagingDir, f), { recursive: true, force: true }); };
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
-export type Mode = "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages";
-export interface TierJson { markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number][]; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
+export type Mode = "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx";
+export interface TierJson { markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
@@ -491,59 +500,94 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		if (type === "docx" || type === "pptx") { office = await convertOffice(o.sofficeTimeoutMs, inputPath, signal); pdfPath = office.pdfPath; }
-		const base = { path: pdfPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion };
-		let tier: Tier, engine: Engine, json: TierJson, degraded: string | null = null, fallbackReason: string | null = null;
+		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion };
+		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
+		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
-		if (isExcel) {
-			const r = await s.runTier("xlsx", base, b, signal, o.excelTimeoutMs, backend);
-			if (!r.ok) {
-				if ("userError" in r) throw new Error(r.userError);
-				const remedy = r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes" ? ". Remedy: raise excelTimeoutMs" : "";
-				throw new Error(`Excel conversion failed: ${r.reason}${detailSuffix(r)}${remedy}`);
-			}
-			publishSheetImages(b); publishSheetCsvs(b);
-			tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json; notes = [...(json.notes ?? [])];
-			const renderPages = json.renderPages ?? [];
-			let skip: string | null = null;
-			const perSheet = new Map<number, string>();
-			if (renderPages.length) {
-				const off = await s.office(o.sofficeTimeoutMs, inputPath, signal, runCapped, EXCEL_PDF_FILTER);
-				if (!off.ok) skip = off.kind === "missing" ? "LibreOffice not found" : off.kind === "timeout" ? `soffice failed: timeout after ${o.sofficeTimeoutMs}ms` : off.kind === "exit" ? `soffice failed: exit ${off.code}` : "soffice produced no PDF";
-				else {
-					try {
-						const rp = await s.runTier("render-pages", { path: off.pdfPath, sheetIndices: renderPages, expectedPages: json.sheetCount, imageDpi: o.imageDpi, imageFormat: o.imageFormat, stagingDir: b.stagingDir, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.fallbackTimeoutMs, backend);
-						if (!rp.ok) skip = `render failed: ${"userError" in rp ? rp.userError : rp.reason}`;
-						else if (rp.json.ok === false) skip = rp.json.reason ?? "render failed";
-						else {
-							publishSheetImages(b);
-							for (const f of rp.json.failed ?? []) perSheet.set(f.idx, f.reason);
-							for (const d of rp.json.rendered ?? []) if (d.dpi < o.imageDpi) notes.push(`Rendered view s${d.idx}: rendered at ${d.dpi} dpi`);
-						}
-					} finally { off.cleanup(); }
-				}
-				if (skip) notes.push(`Rendered views skipped: ${skip}`);
-				else if (perSheet.size) notes.push(`Rendered views: ${perSheet.size} of ${renderPages.length} unavailable`);
-			}
-			json = { ...json, markdown: reconcileRenderMarkers(json.markdown ?? "", renderPages, o.imageFormat, b.sourceMap, (idx) => perSheet.get(idx) ?? skip ?? "render failed") };
-		} else if (backend.kind === "none") {
-			const r = await s.runTier("pdf-text", base, b, signal, o.primaryTimeoutMs, backend);
-			if (!r.ok) throw new Error("userError" in r ? r.userError : `Conversion failed: unpdf ${r.reason}${detailSuffix(r)}`);
-			tier = "unpdf"; engine = "unpdf"; json = r.json; degraded = DEGRADED_UNPDF;
-		} else {
-			const p = await s.runTier("pdf-primary", base, b, signal, o.primaryTimeoutMs, backend);
-			const kept = publishStaged(b);
-			if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; }
-			else if ("userError" in p) throw new Error(p.userError);
-			else {
-				if (signal?.aborted) throw new Error("aborted");
-				const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v]));
-				const f = await s.runTier("pdf-fallback", { ...base, keepPages }, b, signal, o.fallbackTimeoutMs, backend);
+		let officeRoute: string | null = null;
+		if (type === "docx" && !lacksDocx(backend)) {
+			const d = await s.runTier("docx", base, b, signal, o.primaryTimeoutMs, backend);
+			if (d.ok) {
 				publishStaged(b);
-				if (!f.ok) throw new Error("userError" in f ? f.userError : `Conversion failed: primary ${p.reason}; fallback ${f.reason}${detailSuffix(f)}`);
-				tier = "fallback"; engine = "pymupdf-text"; json = f.json; degraded = DEGRADED_TEXT; fallbackReason = `primary ${p.reason}`;
+				tier = "docx"; engine = d.json.engine === "python-docx" ? "python-docx" : "mammoth"; json = d.json; explicitBreaks = d.json.explicitBreaks ?? 0;
+				if (d.json.degraded) { degraded = DEGRADED_DOCX_TEXT; fallbackReason = d.json.fallbackReason ?? null; }
+			} else if ("userError" in d) throw new Error(d.userError);
+			else if (d.reason === "exit 1") { officeRoute = `docx ${d.reason}${detailSuffix(d)}`; clearStaging(b); }
+			else throw new Error(`Conversion failed: docx ${d.reason}${detailSuffix(d)}`);
+		} else if (type === "docx") officeRoute = backend.kind === "none" ? backend.reason : "python backend lacks DOCX packages";
+		if (type === "docx" && officeRoute !== null) {
+			if (o.pages) throw new Error(officeRoute.startsWith("docx exit") ? `${DOCX_PAGES_OFFICE} (${officeRoute})` : DOCX_PAGES_OFFICE);
+			const r = await s.office(o.sofficeTimeoutMs, inputPath, signal);
+			if (!r.ok && r.kind === "missing") {
+				if (officeRoute.startsWith("docx exit")) throw new Error(`Conversion failed: ${officeRoute}; LibreOffice (soffice) not found on PATH`);
+				throw new Error(`DOCX conversion needs the Python DOCX packages or LibreOffice. Python backend: ${backendState(backend, "found without mammoth/markdownify/python-docx")}. ${docxRemedy}, or install LibreOffice (soffice)`);
+			}
+			if (!r.ok) throw officeRoute.startsWith("docx exit") ? new Error(`Conversion failed: ${officeRoute}; ${officeFailure(r).message}`) : officeFailure(r);
+			office = r; pdfPath = r.pdfPath;
+		}
+		if (type === "pptx") {
+			const r = await s.office(o.sofficeTimeoutMs, inputPath, signal);
+			if (!r.ok && r.kind === "missing") throw new Error(`PPTX conversion needs LibreOffice (soffice); direct conversion is not available. Python backend: ${backendState(backend, "available")}. Remedy: install LibreOffice`);
+			if (!r.ok) throw officeFailure(r);
+			office = r; pdfPath = r.pdfPath;
+		}
+		const pdfBase = { ...base, path: pdfPath };
+		if (json === undefined) {
+			if (isExcel) {
+				const r = await s.runTier("xlsx", base, b, signal, o.excelTimeoutMs, backend);
+				if (!r.ok) {
+					if ("userError" in r) throw new Error(r.userError);
+					const remedy = r.reason.startsWith("timeout after") || r.reason === "output exceeded maxOutputBytes" ? ". Remedy: raise excelTimeoutMs" : "";
+					throw new Error(`Excel conversion failed: ${r.reason}${detailSuffix(r)}${remedy}`);
+				}
+				publishSheetImages(b); publishSheetCsvs(b);
+				tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json; notes = [...(json.notes ?? [])];
+				const renderPages = json.renderPages ?? [];
+				let skip: string | null = null;
+				const perSheet = new Map<number, string>();
+				if (renderPages.length) {
+					const off = await s.office(o.sofficeTimeoutMs, inputPath, signal, runCapped, EXCEL_PDF_FILTER);
+					if (!off.ok) skip = off.kind === "missing" ? "LibreOffice not found" : off.kind === "timeout" ? `soffice failed: timeout after ${o.sofficeTimeoutMs}ms` : off.kind === "exit" ? `soffice failed: exit ${off.code}` : "soffice produced no PDF";
+					else {
+						try {
+							const rp = await s.runTier("render-pages", { path: off.pdfPath, sheetIndices: renderPages, expectedPages: json.sheetCount, imageDpi: o.imageDpi, imageFormat: o.imageFormat, stagingDir: b.stagingDir, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.fallbackTimeoutMs, backend);
+							if (!rp.ok) skip = `render failed: ${"userError" in rp ? rp.userError : rp.reason}`;
+							else if (rp.json.ok === false) skip = rp.json.reason ?? "render failed";
+							else {
+								publishSheetImages(b);
+								for (const f of rp.json.failed ?? []) perSheet.set(f.idx, f.reason);
+								for (const d of rp.json.rendered ?? []) if (d.dpi < o.imageDpi) notes.push(`Rendered view s${d.idx}: rendered at ${d.dpi} dpi`);
+							}
+						} finally { off.cleanup(); }
+					}
+					if (skip) notes.push(`Rendered views skipped: ${skip}`);
+					else if (perSheet.size) notes.push(`Rendered views: ${perSheet.size} of ${renderPages.length} unavailable`);
+				}
+				json = { ...json, markdown: reconcileRenderMarkers(json.markdown ?? "", renderPages, o.imageFormat, b.sourceMap, (idx) => perSheet.get(idx) ?? skip ?? "render failed") };
+			} else if (backend.kind === "none") {
+				const r = await s.runTier("pdf-text", pdfBase, b, signal, o.primaryTimeoutMs, backend);
+				if (!r.ok) throw new Error("userError" in r ? r.userError : `Conversion failed: unpdf ${r.reason}${detailSuffix(r)}`);
+				tier = "unpdf"; engine = "unpdf"; json = r.json; degraded = DEGRADED_UNPDF;
+			} else {
+				const p = await s.runTier("pdf-primary", pdfBase, b, signal, o.primaryTimeoutMs, backend);
+				const kept = publishStaged(b);
+				if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; }
+				else if ("userError" in p) throw new Error(p.userError);
+				else {
+					if (signal?.aborted) throw new Error("aborted");
+					const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v]));
+					const f = await s.runTier("pdf-fallback", { ...pdfBase, keepPages }, b, signal, o.fallbackTimeoutMs, backend);
+					publishStaged(b);
+					if (!f.ok) throw new Error("userError" in f ? f.userError : `Conversion failed: primary ${p.reason}; fallback ${f.reason}${detailSuffix(f)}`);
+					tier = "fallback"; engine = "pymupdf-text"; json = f.json; degraded = DEGRADED_TEXT; fallbackReason = `primary ${p.reason}`;
+				}
 			}
 		}
+		if (officeRoute !== null) {
+			degraded = DEGRADED_DOCX_OFFICE;
+			fallbackReason = fallbackReason ? `${officeRoute}; ${fallbackReason}` : officeRoute;
+		}
+		if (tier === undefined || engine === undefined || json === undefined) throw new Error("internal: no tier produced output");
 		if (!isExcel) notes = json.notes ?? [];
 		const body = rewriteLinks(json.markdown ?? "", b.sourceMap);
 		validateImageLinks(body, b.manifest, b.csvManifest);
@@ -556,7 +600,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }
@@ -574,7 +618,13 @@ export async function inspectDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let path = inputPath;
-		if (type === "docx" || type === "pptx") { office = await convertOffice(o.sofficeTimeoutMs, inputPath, signal); path = office.pdfPath; }
+		if (type === "docx") {
+			if (lacksDocx(backend)) throw new Error(`DOCX inspection needs the Python DOCX packages. Python backend: ${backendState(backend, "found without mammoth/markdownify/python-docx")}. ${docxRemedy}`);
+		} else if (type === "pptx") {
+			const r = await s.office(o.sofficeTimeoutMs, inputPath, signal);
+			if (!r.ok) throw officeFailure(r);
+			office = r; path = r.pdfPath;
+		}
 		const r = await s.runTier("info", { path, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, { stagingDir: "" }, signal, isExcel ? o.excelTimeoutMs : o.fallbackTimeoutMs, backend);
 		if (!r.ok) {
 			if ("userError" in r) throw new Error(r.userError);

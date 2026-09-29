@@ -73,6 +73,67 @@ def office():
             img = os.path.join(tempfile.gettempdir(), "fx2.png"); open(img, "wb").write(png_bytes("teal")); s.shapes.add_picture(img, Inches(1), Inches(2))
     prs.save(os.path.join(HERE, "multislide.pptx"))
 
+FOOTNOTES_XML = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r>'
+    '<w:r><w:t xml:space="preserve"> FOOTNOTE-TEXT about provenance.</w:t></w:r></w:p></w:footnote>'
+    '</w:footnotes>'
+).encode()
+
+def _add_hyperlink(paragraph, url, text):
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    r_id = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    link = OxmlElement("w:hyperlink"); link.set(qn("r:id"), r_id)
+    run = OxmlElement("w:r"); t = OxmlElement("w:t"); t.text = text; run.append(t); link.append(run)
+    paragraph._p.append(link)
+
+def _add_footnote(document, paragraph):
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    part = Part(PackURI("/word/footnotes.xml"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                FOOTNOTES_XML, document.part.package)
+    document.part.relate_to(part, RT.FOOTNOTES)
+    run = paragraph.add_run(); ref = OxmlElement("w:footnoteReference"); ref.set(qn("w:id"), "1"); run._r.append(ref)
+
+def headings_docx():
+    """Segment 1: H1/H2/H3, hyperlink, footnote ref, body PNG. Break 1 sits inside a Heading 1 paragraph.
+    Segment 2: the heading remainder + a bullet list whose second item carries break 2.
+    Segment 3: the remaining bullet, a table with a PNG in a cell, closing text. explicitBreaks=2, segments=3."""
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+    d = Document()
+    d.core_properties.title = "Headings Fixture"; d.core_properties.author = "pi-quiver tests"
+    d.add_heading("Chapter One", level=1)
+    p = d.add_paragraph("Read more at "); _add_hyperlink(p, "https://github.com/jjuraszek/pi-quiver", "pi-quiver")
+    p = d.add_paragraph("A claim with a note"); _add_footnote(d, p)
+    d.add_heading("Section A", level=2)
+    d.add_heading("Detail A1", level=3)
+    img = os.path.join(tempfile.gettempdir(), "fx5.png"); open(img, "wb").write(png_bytes("green")); d.add_picture(img)
+    h = d.add_heading("Chapter Two", level=1); h.add_run().add_break(WD_BREAK.PAGE); h.add_run("Continued")
+    d.add_paragraph("alpha", style="List Bullet")
+    b = d.add_paragraph("beta", style="List Bullet"); b.add_run().add_break(WD_BREAK.PAGE)
+    d.add_paragraph("gamma", style="List Bullet")
+    t = d.add_table(rows=1, cols=2); t.cell(0, 0).text = "Cell A"
+    img2 = os.path.join(tempfile.gettempdir(), "fx6.png"); open(img2, "wb").write(png_bytes("brown"))
+    t.cell(0, 1).paragraphs[0].add_run().add_picture(img2)
+    d.add_paragraph("Last words in the final segment.")
+    d.save(os.path.join(HERE, "headings.docx"))
+
+def bold_headings_docx():
+    from docx import Document
+    d = Document()
+    for title in ("Intro", "Method", "Results"):
+        d.add_paragraph().add_run(title).bold = True
+        d.add_paragraph(f"Body text under the bold paragraph {title}.")
+    d.save(os.path.join(HERE, "bold-headings.docx"))
+
 def workbook():
     import openpyxl, datetime
     from openpyxl.drawing.image import Image as XLImage
@@ -169,7 +230,7 @@ def charts_zero_extent():
     cs = wb.create_chartsheet("Chart"); ch = LineChart(); ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=3)); cs.add_chart(ch)
     wb.save(os.path.join(HERE, "charts-zero-extent.xlsx"))  # deliberately unpatched: exercises the degenerate-page guard
 
-GENERATORS = {"multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
+GENERATORS = {"multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
 
 if __name__ == "__main__":
     import sys
