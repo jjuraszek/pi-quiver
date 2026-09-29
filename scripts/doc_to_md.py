@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages | docx); options JSON on stdin;
+"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages | docx | html | image); options JSON on stdin;
 one JSON result on stdout. Exit 0 ok, 1 conversion failure (traceback on stderr), 3 user error
 ({"error", "pageCount"} on stdout). Library chatter is redirected to stderr so stdout is the result only.
 Imports `pymupdf` / `pymupdf4llm` (never the deprecated `fitz` alias)."""
@@ -19,6 +19,7 @@ DOCX_NO_BREAKS = "--pages does not apply to this DOCX: it has no explicit page b
 DOCX_STYLE_MAP = "\n".join(["br[type='page'] => hr.pagebreak:fresh"] + [f"p[style-name='Heading {n}'] => h6:fresh" for n in (7, 8, 9)] + [f"p.Heading{n} => h6:fresh" for n in (7, 8, 9)])
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 IMG_PLACEHOLDER_RE = re.compile(r"__docximg(\d+)__")
+CODE_LANG_RE = re.compile(r"^(?:language|lang)-([\w+#.-]+)$")
 DEGRADED_NOTE = "degraded: PyMuPDF text extraction - layout/tables not preserved"
 MARKDOWN_IMAGE_RE = re.compile(r"(!\[[^\]]*\]\(\s*)(?:<([^>]+)>|([^)]*?))(\s*\))")
 HTML_IMAGE_RE = re.compile(
@@ -91,6 +92,142 @@ def mark_done(d):
     open(os.path.join(d, ".done"), "w").close()
 
 
+OCR_SENTINEL = "\x00OCR {}\x00"
+SMALL_IMAGE_FRACTION = 0.05
+MIN_OCR_SIDE_PX = 16
+OCR_BUDGET_RESERVE_MS, OCR_EST_INITIAL_MS, PAGE_EST_INITIAL_MS = 5000, 4000, 250
+
+
+def new_ocr(lang):
+    return {"status": "off", "lang": lang, "textless": [], "pages": [], "noText": [], "ocrFailed": [],
+            "budgetStopped": [], "reason": None, "tesseract": None}
+
+
+def apply_status(info, st):
+    info["status"] = "ran" if st["status"] == "ready" else st["status"]
+    info["reason"], info["tesseract"] = st["reason"], st["tesseract"]
+
+
+def ocr_status(ocr, lang):
+    import pymupdf
+    try:
+        td = pymupdf.get_tessdata()
+    except Exception:  # noqa: BLE001
+        td = None
+    missing = None
+    if not td or not os.path.isdir(td):
+        missing = "Tesseract language data not found"
+    else:
+        for part in lang.split("+"):
+            if not os.path.isfile(os.path.join(td, f"{part}.traineddata")):
+                missing = f"language data for {part} not installed"
+                break
+    if missing is None:
+        # Repeated library lookups avoid spawning tesseract when the directory is exported.
+        os.environ["TESSDATA_PREFIX"] = td
+    if not ocr:
+        return {"status": "off", "reason": None, "tesseract": missing is None}
+    if missing:
+        return {"status": "unavailable", "reason": missing, "tesseract": None}
+    return {"status": "ready", "reason": None, "tesseract": None}
+
+
+def ocr_block(target, text):
+    quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+    return f"{OCR_SENTINEL.format(target)}\n>\n{quoted}"
+
+
+def ocr_admit(elapsed_ms, est_ocr_ms, remaining, est_page_ms, budget_ms):
+    return elapsed_ms + est_ocr_ms + remaining * est_page_ms + OCR_BUDGET_RESERVE_MS <= budget_ms
+
+
+def clamped_dpi(w, h, dpi):
+    import math
+    if w < MIN_PAGE_PT or h < MIN_PAGE_PT:
+        return None
+    eff = min(dpi, math.floor(math.sqrt(MAX_RENDER_PX / (w * h / 72 ** 2))))
+    return eff if eff >= MIN_RENDER_DPI else None
+
+
+def render_textless_page(page, d, o):
+    eff = clamped_dpi(page.rect.width, page.rect.height, o["imageDpi"])
+    if eff is None:
+        return None
+    name = f"page.{o['imageFormat']}"
+    page.get_pixmap(dpi=eff).save(os.path.join(d, name))
+    return name
+
+
+def small_image_gate(page):
+    import pymupdf
+    from pymupdf4llm.helpers.utils import analyze_page
+    a = analyze_page(page)
+    if not a.get("needs_ocr") or a.get("reason") != "img_text":
+        return False
+    pr = page.rect
+    area, short = pr.width * pr.height, min(pr.width, pr.height)
+    for image in page.get_image_info():
+        r = pymupdf.Rect(image["bbox"]) & pr
+        if r.width * r.height >= SMALL_IMAGE_FRACTION * area and min(r.width, r.height) >= SMALL_IMAGE_FRACTION * short:
+            return False
+    return True
+
+
+def page_ocr_kwargs(page, textless, lang):
+    if textless:
+        return {"use_ocr": True, "force_ocr": True, "ocr_language": lang}
+    if not page.get_images():
+        return {"use_ocr": True, "ocr_language": lang}
+    try:
+        skip = small_image_gate(page)
+    except Exception:  # noqa: BLE001 - internal API may differ under version override
+        skip = False
+    return {"use_ocr": False} if skip else {"use_ocr": True, "ocr_language": lang}
+
+
+def image_ocr_dpi(px_w, pt_w, pt_h):
+    import math
+    native = 72 * px_w / pt_w
+    cap = math.sqrt(MAX_RENDER_PX / (pt_w * pt_h / 72 ** 2))
+    return max(1, math.floor(min(native, cap)))
+
+
+def mode_image(o):
+    import pymupdf
+    import pymupdf4llm
+    path, lang = o["path"], o.get("ocrLanguage", "eng")
+    ext = os.path.splitext(path)[1].lower()
+    d = page_dir(o["stagingDir"], 1)
+    name = f"original{ext}"
+    shutil.copyfile(path, os.path.join(d, name))
+    mark_done(d)
+    md = f"![{o['stem']}](p1/{name})"
+    info = new_ocr(lang)
+    status = ocr_status(bool(o.get("ocr")), lang)
+    apply_status(info, status)
+    if status["status"] == "ready":
+        try:
+            pix = pymupdf.Pixmap(path)
+            w_px, h_px = pix.width, pix.height
+            del pix
+            if min(w_px, h_px) < MIN_OCR_SIDE_PX:
+                info["status"], info["reason"] = "skipped", "image too small"
+            else:
+                with pymupdf.open(path) as src, pymupdf.open("pdf", src.convert_to_pdf()) as pdf:
+                    r = pdf[0].rect
+                    text = pymupdf4llm.to_markdown(pdf, pages=[0], write_images=False, use_ocr=True, force_ocr=True,
+                                                   ocr_language=lang, ocr_dpi=image_ocr_dpi(w_px, r.width, r.height),
+                                                   page_separators=False).strip()
+                if text:
+                    info["pages"].append(1)
+                    md += "\n\n" + ocr_block(f"p1/{name}", text)
+                else:
+                    info["noText"].append(1)
+        except Exception:  # noqa: BLE001 - OCR never fails the conversion
+            info["ocrFailed"].append(1)
+    return {"markdown": md + "\n", "pageCount": 1, "emptyPages": [], "failedPages": [], "notes": [], "ocr": info}
+
+
 def mode_info(o):
     import pymupdf  # noqa: F401
     doc = open_pdf(o["path"])
@@ -99,28 +236,75 @@ def mode_info(o):
     return {"pageCount": doc.page_count, "metadata": meta, "toc": toc}
 
 
-def mode_pdf_primary(o):
+def primary_page_markdown(doc, n, d, o, kw, write_images):
     import pymupdf4llm
+    if not write_images:
+        return pymupdf4llm.to_markdown(doc, pages=[n - 1], write_images=False, page_separators=False, **kw)
+    # Space-free temp dir: pymupdf4llm's md_path() mangles paths containing spaces/parens.
+    with tempfile.TemporaryDirectory() as tmp:
+        md = pymupdf4llm.to_markdown(doc, pages=[n - 1], write_images=True, image_path=tmp,
+                                       image_format=o["imageFormat"], dpi=o["imageDpi"], page_separators=False, **kw)
+        sources = {}
+        for i, f in enumerate(sorted(os.listdir(tmp)), 1):
+            dest = f"img{i}{os.path.splitext(f)[1].lower()}"
+            source = os.path.join(tmp, f)
+            sources.update(image_source_map(source, f"p{n}/{dest}", f))
+            os.replace(source, os.path.join(d, dest))
+        return rewrite_image_destinations(md, sources)
+
+
+def mode_pdf_primary(o):
+    import time
+    start = time.monotonic()
     doc = open_pdf(o["path"])
     pages = check_pages(o.get("pages"), doc.page_count)
     staging, out, empty, failed, notes = o["stagingDir"], [], [], [], []
-    for n in pages:
+    lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
+    info = new_ocr(lang)
+    status = ocr_status(True, lang) if o.get("ocr") else None
+    ocr_ms, plain_ms = [], []
+    for i, n in enumerate(pages):
         d = page_dir(staging, n)
         try:
-            # Space-free temp dir: pymupdf4llm's md_path() mangles paths containing spaces/parens.
-            with tempfile.TemporaryDirectory() as tmp:
-                md = pymupdf4llm.to_markdown(doc, pages=[n - 1], write_images=True, image_path=tmp,
-                                               image_format=o["imageFormat"], dpi=o["imageDpi"],
-                                               use_ocr=False, page_separators=False)
-                sources = {}
-                for i, f in enumerate(sorted(os.listdir(tmp)), 1):
-                    dest = f"img{i}{os.path.splitext(f)[1].lower()}"
-                    source = os.path.join(tmp, f)
-                    target = f"p{n}/{dest}"
-                    sources.update(image_source_map(source, target, f))
-                    os.replace(source, os.path.join(d, dest))
-                md = rewrite_image_destinations(md, sources)
-            if not md.strip():
+            page = doc[n - 1]
+            textless = not page.get_text("text").strip()
+            if textless:
+                info["textless"].append(n)
+                if status is None:
+                    status = ocr_status(False, lang)
+            kw = page_ocr_kwargs(page, textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
+            if kw["use_ocr"]:
+                elapsed = (time.monotonic() - start) * 1000
+                est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
+                est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
+                if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
+                    if textless:
+                        info["budgetStopped"].append(n)
+                    kw = {"use_ocr": False}
+            t0 = time.monotonic()
+            try:
+                md = primary_page_markdown(doc, n, d, o, kw, not textless) if kw["use_ocr"] or not textless else ""
+            except Exception:  # noqa: BLE001
+                if not kw["use_ocr"]:
+                    raise
+                kw, t0 = {"use_ocr": False}, time.monotonic()
+                md = primary_page_markdown(doc, n, d, o, kw, not textless) if not textless else ""
+                if textless:
+                    info["ocrFailed"].append(n)
+            (ocr_ms if kw["use_ocr"] and textless else plain_ms).append((time.monotonic() - t0) * 1000)
+            if textless:
+                pic = render_textless_page(page, d, o)
+                parts = [f"![page {n}](p{n}/{pic})"] if pic else []
+                text = md.strip()
+                if kw["use_ocr"] and text:
+                    info["pages"].append(n)
+                    parts.append(ocr_block(f"p{n}/{pic}" if pic else "-", text))
+                else:
+                    if kw["use_ocr"]:
+                        info["noText"].append(n)
+                    empty.append(n)
+                md = "\n\n".join(parts)
+            elif not md.strip():
                 empty.append(n)
             out.append(md.rstrip())
             mark_done(d)
@@ -132,8 +316,10 @@ def mode_pdf_primary(o):
         out.append(SEP.format(n=n).strip("\n"))
     if failed and len(failed) == len(pages):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
+    if status is not None:
+        apply_status(info, status)
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes}
+            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info}
 
 
 def mode_pdf_fallback(o):
@@ -142,27 +328,39 @@ def mode_pdf_fallback(o):
     pages = check_pages(o.get("pages"), doc.page_count)
     keep = {int(k): v for k, v in (o.get("keepPages") or {}).items()}
     staging, out, empty, failed = o["stagingDir"], [], [], []
+    lang = o.get("ocrLanguage", "eng")
+    ocr_info = new_ocr(lang)
+    status = {"status": "unavailable", "reason": "fallback tier", "tesseract": None} if o.get("ocr") else None
     for n in pages:
         links = [f"![](images/{f})" for f in keep.get(n, [])]
         text = ""
         try:
             page = doc[n - 1]
             text = page.get_text("text").strip()
+            if not text:
+                ocr_info["textless"].append(n)
+                if status is None:
+                    status = ocr_status(False, lang)
             if n not in keep:
                 d = page_dir(staging, n)
-                i = 0
-                for info in page.get_image_info(xrefs=True):
-                    i += 1
-                    xref = info.get("xref", 0)
-                    if xref > 0:
-                        img = doc.extract_image(xref)
-                        name = f"img{i}.{img['ext'].lower()}"
-                        with open(os.path.join(d, name), "wb") as fh:
-                            fh.write(img["image"])
-                    else:
-                        name = f"img{i}.{o['imageFormat']}"
-                        page.get_pixmap(clip=pymupdf.Rect(info["bbox"]), dpi=o["imageDpi"]).save(os.path.join(d, name))
-                    links.append(f"![](p{n}/{name})")
+                if not text:
+                    pic = render_textless_page(page, d, o)
+                    if pic:
+                        links.append(f"![page {n}](p{n}/{pic})")
+                else:
+                    i = 0
+                    for image in page.get_image_info(xrefs=True):
+                        i += 1
+                        xref = image.get("xref", 0)
+                        if xref > 0:
+                            img = doc.extract_image(xref)
+                            name = f"img{i}.{img['ext'].lower()}"
+                            with open(os.path.join(d, name), "wb") as fh:
+                                fh.write(img["image"])
+                        else:
+                            name = f"img{i}.{o['imageFormat']}"
+                            page.get_pixmap(clip=pymupdf.Rect(image["bbox"]), dpi=o["imageDpi"]).save(os.path.join(d, name))
+                        links.append(f"![](p{n}/{name})")
                 mark_done(d)
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
@@ -175,8 +373,10 @@ def mode_pdf_fallback(o):
         out.append(SEP.format(n=n).strip("\n"))
     if failed and len(failed) == len(pages):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
+    if status is not None:
+        apply_status(ocr_info, status)
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": [DEGRADED_NOTE]}
+            "emptyPages": empty, "failedPages": failed, "notes": [DEGRADED_NOTE], "ocr": ocr_info}
 
 
 def esc(v):
@@ -453,10 +653,48 @@ def split_footnotes(soup):
     return notes
 
 
+def code_language(pre):
+    for node in [pre, *pre.find_all("code", limit=1)]:
+        for cls in node.get("class") or []:
+            match = CODE_LANG_RE.match(cls)
+            if match:
+                return match.group(1)
+    return ""
+
+
+def markdown_converter(pagebreaks):
+    from markdownify import MarkdownConverter
+
+    class Converter(MarkdownConverter):
+        def convert_img(self, el, text, parent_tags):
+            # Mammoth wraps cell images in p; markdownify checks only the immediate parent.
+            if el.find_parent(["td", "th"]):
+                parent_tags = parent_tags - {"_inline"}
+            return super().convert_img(el, text, parent_tags)
+
+        def convert_hr(self, el, text, parent_tags):
+            if pagebreaks and "pagebreak" in (el.get("class") or []):
+                return f"\n\n{PAGEBREAK_SENTINEL}\n\n"
+            return "\n\n---\n\n"
+
+        def convert_td(self, el, text, parent_tags):
+            return super().convert_td(el, re.sub(r"(?<!\\)\|", r"\\|", text), parent_tags)
+
+        def convert_th(self, el, text, parent_tags):
+            return super().convert_th(el, re.sub(r"(?<!\\)\|", r"\\|", text), parent_tags)
+
+    return Converter(heading_style="ATX", bullets="-", keep_inline_images_in=["td", "th"], code_language_callback=code_language)
+
+
+def mode_html(o):
+    from bs4 import BeautifulSoup
+    md = markdown_converter(pagebreaks=False).convert_soup(BeautifulSoup(o["html"], "html.parser")).strip()
+    return {"markdown": md + "\n", "pageCount": None, "engine": "markdownify", "emptyPages": [], "failedPages": [], "notes": []}
+
+
 def docx_mammoth(path):
     import mammoth
     from bs4 import BeautifulSoup
-    from markdownify import MarkdownConverter
     images = {}
 
     def convert_image(image):
@@ -471,19 +709,7 @@ def docx_mammoth(path):
     hoist_breaks(soup)
     notes = split_footnotes(soup)
 
-    class Converter(MarkdownConverter):
-        def convert_img(self, el, text, parent_tags):
-            # Mammoth wraps cell images in p; markdownify checks only the immediate parent.
-            if el.find_parent(["td", "th"]):
-                parent_tags = parent_tags - {"_inline"}
-            return super().convert_img(el, text, parent_tags)
-
-        def convert_hr(self, el, text, parent_tags):
-            if "pagebreak" in (el.get("class") or []):
-                return f"\n\n{PAGEBREAK_SENTINEL}\n\n"
-            return "\n\n---\n\n"
-
-    conv = Converter(heading_style="ATX", bullets="-", keep_inline_images_in=["td", "th"])
+    conv = markdown_converter(pagebreaks=True)
     body = conv.convert_soup(soup)
     segs = finish_segments([s.strip("\n") for s in re.split(r"\n*\x00PAGEBREAK\x00\n*", body)])
     footnotes = {nid: conv.convert("".join(str(c) for c in li.children)).strip() for nid, li in notes.items()}
@@ -803,12 +1029,12 @@ def mode_render_pages(o):
     return {"ok": True, "rendered": rendered, "failed": failed}
 
 
-MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx}
+MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx, "html": mode_html, "image": mode_image}
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in MODES:
-        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx>  (options JSON on stdin)", file=sys.stderr)
+        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx|html|image>  (options JSON on stdin)", file=sys.stderr)
         return 1
     mode = sys.argv[1]
     o = json.loads(sys.stdin.read() or "{}")

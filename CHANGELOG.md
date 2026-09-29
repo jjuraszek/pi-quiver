@@ -8,6 +8,14 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `doc_to_md` converts local `.html`/`.htm` (markdownify; Readability-free Turndown fallback) with local and `data:` images copied into the bundle and remote images kept as links.
+- `doc_to_md` accepts `.png .jpg .jpeg .tif .tiff .bmp .gif`; the image is copied into the bundle.
+- Pages without a text layer now keep a page picture on both Python tiers (a scanned PDF used to convert to nothing).
+- Opt-in OCR: `ocr` (default `false`) and `ocrLanguage` (default `eng`) tunables, `--ocr`/`--no-ocr`; needs Tesseract language data (optional OS dependency). A small-image gate and a time budget keep OCR from eating the primary timeout; the handle's `OCR:` line reports what ran.
+- DOCX tables with `|` in a cell now render as `\|` instead of breaking the table; code blocks with a `language-*` class keep their fence language.
+
 ## v6.5.0 - 2026-09-29
 
 - `doc_to_md` converts DOCX directly in the Python child (mammoth -> markdownify, python-docx text fallback) instead of LibreOffice -> PDF: heading styles survive as `#` headings, hyperlinks and footnotes are kept, pictures land under `images/` (#24). DOCX page semantics change: only author-inserted page breaks become `--- end of page.page_number=N ---` markers, `Page-Count` is suffixed `(explicit page breaks, not printed pages)` / `(no explicit page breaks)`, `pages` selects those segments and is rejected on a break-less file, and DOCX that falls back to LibreOffice (no DOCX-capable Python, or both DOCX engines failed) is marked degraded with `(LibreOffice pagination)` and rejects `pages`. LibreOffice is now optional for DOCX and still required for PPTX. Backend probe gains a `DOCX` line and pins `mammoth==1.13.0`, `markdownify==1.2.3`, `python-docx==1.2.0`; the managed venv moves to `doc-to-md-venv-v3` and the older venvs are removed after the first successful build.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
-import { categorize, htmlToMarkdown, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, buildGhLogArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
+import { categorize, htmlToMarkdown, htmlToMarkdownRaw, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, buildGhLogArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -63,6 +63,18 @@ test("htmlToMarkdown: article structure preserved", () => {
 	assert.match(md!, /-\s+first/); // turndown emits `-   first` (3 spaces); tolerate any whitespace
 	assert.match(md!, /\| A \| B \|/);
 	assert.match(md!, /```/);
+});
+
+test("htmlToMarkdownRaw: no Readability, no title prepend, footer and tables kept", () => {
+	const prose = "<p>" + "Readability needs a few hundred characters of real prose before it treats a node as the main article body, so this paragraph is long. ".repeat(4) + "</p>";
+	const html = `<html><body><article><h2>Section</h2>${prose}<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table></article><footer>FOOTER-TEXT contact</footer></body></html>`;
+	const raw = htmlToMarkdownRaw(html);
+	assert.match(raw, /^## Section/);
+	assert.match(raw, /\| A \| B \|/);
+	assert.ok(raw.includes("FOOTER-TEXT"));
+	const md = htmlToMarkdown(html, "https://example.com/p");
+	assert.ok(md, "expected markdown, got null");
+	assert.ok(!md.includes("FOOTER-TEXT"), "Readability drops the footer");
 });
 
 test("htmlToMarkdown: unparseable / empty → null", () => {

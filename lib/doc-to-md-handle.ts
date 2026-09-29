@@ -1,7 +1,7 @@
 import type { InputType } from "./doc-to-md-options.ts";
 
-export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx";
-export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx";
+export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image";
+export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy";
 export type BackendKind = "uv" | "python" | "venv" | "none";
 
 export interface OutlineEntry { line: number; level: number; title: string; page: number | null; }
@@ -18,11 +18,23 @@ export interface SheetInfo {
 	csv: string | null;
 }
 
+export interface OcrInfo {
+	status: "off" | "unavailable" | "skipped" | "ran";
+	lang: string;
+	textless: number[];
+	pages: number[];
+	noText: number[];
+	ocrFailed: number[];
+	budgetStopped: number[];
+	reason: string | null;
+	tesseract: boolean | null;
+}
+
 export interface HandleData {
 	savedTo: string; imagesDir: string | null; sheetsDir: string | null; type: InputType; engine: Engine; tier: Tier;
 	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
-	notes: string[]; outline: OutlineEntry[]; outlineTotal: number;
+	notes: string[]; outline: OutlineEntry[]; outlineTotal: number; ocr: OcrInfo | null;
 }
 
 export interface InfoData {
@@ -55,6 +67,33 @@ export function compactRanges(nums: number[], maxEntries = 20): string {
 	}
 	if (parts.length <= maxEntries) return parts.join(", ");
 	return `${parts.slice(0, maxEntries).join(", ")} (+${parts.length - maxEntries} more)`;
+}
+
+const INSTALL_HINT = "install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true";
+const BARE_REASONS = ["fallback tier", "no Python backend"];
+
+export function ocrLine(ocr: OcrInfo, type: InputType): string {
+	const image = type === "image";
+	const rerun = ocr.tesseract ? "rerun with ocr=true" : INSTALL_HINT;
+	switch (ocr.status) {
+		case "off": return image ? `OCR: off; ${rerun}` : `OCR: off - ${ocr.textless.length} page(s) without a text layer; ${rerun}`;
+		case "unavailable": {
+			const reason = ocr.reason ?? "";
+			const bare = BARE_REASONS.includes(reason) || reason.startsWith("OCR child failed: ");
+			return `OCR: unavailable - ${reason}${bare ? "" : " (install Tesseract; see doc/doc-to-md.md)"}`;
+		}
+		case "skipped": return "OCR: skipped - image too small";
+		case "ran": {
+			const clauses = [`OCR: ${ocr.pages.length} ${image ? "image" : "page(s)"} (${ocr.lang})`];
+			if (ocr.noText.length) clauses.push(`${ocr.noText.length} returned no text`);
+			if (ocr.ocrFailed.length) clauses.push(`${ocr.ocrFailed.length} failed and were converted without OCR`);
+			if (ocr.budgetStopped.length) {
+				const r = compactRanges(ocr.budgetStopped, Number.POSITIVE_INFINITY).replaceAll(", ", ",");
+				clauses.push(`time budget reached for pages=${r}; rerun with pages=${r} or raise primaryTimeoutMs`);
+			}
+			return clauses.join("; ");
+		}
+	}
 }
 
 const PAGE_MARKER_RE = /^--- end of page\.page_number=(\d+) ---$/;
@@ -110,6 +149,7 @@ export function formatHandle(h: HandleData): string {
 	if (h.failedPages.length) fe.push(`Failed-Pages: ${compactRanges(h.failedPages)}`);
 	if (h.emptyPages.length) fe.push(`Empty-Pages: ${compactRanges(h.emptyPages)}`);
 	if (fe.length) lines.push(fe.join("    "));
+	if (h.ocr) lines.push(ocrLine(h.ocr, h.type));
 	h.notes.slice(0, NOTE_MAX_LINES).forEach((n, i) => lines.push(`${i === 0 ? "Notes: " : "       "}${trunc(n, NOTE_MAX_CHARS)}`));
 	lines.push(...outlineLines(h.outline, h.outlineTotal));
 	return lines.join("\n");

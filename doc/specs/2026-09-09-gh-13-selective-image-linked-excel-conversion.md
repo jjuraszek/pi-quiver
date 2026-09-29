@@ -2,6 +2,7 @@
 
 > **Superseded by:** [doc/specs/2026-09-10-gh-17-excel-output-v2.md](./2026-09-10-gh-17-excel-output-v2.md) - "chart rendering" non-goal, `maxCellsPerSheet` option row, and the Excel part of the Python/bundle contract (matrix budget, bundle layout, 1-based worksheet-only indices)
 > **Superseded by:** [doc/specs/2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md](./2026-09-28-gh-24-direct-docx-conversion-toc-offsets.md) - `Info mode` and `Inline page breaks always` for DOCX input only
+> **Superseded by:** [doc/specs/2026-09-29-doc-to-md-ocr-html-input.md](./2026-09-29-doc-to-md-ocr-html-input.md) - the "OCR for scanned documents" non-goal, `use_ocr=False` in the `pdf-primary` call, and the `path` row's supported-input list
 
 Ticket: [jjuraszek/pi-quiver#13](https://github.com/jjuraszek/pi-quiver/issues/13)
 Supersedes: `doc/specs/2026-06-15-doc-to-md-converter.md` ("Non-Goals: No spreadsheets", the single unpdf fallback, and the inline-result contract), `doc/specs/2026-08-26-doc-to-md-python-backend-cli-skill.md` ("Out of scope: any change to `scripts/pdf_to_md.py` behavior", the flagless CLI, and the inline/spill size gate).

@@ -89,13 +89,36 @@ test("sanitizeStem: [A-Za-z0-9._-] only, runs collapsed, empty -> document", () 
 	assert.strictEqual(sanitizeStem("###"), "_");
 });
 
-test("classifyInput: five types, case-insensitive; unsupported names the list", () => {
+test("classifyInput: office/pdf types, case-insensitive; unsupported names the list", () => {
 	assert.strictEqual(classifyInput("A.PDF"), "pdf");
 	assert.strictEqual(classifyInput("b.docx"), "docx");
 	assert.strictEqual(classifyInput("c.pptx"), "pptx");
 	assert.strictEqual(classifyInput("d.xlsx"), "xlsx");
 	assert.strictEqual(classifyInput("e.xls"), "xls");
 	assert.throws(() => classifyInput("f.xlsm"), /supported: \.pdf, \.docx, \.pptx, \.xlsx, \.xls/);
+});
+
+test("classifyInput: html and image inputs; .webp stays unsupported", () => {
+	assert.strictEqual(classifyInput("a.html"), "html");
+	assert.strictEqual(classifyInput("A.HTM"), "html");
+	for (const e of [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif"]) assert.strictEqual(classifyInput(`x${e}`), "image", e);
+	assert.throws(() => classifyInput("x.webp"), /Unsupported file type "\.webp"; supported: \.pdf, \.docx, \.pptx, \.xlsx, \.xls, \.html, \.htm, \.png, \.jpg, \.jpeg, \.tif, \.tiff, \.bmp, \.gif/);
+});
+
+test("ocr tunables: defaults, precedence, per-call false beats settings true", () => {
+	assert.strictEqual(TUNABLE_DEFAULTS.ocr, false);
+	assert.strictEqual(TUNABLE_DEFAULTS.ocrLanguage, "eng");
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { ocr: true }, {}).ocr, true);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocr: false }, { ocr: true }, {}).ocr, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocrLanguage: "deu+eng" }, { ocrLanguage: "pol" }, {}).ocrLanguage, "deu+eng");
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { ocrLanguage: "chi_sim" }, {}).ocrLanguage, "chi_sim");
+});
+
+test("ocrLanguage validation: plain Tesseract codes only", () => {
+	for (const bad of ["Deu", "eng+", "+eng", "../eng", "script/Latin", "eng deu", ""]) assert.throws(() => resolveOptions({ path: "a.pdf", ocrLanguage: bad }, {}, {}), UsageError, bad);
+	const warnings: string[] = [];
+	assert.deepStrictEqual(coerceDocToMdSettings({ ocrLanguage: "script/Latin", ocr: true }, (m) => warnings.push(m)), { ocr: true });
+	assert.match(warnings[0], /quiver\.docToMd\.ocrLanguage must be Tesseract language codes/);
 });
 
 test("renderHelp: lists every flag and both tables", () => {

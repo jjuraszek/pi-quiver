@@ -7,8 +7,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolveOptions, TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
-import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAMES, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, officeFailure, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
+import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAMES, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, officeFailure, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, prepareHtml, DEGRADED_HTML_TURNDOWN, resolveOcrLabels, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
+import type { OcrInfo } from "../lib/doc-to-md-handle.ts";
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
 
@@ -535,6 +536,101 @@ const opts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: MUL
 const okTier = (markdown: string, pages: number[]): TierResult => ({ ok: true, json: { markdown, pages, pageCount: 6, emptyPages: [], failedPages: [], notes: [] } });
 const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind: "uv", pdf: true, xlsx: true, docx: true }): Partial<PipelineSeams> => ({ backend: async () => backend, runTier });
 
+const HTML_PAGE = fileURLToPath(new URL("../test/fixtures/html/page.html", import.meta.url));
+const OCR_PNG = fileURLToPath(new URL("../test/fixtures/ocr.png", import.meta.url));
+const imageOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: OCR_PNG, ...extra } as never, {}, {});
+const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+function stagePage(b: { stagingDir: string }, page: number, file: string) {
+ const d = join(b.stagingDir, `p${page}`); mkdirSync(d, { recursive: true }); writeFileSync(join(d, file), "x"); writeFileSync(join(d, ".done"), "");
+}
+
+test("convertDocument image: child result published, stem passed, OCR line", async () => {
+ let stem: unknown;
+ const r = await convertDocument(imageOpts(), undefined, seamsWith(async (mode, co, b) => {
+  assert.equal(mode, "image"); stem = co.stem; stagePage(b, 1, "original.png");
+  return { ok: true, json: { markdown: "![ocr](p1/original.png)\n", pageCount: 1, emptyPages: [], failedPages: [], notes: [], ocr: { ...OCR0, tesseract: true } } };
+ }));
+ assert.equal(stem, "ocr");
+ assert.match(r.output, /^Type: image   Engine: pymupdf4llm   Tier: image$/m);
+ assert.match(r.output, /^OCR: off; rerun with ocr=true$/m);
+ assert.ok(readFileSync(r.details.savedTo, "utf8").includes("![ocr](images/ocr-p1-1.png)"));
+ rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+});
+
+test("convertDocument image: child failure and no Python backend both write the image-only bundle", async () => {
+ const failed = await convertDocument(imageOpts(), undefined, seamsWith(async () => ({ ok: false, reason: "exit 1" })));
+ const none = await convertDocument(imageOpts(), undefined, seamsWith(async () => { throw new Error("no child"); }, { kind: "none", reason: "uv not found" }));
+ for (const [r, line] of [[failed, "OCR: unavailable - OCR child failed: exit 1"], [none, "OCR: unavailable - no Python backend"]] as const) {
+  assert.match(r.output, /^Type: image   Engine: copy   Tier: image$/m);
+  assert.ok(r.output.split("\n").includes(line), r.output);
+  const md = readFileSync(r.details.savedTo, "utf8");
+  assert.ok(md.includes("![ocr](images/ocr-p1-1.png)"), md);
+  assert.ok(readFileSync(join(dirname(r.details.savedTo), "images", "ocr-p1-1.png")).equals(readFileSync(OCR_PNG)));
+  rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+ }
+});
+
+test("convertDocument image: cancellation aborts the bundle", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-img-out-"));
+ const ac = new AbortController();
+ await assert.rejects(convertDocument(imageOpts({ outputDir: out }), ac.signal, seamsWith(async () => { ac.abort(); return { ok: false, reason: "aborted" }; })), /aborted/);
+ assert.ok(!existsSync(join(out, "ocr.md")) && !existsSync(join(out, "ocr.md.lock")));
+ rmSync(out, { recursive: true, force: true });
+});
+
+test("pages and info reject HTML and images before backend resolution", async () => {
+ const noBackend = { backend: async () => { throw Error("backend must not be probed"); } };
+ for (const [path, label] of [[HTML_PAGE, "HTML files"], [OCR_PNG, "images"]]) {
+  await assert.rejects(convertDocument(resolveOptions({ path, pages: "1" }, {}, {}), undefined, noBackend), new RegExp(`--pages does not apply to ${label}`));
+  await assert.rejects(inspectDocument(resolveOptions({ path, info: true }, {}, {}), undefined, noBackend), new RegExp(`info does not apply to ${label}; convert directly`));
+ }
+});
+
+test("OCR options, published labels, missing source, and details", async () => {
+ let seen: Record<string, unknown> = {};
+ const ocr: OcrInfo = { ...OCR0, status: "ran", textless: [1], pages: [1] };
+ const r = await convertDocument(opts({ ocr: true, ocrLanguage: "deu+eng", primaryTimeoutMs: 12345 }), undefined, seamsWith(async (_mode, co, b) => {
+  seen = co; stagePage(b, 1, "page.png");
+  return { ok: true, json: { markdown: "![page 1](p1/page.png)\n\n\x00OCR p1/page.png\x00\n>\n> Hello\n\n\x00OCR -\x00\n>\n> Lost\n", pages: [1], pageCount: 6, ocr } };
+ }));
+ assert.deepEqual([seen.ocr, seen.ocrLanguage, seen.ocrBudgetMs], [true, "deu+eng", 12345]);
+ const md = readFileSync(r.details.savedTo, "utf8");
+ assert.ok(md.includes("![page 1](images/multipage-p1-1.png)\n\n> Text recognized in images/multipage-p1-1.png (OCR, may contain recognition errors):\n>\n> Hello"), md);
+ assert.ok(md.includes("> Text recognized by OCR (source image missing):"));
+ assert.ok(!md.includes("\x00"));
+ assert.deepEqual(r.details.ocr, ocr);
+ assert.match(r.output, /^OCR: 1 page\(s\) \(eng\)$/m);
+ rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+});
+
+test("resolveOcrLabels replaces missing and published sources", () => {
+ assert.equal(resolveOcrLabels("\x00OCR p2/a.png\x00\n\x00OCR -\x00", new Map([["p2/a.png", "images/a.png"]])), "> Text recognized in images/a.png (OCR, may contain recognition errors):\n> Text recognized by OCR (source image missing):");
+});
+
+test("OCR status rows, ranges, empty status and unpdf backend", async () => {
+ const cases: [OcrInfo, string | null][] = [
+  [{ ...OCR0, textless: [2], tesseract: true }, "OCR: off - 1 page(s) without a text layer; rerun with ocr=true"],
+  [{ ...OCR0, textless: [2], tesseract: false }, "OCR: off - 1 page(s) without a text layer; install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true"],
+  [{ ...OCR0, status: "unavailable", textless: [2], reason: "Tesseract language data not found" }, "OCR: unavailable - Tesseract language data not found (install Tesseract; see doc/doc-to-md.md)"],
+  [{ ...OCR0, status: "ran", textless: [3, 4, 5], budgetStopped: [3, 4, 5] }, "OCR: 0 page(s) (eng); time budget reached for pages=3-5; rerun with pages=3-5 or raise primaryTimeoutMs"],
+  [{ ...OCR0, status: "ran", textless: [2], noText: [2], ocrFailed: [4] }, "OCR: 0 page(s) (eng); 1 returned no text; 1 failed and were converted without OCR"],
+  [{ ...OCR0, status: "ran" }, null],
+ ];
+ for (const [ocr, line] of cases) {
+  const r = await convertDocument(opts(), undefined, seamsWith(async () => ({ ok: true, json: { markdown: "x\n", pages: [1], pageCount: 6, ocr } })));
+  if (line === null) { assert.equal(r.details.ocr, null); assert.ok(!r.output.includes("OCR:")); }
+  else { assert.ok(r.output.split("\n").includes(line), r.output); assert.deepEqual(r.details.ocr, ocr); }
+  rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+ }
+ const none: Backend = { kind: "none", reason: "uv not found" };
+ for (const enabled of [true, false]) {
+  const r = await convertDocument(opts({ ocr: enabled }), undefined, seamsWith(async () => okTier("text\n", [1]), none));
+  assert.equal(r.details.ocr?.reason ?? null, enabled ? "no Python backend" : null);
+  assert.equal(r.output.includes("OCR: unavailable - no Python backend"), enabled);
+  rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+ }
+});
+
 function parseHandle(text: string): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const line of text.split("\n")) { const m = line.match(/^([A-Za-z-]+): (.*)$/); if (m) out[m[1]] = m[2]; }
@@ -778,6 +874,113 @@ const PPTX = fileURLToPath(new URL("../test/fixtures/multislide.pptx", import.me
 const docxOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: DOCX, ...extra } as never, {}, {});
 const UV: Backend = { kind: "uv", pdf: true, xlsx: true, docx: true };
 const PY_NO_DOCX: Backend = { kind: "python", exe: "python3", pdf: true, xlsx: true, docx: false };
+const htmlFx = (n: string) => fileURLToPath(new URL(`../test/fixtures/html/${n}`, import.meta.url));
+const htmlOpts = (n: string, extra: Record<string, unknown> = {}) => resolveOptions({ path: htmlFx(n), ...extra } as never, {}, {});
+
+test("prepareHtml stages images and decodes legacy and UTF-8 input", async () => {
+ const s = mkdtempSync(join(tmpdir(), "quiver-html-"));
+ try {
+  const p = await prepareHtml(HTML_PAGE, join(s, "page"));
+  assert.equal(p.missing, 1);
+  assert.match(p.html, /src="p1\/1.png"/);
+  assert.match(p.html, /src="p1\/2.png"/);
+  assert.match(p.html, /<a href="https:\/\/example.com\/remote.png">remote figure<\/a>/);
+  assert.ok(p.html.includes("missing figure") && !p.html.includes("missing.png"));
+  assert.ok(!/<script|<style|<head|<title/i.test(p.html));
+  assert.deepEqual(readdirSync(join(s, "page", "p1")).sort(), [".done", "1.png", "2.png"]);
+  assert.ok(readFileSync(join(s, "page", "p1", "1.png")).equals(readFileSync(htmlFx("page_files/fig.png"))));
+  assert.match((await prepareHtml(htmlFx("title-only.html"), join(s, "title"))).html, /<body><h1>Only a title<\/h1>/);
+  assert.equal((p.html.match(/<h1>/g) ?? []).length, 1);
+  assert.ok((await prepareHtml(htmlFx("cp1250.html"), join(s, "legacy"))).html.includes("Zażółć gęślą jaźń"));
+  assert.ok(p.html.includes("Żółw"));
+  const extra = join(s, "extra.html");
+  writeFileSync(extra, '<img src="data:image/png;base64,AAAA" alt="bad image"><img src="//cdn.example.com/x.png" alt="remote image">');
+  const prepared = await prepareHtml(extra, join(s, "extra"));
+  assert.equal(prepared.missing, 1);
+  assert.match(prepared.html, /bad image/);
+  assert.match(prepared.html, /<a href="https:\/\/cdn.example.com\/x.png">remote image<\/a>/);
+  assert.deepEqual(readdirSync(join(s, "extra", "p1")), [".done"]);
+ } finally { rmSync(s, { recursive: true, force: true }); }
+});
+
+test("HTML markdownify publishes images and keeps missing-image note", async () => {
+ let got = "";
+ const r = await convertDocument(htmlOpts("page.html"), undefined, seamsWith(async (mode, co) => {
+  assert.equal(mode, "html"); got = String(co.html);
+  return { ok: true, json: { markdown: "# Garden notes\n\n![local figure](p1/1.png) ![inline figure](p1/2.png)\n", engine: "markdownify", notes: [] } };
+ }));
+ try {
+  assert.ok(got.includes('src="p1/1.png"'));
+  assert.match(r.output, /Engine: markdownify   Tier: html/);
+  assert.doesNotMatch(r.output, /Degraded:|Fallback-Reason:/);
+  assert.match(r.output, /1 image\(s\) not found; replaced with alt text/);
+  const md = readFileSync(r.details.savedTo, "utf8");
+  assert.ok(md.includes("![local figure](images/page-p1-1.png)") && md.includes("![inline figure](images/page-p1-2.png)"), md);
+ } finally { rmSync(dirname(r.details.savedTo), { recursive: true, force: true }); }
+});
+
+test("HTML Turndown fallback retains nav and footer without Readability", async () => {
+ const r = await convertDocument(htmlOpts("page.html"), undefined, seamsWith(async (mode) => { throw Error(`unexpected ${mode}`); }, PY_NO_DOCX));
+ try {
+  assert.match(r.output, /Engine: turndown   Tier: html/);
+  assert.ok(r.output.includes(`Degraded: ${DEGRADED_HTML_TURNDOWN}`));
+  assert.ok(!r.output.includes("Fallback-Reason:"));
+  const md = readFileSync(r.details.savedTo, "utf8");
+  assert.ok(md.includes("NAV-TEXT") && md.includes("FOOTER-TEXT") && md.includes("![local figure](images/page-p1-1.png)"), md);
+ } finally { rmSync(dirname(r.details.savedTo), { recursive: true, force: true }); }
+});
+
+test("HTML child timeout falls back but cancellation aborts", async () => {
+ const r = await convertDocument(htmlOpts("page.html"), undefined, seamsWith(async () => ({ ok: false, reason: "timeout after 60000ms" })));
+ assert.match(r.output, /^Fallback-Reason: html timeout after 60000ms$/m);
+ assert.match(r.output, /Engine: turndown   Tier: html/);
+ assert.ok(r.output.includes(`Degraded: ${DEGRADED_HTML_TURNDOWN}`));
+ rmSync(dirname(r.details.savedTo), { recursive: true, force: true });
+ const out = mkdtempSync(join(tmpdir(), "quiver-html-out-"));
+ try {
+  const ac = new AbortController();
+  await assert.rejects(convertDocument(htmlOpts("page.html", { outputDir: out }), ac.signal, seamsWith(async () => { ac.abort(); return { ok: false, reason: "aborted" }; })), /aborted/);
+  assert.ok(!existsSync(join(out, "page.md")) && !existsSync(join(out, "page.md.lock")));
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+test("HTML abort after preparation releases the bundle before running a tier", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-html-abort-"));
+ try {
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(convertDocument(htmlOpts("page.html", { outputDir: out }), ac.signal,
+   seamsWith(async () => { throw Error("runTier must not be called"); })), /aborted/);
+  assert.ok(!existsSync(join(out, "page.md")) && !existsSync(join(out, "page.md.lock")));
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+test("HTML keeps image syntax in page text with either engine", async () => {
+ const dir = mkdtempSync(join(tmpdir(), "quiver-html-text-"));
+ const path = join(dir, "literal.html");
+ writeFileSync(path, '<pre><code>&lt;img src="images/logo.png"&gt; and ![](images/logo.png)</code></pre>');
+ try {
+  for (const backend of [UV, PY_NO_DOCX]) {
+   const r = await convertDocument(resolveOptions({ path, outputDir: join(dir, backend.docx ? "markdownify" : "turndown") } as never, {}, {}), undefined,
+    seamsWith(async () => ({ ok: true, json: { markdown: '<img src="images/logo.png"> and ![](images/logo.png)\n' } }), backend));
+   const md = readFileSync(r.details.savedTo, "utf8");
+   assert.match(md, /!\[\]\(images\/logo.png\)/);
+   assert.match(md, /<img src="images\/logo.png">|&lt;img src="images\/logo.png"&gt;/);
+  }
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("HTML rejects unstaged ./p1 image references", async () => {
+ const out = mkdtempSync(join(tmpdir(), "quiver-html-invalid-"));
+ try {
+  await assert.rejects(convertDocument(htmlOpts("page.html", { outputDir: out }), undefined,
+   seamsWith(async () => ({ ok: true, json: { markdown: "![x](./p1/9.png)" } }))), /unexpected image reference in output/);
+ } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("non-HTML conversion still rejects unexpected image references", async () => {
+ await assert.rejects(convertDocument(resolveOptions({ path: MULTIPAGE } as never, {}, {}), undefined,
+  seamsWith(async () => ({ ok: true, json: { markdown: "![logo](x.png)" } }))), /unexpected image reference in output: x.png/);
+});
+
 const MISSING = { ok: false as const, kind: "missing" as const, code: null, timedOut: false, stderr: "" };
 const okDocx = (markdown: string, extra: Record<string, unknown> = {}): TierResult => ({ ok: true, json: { markdown, pages: [1, 2], pageCount: 2, explicitBreaks: 1, engine: "mammoth", degraded: false, fallbackReason: null, ...extra } });
 

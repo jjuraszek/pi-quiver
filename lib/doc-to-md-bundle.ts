@@ -125,9 +125,10 @@ export function rewriteLinks(md: string, sourceMap: Map<string, string>): string
 	});
 }
 
-export function validateImageLinks(md: string, manifest: Set<string>, csvManifest: Set<string> = new Set()): void {
+export function validateImageLinks(md: string, manifest: Set<string>, csvManifest: Set<string> = new Set(), html = false): void {
 	for (const m of md.matchAll(IMG_LINK_RE)) {
 		const target = imageTarget(m);
+		if (html && !target.replace(/^\.\//, "").startsWith("p1/")) continue;
 		if (!target.startsWith("images/") || !manifest.has(target.slice("images/".length))) throw new Error(`unexpected image reference in output: ${target}`);
 	}
 	for (const m of md.matchAll(SHEET_LINK_RE)) {

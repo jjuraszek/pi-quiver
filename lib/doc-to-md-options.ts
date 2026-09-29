@@ -4,7 +4,7 @@
  */
 import { extname } from "node:path";
 
-export type InputType = "pdf" | "docx" | "pptx" | "xlsx" | "xls";
+export type InputType = "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "html" | "image";
 export type ImageFormat = "png" | "jpg";
 
 export interface Tunables {
@@ -18,6 +18,8 @@ export interface Tunables {
 	imageFormat: ImageFormat;
 	maxOutputBytes: number;
 	outlineMaxEntries: number;
+	ocr: boolean;
+	ocrLanguage: string;
 }
 
 export interface DocToMdOptions extends Tunables {
@@ -37,7 +39,7 @@ export interface PerCallInput extends Partial<Tunables> {
 	overwrite?: boolean;
 }
 
-export type DescriptorType = "string" | "int" | "bool" | "pages" | "enum" | "version";
+export type DescriptorType = "string" | "int" | "bool" | "pages" | "enum" | "version" | "lang";
 
 export interface OptionDescriptor {
 	key: keyof DocToMdOptions;
@@ -54,9 +56,11 @@ export class UsageError extends Error {}
 
 export const MIN_PYMUPDF4LLM = "1.27.0";
 const VERSION_RE = /^\d+(\.\d+)*$/;
+export const OCR_LANGUAGE_RE = /^[a-z][a-z0-9_]*(\+[a-z][a-z0-9_]*)*$/;
+export const IMAGE_EXTS: readonly string[] = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif"];
 
 export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
-	{ key: "path", flag: null, type: "string", default: null, settable: false, help: "Local .pdf .docx .pptx .xlsx .xls file" },
+	{ key: "path", flag: null, type: "string", default: null, settable: false, help: "Local .pdf .docx .pptx .xlsx .xls .html .htm .png .jpg .jpeg .tif .tiff .bmp .gif file" },
 	{ key: "info", flag: "--info", type: "bool", default: false, settable: false, help: "Inspect only (page count, metadata, TOC or sheet inventory); no bundle" },
 	{ key: "pages", flag: "--pages", type: "pages", default: null, settable: false, help: "Inclusive 1-based pages, e.g. \"12-15\" or \"3,7,10-12\" (PDF/DOCX/PPTX only); default all. DOCX: selects explicit-page-break segments; rejected when the file has none" },
 	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir" },
@@ -71,6 +75,8 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "imageFormat", flag: "--image-format", type: "enum", default: "png", settable: true, enumValues: ["png", "jpg"], help: "Rendered image format (embedded images keep their native extension)" },
 	{ key: "maxOutputBytes", flag: "--max-output-bytes", type: "int", default: 20000000, settable: true, help: "Child stdout cap in bytes" },
 	{ key: "outlineMaxEntries", flag: "--outline-max-entries", type: "int", default: 40, settable: true, help: "Heading outline / TOC / sheet inventory cap in the handle" },
+	{ key: "ocr", flag: "--ocr", type: "bool", default: false, settable: true, help: "Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off)" },
+	{ key: "ocrLanguage", flag: "--ocr-language", type: "lang", default: "eng", settable: true, help: "Tesseract language code(s), +-joined, e.g. deu+eng" },
 ];
 
 export const TUNABLE_DEFAULTS: Tunables = Object.fromEntries(
@@ -98,6 +104,7 @@ function coerceValue(d: OptionDescriptor, raw: unknown, fromString = false): { o
 			if (typeof raw !== "string" || !VERSION_RE.test(raw)) return { ok: false, reason: "must be digits and dots" };
 			if (!versionAtLeast(raw, MIN_PYMUPDF4LLM)) return { ok: false, reason: `must be >= ${MIN_PYMUPDF4LLM}` };
 			return { ok: true, value: raw };
+		case "lang": return typeof raw === "string" && OCR_LANGUAGE_RE.test(raw) ? { ok: true, value: raw } : { ok: false, reason: "must be Tesseract language codes joined by + (e.g. eng, deu+eng)" };
 		case "string": return typeof raw === "string" && raw.length > 0 ? { ok: true, value: raw } : { ok: false, reason: "must be a non-empty string" };
 		case "pages": return typeof raw === "string" ? { ok: true, value: parsePages(raw) } : { ok: false, reason: "must be a string" };
 	}
@@ -136,11 +143,11 @@ export function sanitizeStem(base: string): string {
 	return s.length ? s : "document";
 }
 
-const SUPPORTED: Record<string, InputType> = { ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".xlsx": "xlsx", ".xls": "xls" };
+const SUPPORTED: Record<string, InputType> = { ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".xlsx": "xlsx", ".xls": "xls", ".html": "html", ".htm": "html", ...Object.fromEntries(IMAGE_EXTS.map((ext) => [ext, "image" as const])) };
 
 export function classifyInput(filePath: string): InputType {
 	const t = SUPPORTED[extname(filePath).toLowerCase()];
-	if (!t) throw new Error(`Unsupported file type "${extname(filePath) || "(none)"}"; supported: .pdf, .docx, .pptx, .xlsx, .xls`);
+	if (!t) throw new Error(`Unsupported file type "${extname(filePath) || "(none)"}"; supported: ${Object.keys(SUPPORTED).join(", ")}`);
 	return t;
 }
 

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { cliAgentDir, parseCliArgs, readCliSettings } from "../bin/pi-quiver.ts";
-import { DOC_TO_MD_OPTIONS } from "../lib/doc-to-md-core.ts";
+import { DOC_TO_MD_OPTIONS, resolveOptions } from "../lib/doc-to-md-core.ts";
 
 const execFileAsync = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/pi-quiver.ts", import.meta.url));
@@ -25,6 +25,15 @@ test("parseCliArgs: doc-to-md flags map to per-call input", () => {
 	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pages: "2-3", outputDir: "out", overwrite: true, primaryTimeoutMs: 5000, imageFormat: "jpg" } });
 	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--info", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", info: true } });
 	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--help"]), { ok: true, cmd: "doc-to-md-help" });
+});
+
+test("parseCliArgs: --no-ocr sets false and overrides a settings-level ocr: true", () => {
+	const r = parseCliArgs(["doc-to-md", "--no-ocr", "a.pdf"]);
+	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: false } });
+	if (!r.ok || r.cmd !== "doc-to-md") return;
+	assert.strictEqual(resolveOptions(r.perCall, { ocr: true }, {}).ocr, false);
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--no-overwrite", "a.pdf"]), { ok: false, error: "unknown flag: --no-overwrite" });
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: true } });
 });
 
 test("parseCliArgs: every doc-to-md descriptor flag round-trips", () => {

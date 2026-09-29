@@ -323,6 +323,11 @@ export function htmlToMarkdown(html: string, url: string): string | null {
 	return md;
 }
 
+/** Local-file HTML: the shared Turndown + GFM setup without Readability or a title prepend. */
+export function htmlToMarkdownRaw(html: string): string {
+	return turndownService.turndown(html).trim();
+}
+
 export function prettyJson(text: string): string {
 	try {
 		return JSON.stringify(JSON.parse(text), null, 2);

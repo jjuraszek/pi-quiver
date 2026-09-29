@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline, type HandleData } from "../lib/doc-to-md-handle.ts";
+import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline, ocrLine, type HandleData, type OcrInfo } from "../lib/doc-to-md-handle.ts";
 
 const base: HandleData = {
 	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
 	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
-	failedPages: [], emptyPages: [], notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
+	failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
 };
 
 test("formatHandle: full shape, conditional lines omitted when empty", () => {
@@ -96,7 +96,7 @@ test("formatInfoHandle: pdf and xlsx shapes", () => {
 });
 
 test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
-	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], notes: [], outline: [], outlineTotal: 0 };
+	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
 	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
 	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
 	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));
@@ -106,4 +106,28 @@ test("formatSize", () => {
 	assert.strictEqual(formatSize(512), "512B");
 	assert.strictEqual(formatSize(18637), "18.2KB");
 	assert.strictEqual(formatSize(3 * 1024 * 1024), "3.0MB");
+});
+
+const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+test("ocrLine: every row and clause, first match wins", () => {
+	assert.strictEqual(ocrLine({ ...OCR0, textless: [1, 2, 3], tesseract: true }, "pdf"), "OCR: off - 3 page(s) without a text layer; rerun with ocr=true");
+	assert.strictEqual(ocrLine({ ...OCR0, textless: [1, 2, 3], tesseract: false }, "pdf"), "OCR: off - 3 page(s) without a text layer; install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true");
+	assert.strictEqual(ocrLine({ ...OCR0, tesseract: true }, "image"), "OCR: off; rerun with ocr=true");
+	assert.strictEqual(ocrLine({ ...OCR0, tesseract: false }, "image"), "OCR: off; install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "unavailable", reason: "language data for deu not installed" }, "pdf"), "OCR: unavailable - language data for deu not installed (install Tesseract; see doc/doc-to-md.md)");
+	for (const reason of ["fallback tier", "no Python backend", "OCR child failed: exit 1"]) assert.strictEqual(ocrLine({ ...OCR0, status: "unavailable", reason }, "pdf"), `OCR: unavailable - ${reason}`);
+	assert.strictEqual(ocrLine({ ...OCR0, status: "skipped", reason: "image too small" }, "image"), "OCR: skipped - image too small");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1, 2, 3] }, "pdf"), "OCR: 3 page(s) (eng)");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1] }, "image"), "OCR: 1 image (eng)");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", lang: "deu+eng", pages: [1, 2], noText: [5], ocrFailed: [6, 7], budgetStopped: [3, 7, 8, 9] }, "pdf"),
+		"OCR: 2 page(s) (deu+eng); 1 returned no text; 2 failed and were converted without OCR; time budget reached for pages=3,7-9; rerun with pages=3,7-9 or raise primaryTimeoutMs");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", textless: [1, 2], budgetStopped: [18, 19, 20] }, "pdf"), "OCR: 0 page(s) (eng); time budget reached for pages=18-20; rerun with pages=18-20 or raise primaryTimeoutMs");
+});
+
+test("formatHandle: OCR line after Failed/Empty-Pages, omitted when ocr is null; OCR blockquote headings not in the Outline", () => {
+	const h: HandleData = { savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
+	const lines = formatHandle(h).split("\n");
+	assert.strictEqual(lines[lines.indexOf("Empty-Pages: 1") + 1], "OCR: off - 1 page(s) without a text layer; rerun with ocr=true");
+	assert.ok(!formatHandle({ ...h, ocr: null }).includes("OCR:"));
+	assert.deepStrictEqual(scanOutline("> # Scanned heading\n>\n# Real\n", 10).entries.map((e) => e.title), ["Real"]);
 });

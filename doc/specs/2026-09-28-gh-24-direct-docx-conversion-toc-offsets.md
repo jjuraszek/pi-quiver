@@ -1,5 +1,7 @@
 # Direct DOCX conversion with explicit-break page hints and a paged Outline
 
+> **Superseded by:** [doc/specs/2026-09-29-doc-to-md-ocr-html-input.md](./2026-09-29-doc-to-md-ocr-html-input.md) - step 1c converter options (cell-pipe escaping and code-fence language added)
+
 **Goal:** `doc_to_md` converts `.docx` files directly through a Python child (mammoth -> markdownify, python-docx text fallback) instead of LibreOffice -> PDF, keeps heading structure so the handle `Outline` carries `L<line>` offsets, marks author-inserted page breaks with the existing `--- end of page.page_number=N ---` marker, and adds a page column to the conversion `Outline` for every format so a reader can cite line and page from one table.
 
 Ticket: [jjuraszek/pi-quiver#24](https://github.com/jjuraszek/pi-quiver/issues/24). Supersedes `doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md`, `Info mode` and `Inline page breaks always` for DOCX only (PDF and PPTX contracts there stay live).

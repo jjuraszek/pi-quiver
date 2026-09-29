@@ -3,7 +3,7 @@
 uv run --with pymupdf==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py [generator ...]
 Pass generator names to regenerate a subset (e.g. charts charts_zero_extent).
 Requires soffice on PATH (workbook.xlsx round-trip populates cached formula values)."""
-import io, os, shutil, subprocess, tempfile, zipfile, re
+import base64, io, os, random, shutil, subprocess, tempfile, zipfile, re
 import pymupdf
 from PIL import Image
 
@@ -230,7 +230,56 @@ def charts_zero_extent():
     cs = wb.create_chartsheet("Chart"); ch = LineChart(); ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=3)); cs.add_chart(ch)
     wb.save(os.path.join(HERE, "charts-zero-extent.xlsx"))  # deliberately unpatched: exercises the degenerate-page guard
 
-GENERATORS = {"multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
+OCR_TEXT = "Hello OCR world 12345"
+
+def text_png(text, w_pt=420, h_pt=80, dpi=200):
+    doc = pymupdf.open(); page = doc.new_page(width=w_pt, height=h_pt)
+    page.insert_text((12, h_pt / 2 + 8), text, fontsize=24)
+    return page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY).tobytes("png")
+
+def noise_png(seed, size=64):
+    rnd = random.Random(seed); im = Image.new("RGB", (size, size))
+    im.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(size * size)])
+    buf = io.BytesIO(); im.save(buf, "PNG"); return buf.getvalue()
+
+def scan_pdf():
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.Rect(36, 72, 576, 175), stream=text_png(OCR_TEXT))
+    doc.new_page().insert_text((72, 72), "PAGE-2 has a text layer", fontsize=12)
+    doc.save(os.path.join(HERE, "scan.pdf"))
+
+def logo_pdf():
+    doc = pymupdf.open()
+    for n in range(1, 4):
+        page = doc.new_page()
+        page.insert_image(pymupdf.Rect(520, 36, 560, 76), stream=noise_png(n))
+        for i in range(20):
+            page.insert_text((72, 110 + i * 14), f"PAGE-{n} line {i} about wiring and relays.", fontsize=11)
+    doc.save(os.path.join(HERE, "logo.pdf"))
+
+def ocr_images():
+    open(os.path.join(HERE, "ocr.png"), "wb").write(text_png(OCR_TEXT))
+    Image.new("L", (200, 10), 255).save(os.path.join(HERE, "strip.png"))  # shorter side 10 px < 16
+
+def html_fixtures():
+    d = os.path.join(HERE, "html"); os.makedirs(os.path.join(d, "page_files"), exist_ok=True)
+    open(os.path.join(d, "page_files", "fig.png"), "wb").write(png_bytes("green"))
+    data_uri = "data:image/png;base64," + base64.b64encode(png_bytes("yellow")).decode()
+    prose = "".join(f"<p>Paragraph {i}: Zolw notes - mulch keeps soil moist and roots cool through summer.</p>" for i in range(6))
+    page = ("<!doctype html><html><head><title>Garden notes</title><style>p { color: red }</style><script>var x = 1;</script></head><body>"
+            "<nav>NAV-TEXT <a href=\"/\">home</a></nav><article><h1>Garden notes</h1><p>\u017b\u00f3\u0142w and mulch.</p>" + prose +
+            "<table><thead><tr><th>Plant</th><th>Note</th></tr></thead><tbody><tr><td>Rose | red</td><td>Sun</td></tr></tbody></table>"
+            "<pre><code class=\"language-py\">print(\"hi\")</code></pre><dl><dt>Mulch</dt><dd>A protective layer.</dd></dl>"
+            f"<p><img src=\"page_files/fig.png\" alt=\"local figure\"> <img src=\"{data_uri}\" alt=\"inline figure\"> "
+            "<img src=\"https://example.com/remote.png\" alt=\"remote figure\"> <img src=\"page_files/missing.png\" alt=\"missing figure\"></p>"
+            "</article><footer>FOOTER-TEXT contact us</footer></body></html>")
+    open(os.path.join(d, "page.html"), "w", encoding="utf-8").write(page)  # UTF-8 without <meta charset>
+    open(os.path.join(d, "title-only.html"), "w", encoding="utf-8").write("<html><head><title>Only a title</title></head><body><p>Body without a heading.</p></body></html>")
+    open(os.path.join(d, "pagebreak.html"), "w", encoding="utf-8").write("<html><body><p>before</p><hr class=\"pagebreak\"><p>after</p></body></html>")
+    cp = "<html><head><meta charset=\"windows-1250\"><title>Kodowanie</title></head><body><p>Za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144</p></body></html>"
+    open(os.path.join(d, "cp1250.html"), "wb").write(cp.encode("cp1250"))
+
+GENERATORS = {"scan_pdf": scan_pdf, "logo_pdf": logo_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
 
 if __name__ == "__main__":
     import sys

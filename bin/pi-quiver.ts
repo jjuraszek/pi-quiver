@@ -34,6 +34,8 @@ function parseDocToMd(rest: string[]): ParsedArgs {
 	for (let i = 0; i < rest.length; i++) {
 		const arg = rest[i];
 		if (!arg.startsWith("--")) { if (path !== undefined) return { ok: false, error: `unexpected argument: ${arg}` }; path = arg; continue; }
+		const negated = arg.startsWith("--no-") ? DOC_TO_MD_OPTIONS.find((o) => o.type === "bool" && o.settable && o.flag === `--${arg.slice(5)}`) : undefined;
+		if (negated) { perCall[negated.key] = false; continue; }
 		const d = DOC_TO_MD_OPTIONS.find((o) => o.flag === arg);
 		if (!d) return { ok: false, error: `unknown flag: ${arg}` };
 		if (d.type === "bool") { perCall[d.key] = true; continue; }

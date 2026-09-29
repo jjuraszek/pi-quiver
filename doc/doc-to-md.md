@@ -1,6 +1,6 @@
 # doc_to_md - local document -> Markdown bundle
 
-`doc_to_md` takes a local `.pdf`, `.docx`, `.pptx`, `.xlsx`, or `.xls` path, writes a Markdown bundle on disk, and returns a concise handle - never inline Markdown. For remote documents, `fetch` the URL first, then pass its saved path here.
+`doc_to_md` takes a local `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm`, `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, or `.gif` path, writes a Markdown bundle on disk, and returns a concise handle - never inline Markdown. For remote documents, `fetch` the URL first, then pass its saved path here.
 
 ## Backend ladder
 
@@ -12,6 +12,8 @@ The backend is resolved once per process. Every conversion tier is a fresh child
 4. **PyMuPDF text** - if a Python backend exists but `pymupdf4llm` primary conversion fails, `scripts/doc_to_md.py pdf-fallback` uses `pymupdf` text extraction. The resulting bundle is degraded: layout and tables are not preserved.
 5. **`unpdf` worker** - if no Python PDF backend resolves, a separate `unpdf-worker` child extracts text. It is also degraded and does not extract images.
 6. **DOCX child** - `.docx` inputs run `scripts/doc_to_md.py docx` when the backend probes `DOCX yes`: mammoth -> HTML -> markdownify, with a python-docx text walker as the in-child fallback (degraded: footnotes, hyperlinks, images not preserved). When the child exits 1 and `soffice` is on `PATH`, the file takes the LibreOffice -> PDF route (degraded, `LibreOffice pagination`); a user error (exit 3), timeout, output cap, or invalid JSON is terminal.
+
+Local HTML is preprocessed in TypeScript: local and `data:` images are copied into the bundle, while remote images stay as links (`//host/...` becomes `https://host/...`). A `data:` image is staged only if its bytes match the declared image type's signature; missing or invalid images become alt text. Image syntax in page text, such as a code sample, stays literal. When the probe says `DOCX yes`, the `html` child converts with markdownify; otherwise, or after an HTML child failure or timeout, Readability-free Turndown converts it with `Degraded: Turndown HTML conversion - definition lists and headerless tables not preserved` (`DEGRADED_HTML_TURNDOWN`). Image inputs use the `image` child; without a Python backend or on child failure, TypeScript copies the image into an image-only bundle. Both Python PDF tiers render a page picture for pages without a text layer; `unpdf` has no page pictures.
 
 The probe prints exactly:
 
@@ -44,6 +46,8 @@ A bundle root contains `<stem>.md`, `images/`, and - when a spreadsheet has data
 
 A call owns `<stem>.md.lock` for its duration. Child page images stage in `images/.stage-<lockId>/p<N>/`; a child writes `.done` only after that page is complete. Node publishes completed page files as `images/<stem>-p<N>-<n>.<ext>`, discards incomplete page staging directories, and atomically publishes `<stem>.md` by writing a temporary Markdown file then renaming it. Excel images stage as `s<idx>-<n>.<ext>` and publish as `<stem>-s<idx>-<n>.<ext>`. On overwrite, only this stem's owned-pattern files are removed (`images/<stem>-p<N>-<n>.*`, `images/<stem>-s<idx>[-<n>].*`, `sheets/<stem>-s<idx>-<slug>.csv`); nothing else in the bundle is touched. Excel CSVs stage under `sheets/.stage-<lockId>/s<idx>-<slug>.csv` and publish as `sheets/<stem>-s<idx>-<slug>.csv`; rendered views stage as `s<idx>.<fmt>` and publish as `images/<stem>-s<idx>.<fmt>`. The handle prints `Sheets-Dir` when any CSV was written.
 
+A textless PDF page keeps `images/<stem>-p<N>-1.<fmt>`, linked as `![page N](images/<stem>-p<N>-1.<fmt>)`. OCR text appears below its image as a blockquote headed `> Text recognized in images/<file> (OCR, may contain recognition errors):`; blockquote headings do not enter the Outline. `pages` and `info` are rejected for HTML and image inputs.
+
 Every selected PDF or PPTX page, and every DOCX segment when the file has more than one segment (`pageCount > 1`), ends with `--- end of page.page_number=N ---`.
 
 A conversion handle has this portable shape:
@@ -56,6 +60,7 @@ Page-Count: 42   Pages: 3-5   Images: 4   Size: 18.2KB / 412 lines
 Degraded: ... (conditional)
 Fallback-Reason: ... (conditional)
 Failed-Pages: ...    Empty-Pages: ... (conditional)
+OCR: ... (conditional)
 Notes: ... (conditional)
 Outline:
   L12  p1  # Installation
@@ -64,6 +69,16 @@ Outline:
 ```
 
 `Outline` rows carry `L<line>` and, when the Markdown has page markers, `p<N>` (the page whose marker closes the heading's segment; headings after the last marker have no page column). A file with no headings prints `Outline: none`. For DOCX, `Page-Count` is suffixed `(explicit page breaks, not printed pages)`, `(no explicit page breaks)`, or `(LibreOffice pagination)`.
+
+The `OCR:` line reports these cases (the exact text varies where placeholders appear):
+
+| Case | `OCR:` line |
+|---|---|
+| Off, PDF | `OCR: off - N page(s) without a text layer; rerun with ocr=true` when data is installed, otherwise `OCR: off - N page(s) without a text layer; install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true` |
+| Off, image | `OCR: off; rerun with ocr=true` when data is installed, otherwise `OCR: off; install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true` |
+| Unavailable | `OCR: unavailable - <reason>` for `fallback tier`, `no Python backend`, or `OCR child failed: ...`; other reasons append ` (install Tesseract; see doc/doc-to-md.md)` |
+| Too small | `OCR: skipped - image too small` |
+| Ran | `OCR: N page(s) (eng)` or `OCR: N image (eng)`; optional clauses: `N returned no text`, `N failed and were converted without OCR`, `time budget reached for pages=<ranges>; rerun with pages=<ranges> or raise primaryTimeoutMs` |
 
 `Saved-To` is always present. `Images-Dir` appears when images were written. `Degraded:`, `Fallback-Reason:`, `Failed-Pages:`/`Empty-Pages:`, `Notes:`, its `L<n>` entries, and `(+N more)` are conditional. `--info` writes no bundle and returns an info handle:
 
@@ -88,9 +103,11 @@ Type: xlsx   Sheets: 3
 
 ## Child contract
 
-The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, `xlsx`, `render-pages`, or `docx`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
+The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, `xlsx`, `render-pages`, `docx`, `html`, or `image`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
 
 `docx` returns `markdown`, `pageCount` (numbered segments after dropping one trailing empty segment; empty segments between breaks are kept), `explicitBreaks` (raw break count), `engine` (`mammoth` or `python-docx`), `degraded`, and `fallbackReason`; it stages images as `p<segment>/img<n>.<ext>` with `.done` per selected segment. `info` on `.docx` returns `pageCount`, `explicitBreaks`, core-property `metadata` (dates as ISO-8601), and a heading `toc` whose page is the segment number or `null`. The env var `DOC_TO_MD_FORCE_DOCX_FALLBACK=1` forces the python-docx walker (tests only).
+
+`html` receives preprocessed `html` and returns `markdown` and `engine`. `image` receives `stem`, `ocr`, and `ocrLanguage`, copies the input to `p1/original.<ext>`, and returns Markdown linking the image. PDF and image modes return `ocr` (`status`, `lang`, `textless`, `pages`, `noText`, `ocrFailed`, `budgetStopped`, `reason`, `tesseract`). The child receives `ocr`, `ocrLanguage`, and `ocrBudgetMs` (= `primaryTimeoutMs`); it admits OCR only when elapsed time + slowest OCR call + remaining pages x mean page time + 5000 ms fits the budget. The small-image gate avoids OCR for text-bearing pages with only small images; images shorter than 16 px on either side skip OCR. OCR block labels use `\x00OCR <staged file>\x00` sentinels, resolved to published image names by the parent.
 
 `pdf-fallback` receives `keepPages`: an object mapping page numbers to primary-tier image filenames already published. It preserves those images while extracting fallback text rather than duplicating them.
 
@@ -110,6 +127,8 @@ Set tunables under `quiver.docToMd` in global agent settings or project `.pi/set
 | `imageFormat` | `png` | `--image-format` | Rendered image format: `png` or `jpg`. |
 | `maxOutputBytes` | `20000000` | `--max-output-bytes` | Child stdout cap in bytes. |
 | `outlineMaxEntries` | `40` | `--outline-max-entries` | Outline, TOC, or sheet inventory cap in the handle. |
+| `ocr` | `false` | `--ocr` / `--no-ocr` | Run OCR on scanned pages and image inputs when Tesseract language data is installed. |
+| `ocrLanguage` | `eng` | `--ocr-language` | Plain Tesseract language codes joined by `+`, such as `deu+eng`. |
 
 Worst-case wall time: PDF `warmTimeoutMs (first call) + primaryTimeoutMs + fallbackTimeoutMs`; PPTX adds `sofficeTimeoutMs`; DOCX on the Python path `warmTimeoutMs + primaryTimeoutMs` (success or a terminal child failure), DOCX child exit 1 then LibreOffice `warmTimeoutMs + primaryTimeoutMs + sofficeTimeoutMs + primaryTimeoutMs + fallbackTimeoutMs`, DOCX without a DOCX-capable backend `warmTimeoutMs + sofficeTimeoutMs + primaryTimeoutMs + fallbackTimeoutMs`; Excel `warmTimeoutMs + excelTimeoutMs + sofficeTimeoutMs + fallbackTimeoutMs`. Add `KILL_GRACE_MS` (2000 ms) per kill. There is no cap on image count, image bytes, cell count or workbook memory - deliberately; the per-tier timeouts, the rendered-view pixel budget and `maxOutputBytes` are the bounds.
 
@@ -117,13 +136,17 @@ Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primar
 
 `warmTimeoutMs` is an absolute discovery deadline, including all attempted backend probes and bootstrap work. Every child runs through a capped runner. Timeout or output-cap termination tree-kills the process group on POSIX and uses `taskkill /T` on Windows; its grace period is `KILL_GRACE_MS` (2000 ms). This boundary exists because MuPDF and PDF.js can spin uninterruptibly.
 
+## Optional: Tesseract for OCR
+
+OCR is off by default. Set `ocr: true` or pass `--ocr` to recognize scanned pages and image inputs when Tesseract language data is installed. Without it, conversion succeeds, pictures remain, and the handle reports why OCR did not run. pymupdf4llm uses the Tesseract engine linked into PyMuPDF and needs only the language data. Install with `brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu, or the UB Mannheim installer on Windows (keep `tesseract` on `PATH`). For extra languages use `brew install tesseract-lang` or `sudo apt install tesseract-ocr-<lang>` (for example `tesseract-ocr-deu`). Set `TESSDATA_PREFIX` to a custom tessdata directory when needed. `ocrLanguage` accepts only plain codes joined by `+`, not `script/...` models. Scanned pages cost about 3 s each; pages past the time budget keep their picture and the handle suggests rerunning those pages or raising `primaryTimeoutMs`.
+
 ## CLI (`pi-quiver doc-to-md`)
 
 `npx -y pi-quiver@latest doc-to-md [flags] <path>` runs the same core and prints the same handle. `pi-quiver doc-to-md --help` lists every flag.
 
 | Flag | Meaning |
 |---|---|
-| `<path>` | Local `.pdf`, `.docx`, `.pptx`, `.xlsx`, or `.xls` file. |
+| `<path>` | Local `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.xls`, `.html`, `.htm`, `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, or `.gif` file. |
 | `--info` | Inspect page count, metadata, TOC, or sheet inventory; no bundle. |
 | `--pages <spec>` | Inclusive 1-based PDF/Office pages, such as `12-15` or `3,7,10-12`; default all. |
 | `--output-dir <dir>` | Bundle root for `<stem>.md` and `images/`; default a per-call temp directory. |
@@ -138,6 +161,8 @@ Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primar
 | `--image-format <png\|jpg>` | Rendered image format. |
 | `--max-output-bytes <n>` | Child stdout cap. |
 | `--outline-max-entries <n>` | Handle outline/TOC/inventory cap. |
+| `--ocr` / `--no-ocr` | Enable OCR or override a settings-level `ocr: true` for this call. `--no-<flag>` works for every settable boolean flag. |
+| `--ocr-language <codes>` | Plain `+`-joined Tesseract language codes, default `eng`. |
 
 | Code | Meaning |
 |---|---|
