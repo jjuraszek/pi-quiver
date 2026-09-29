@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.6.0 - 2026-09-29
 
 - `doc_to_md` converts local `.html`/`.htm` (markdownify; Readability-free Turndown fallback) with local and `data:` images copied into the bundle and remote images kept as links.
 - `doc_to_md` accepts `.png .jpg .jpeg .tif .tiff .bmp .gif`; the image is copied into the bundle.
