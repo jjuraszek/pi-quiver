@@ -22,18 +22,18 @@ function scrubbedEnv(tmp: string): NodeJS.ProcessEnv {
 
 test("parseCliArgs: doc-to-md flags map to per-call input", () => {
 	const r = parseCliArgs(["doc-to-md", "--pages", "2-3", "--output-dir", "out", "--overwrite", "--primary-timeout", "5000", "--image-format", "jpg", "a.pdf"]);
-	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pages: "2-3", outputDir: "out", overwrite: true, primaryTimeoutMs: 5000, imageFormat: "jpg" } });
-	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--info", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", info: true } });
+	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pages: "2-3", outputDir: "out", overwrite: true, primaryTimeoutMs: 5000, imageFormat: "jpg" }, json: false });
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--info", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", info: true }, json: false });
 	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--help"]), { ok: true, cmd: "doc-to-md-help" });
 });
 
 test("parseCliArgs: --no-ocr sets false and overrides a settings-level ocr: true", () => {
 	const r = parseCliArgs(["doc-to-md", "--no-ocr", "a.pdf"]);
-	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: false } });
+	assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: false }, json: false });
 	if (!r.ok || r.cmd !== "doc-to-md") return;
 	assert.strictEqual(resolveOptions(r.perCall, { ocr: true }, {}).ocr, false);
 	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--no-overwrite", "a.pdf"]), { ok: false, error: "unknown flag: --no-overwrite" });
-	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: true } });
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: true }, json: false });
 });
 
 test("parseCliArgs: every doc-to-md descriptor flag round-trips", () => {
@@ -111,13 +111,15 @@ test("CLI subprocess: exit 2 on bad --pages, unknown flag, --info with --pages",
 	}
 });
 
-test("CLI subprocess: collision -> exit 1 with Output exists; --overwrite succeeds", async () => {
+test("CLI subprocess: same stem twice -> multipage-2.md with a note; --overwrite replaces multipage.md", async () => {
 	const tmp = mkdtempSync(join(tmpdir(), "quiver-doc-coll-"));
 	try {
 		await execFileAsync(process.execPath, [BIN, "doc-to-md", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
-		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) }), (e: { code?: number; stderr?: string }) => e.code === 1 && /Output exists: .*multipage\.md \(pass overwrite\)/.test(e.stderr ?? ""));
+		const second = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
+		assert.match(second.stdout, /^Saved-To: .*multipage-2\.md$/m);
+		assert.match(second.stdout, /^Notes: renamed to multipage-2 \(multipage\.md exists\)$/m);
 		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--output-dir", tmp, "--overwrite", MULTIPAGE], { env: scrubbedEnv(tmp) });
-		assert.match(stdout, /^Saved-To: /m);
+		assert.match(stdout, /^Saved-To: .*[/\\]multipage\.md$/m);
 	} finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 
@@ -139,5 +141,33 @@ test("CLI subprocess: docx without soffice -> exit 1 naming LibreOffice", async 
 			execFileAsync(process.execPath, [BIN, "doc-to-md", FIXTURE_DOCX], { env: scrubbedEnv(tmp) }),
 			(err: { code?: number; stderr?: string }) => err.code === 1 && /LibreOffice/.test(err.stderr ?? ""),
 		);
+	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('parseCliArgs: --json is a CLI flag, --page-images a descriptor flag, --pages "" is accepted', () => {
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--json", "--page-images", "--pages", "", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pageImages: true, pages: "" }, json: true });
+	assert.ok(!DOC_TO_MD_OPTIONS.some((d) => d.flag === "--json"));
+});
+
+test("CLI subprocess: --json prints one HandleData object and nothing else; --json --info prints InfoData", async () => {
+	const tmp = mkdtempSync(join(tmpdir(), "quiver-doc-json-"));
+	try {
+		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--pages", "", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
+		const h = JSON.parse(stdout);
+		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type"].sort());
+		assert.strictEqual(h.tier, "unpdf"); assert.strictEqual(h.pages, null);
+		assert.ok(!stdout.includes("Saved-To:"));
+		const info = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--info", MULTIPAGE], { env: scrubbedEnv(tmp) });
+		assert.deepStrictEqual(Object.keys(JSON.parse(info.stdout)).sort(), ["backend", "metadata", "pageCount", "sheets", "sheetsTotal", "toc", "tocTotal", "type"]);
+	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("CLI subprocess: --help lists --page-images and the empty file error is exit 1", async () => {
+	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
+	assert.ok(stdout.includes("--page-images"));
+	const tmp = mkdtempSync(join(tmpdir(), "quiver-doc-zero-"));
+	try {
+		writeFileSync(join(tmp, "zero.pdf"), "");
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", join(tmp, "zero.pdf")], { env: scrubbedEnv(tmp) }), (e: { code?: number; stderr?: string }) => e.code === 1 && /doc-to-md failed: empty file: .*zero\.pdf/.test(e.stderr ?? ""));
 	} finally { rmSync(tmp, { recursive: true, force: true }); }
 });

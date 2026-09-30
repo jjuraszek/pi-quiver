@@ -37,6 +37,7 @@
     "lib",
     "dist",
     "scripts/doc_to_md.py",
+    "scripts/docx_numbering.py",
     "types/**/*.d.ts",
     "README.md",
     "CHANGELOG.md"

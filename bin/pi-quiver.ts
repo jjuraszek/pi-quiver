@@ -15,37 +15,39 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchUrl, type FetchOptions } from "../lib/fetch-core.ts";
-import { DOC_TO_MD_OPTIONS, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
+import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
 
 const USAGE =
 	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]\n" +
-	"       pi-quiver doc-to-md [--info] [--pages <spec>] [--output-dir <dir>] [--overwrite] [tunable flags] <path>   (--help for all flags)";
+	"       pi-quiver doc-to-md [--json] [--info] [--page-images] [--pages <spec>] [--output-dir <dir>] [--overwrite] [tunable flags] <path>   (--help for all flags)";
 
 export type ParsedArgs =
 	| { ok: true; cmd: "fetch"; opts: FetchOptions }
-	| { ok: true; cmd: "doc-to-md"; perCall: PerCallInput }
+	| { ok: true; cmd: "doc-to-md"; perCall: PerCallInput; json: boolean }
 	| { ok: true; cmd: "doc-to-md-help" }
 	| { ok: false; error: string };
 
 function parseDocToMd(rest: string[]): ParsedArgs {
 	if (rest.includes("--help") || rest.includes("-h")) return { ok: true, cmd: "doc-to-md-help" };
+	const json = rest.includes("--json");
+	const args = rest.filter((a) => a !== "--json");
 	const perCall: Record<string, unknown> = {};
 	let path: string | undefined;
-	for (let i = 0; i < rest.length; i++) {
-		const arg = rest[i];
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
 		if (!arg.startsWith("--")) { if (path !== undefined) return { ok: false, error: `unexpected argument: ${arg}` }; path = arg; continue; }
 		const negated = arg.startsWith("--no-") ? DOC_TO_MD_OPTIONS.find((o) => o.type === "bool" && o.settable && o.flag === `--${arg.slice(5)}`) : undefined;
 		if (negated) { perCall[negated.key] = false; continue; }
 		const d = DOC_TO_MD_OPTIONS.find((o) => o.flag === arg);
 		if (!d) return { ok: false, error: `unknown flag: ${arg}` };
 		if (d.type === "bool") { perCall[d.key] = true; continue; }
-		const value = rest[++i];
+		const value = args[++i];
 		if (value === undefined) return { ok: false, error: `${arg} requires a value` };
 		if (d.type === "int") { const n = Number(value); if (!Number.isInteger(n) || n <= 0) return { ok: false, error: `invalid ${arg}: ${value}` }; perCall[d.key] = n; }
 		else perCall[d.key] = value;
 	}
 	if (!path) return { ok: false, error: "missing <path>" };
-	return { ok: true, cmd: "doc-to-md", perCall: { ...perCall, path } as PerCallInput };
+	return { ok: true, cmd: "doc-to-md", perCall: { ...perCall, path } as PerCallInput, json };
 }
 
 /** pi-free mirror of getAgentDir(): PI_CODING_AGENT_DIR (only ~ and ~/ expanded; empty = unset) else ~/.pi/agent. */
@@ -145,7 +147,10 @@ async function main(): Promise<number> {
 		}
 		try {
 			const r = o.info ? await inspectDocument(o) : await convertDocument(o);
-			process.stdout.write(`${r.output}\n`);
+			if (parsed.json) {
+				const payload = o.info ? r.details : (({ path, backend, pymupdfVersion, inputType, file, outputDir, ...handle }) => handle)(r.details as DocToMdDetails);
+				process.stdout.write(`${JSON.stringify(payload)}\n`);
+			} else process.stdout.write(`${r.output}\n`);
 			return 0;
 		} catch (err) {
 			process.stderr.write(`doc-to-md failed: ${err instanceof Error ? err.message : String(err)}\n`);

@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ============================================================================
 # Release helper - shared skeleton across the jjuraszek pi-* repos.
-# Only the CONFIG block below differs between repos; keep the rest byte-identical
-# so the copies stay diffable.
+# Only CONFIG and the pi-quiver skill/marketplace version step after the bump
+# differ between repos; keep the rest byte-identical so copies stay diffable.
 #
 # Tag scheme: v<major>.<minor>.<patch>. package.json version mirrors the tag
 # without the leading "v". This script assigns the version and pushes the tag;
@@ -224,6 +224,7 @@ cmd_release() {
       echo "  note: CHANGELOG has no Unreleased section and top heading is not $new; a real release stops."
     fi
     [[ "$mode" != "current" ]] && echo "  would set package.json to $new"
+    echo "  would regenerate skills/doc-to-md/SKILL.md + marketplace version"
     if [[ "$mode" != "current" ]] || has_unreleased; then echo "  would commit 'Release $new'"; fi
     [[ "$SKIP_TESTS" -eq 0 ]] && echo "  would run ${TEST_CMD} before tagging"
     echo "  would create annotated tag $tag and push main + tag to origin"
@@ -244,6 +245,14 @@ cmd_release() {
     ' "$new"
     run git add package.json
   fi
+  node scripts/gen-skill.mjs
+  node -e '
+    const fs = require("fs");
+    const m = JSON.parse(fs.readFileSync(".claude-plugin/marketplace.json", "utf8"));
+    m.plugins.find((p) => p.name === "quiver").version = process.argv[1];
+    fs.writeFileSync(".claude-plugin/marketplace.json", JSON.stringify(m, null, "\t") + "\n");
+  ' "$new"
+  run git add skills/doc-to-md/SKILL.md .claude-plugin/marketplace.json
   if [[ -n "$(git diff --cached --name-only)" ]]; then
     run git commit -m "Release ${new}"
   fi

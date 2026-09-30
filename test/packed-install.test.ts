@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,7 +10,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // The one test shape that catches ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING:
 // pack the tarball (triggers prepack/esbuild), install it, run the installed bin.
-test("packed tarball installs and the bin runs", { timeout: 120_000 }, () => {
+test("packed tarball installs and the bin runs", { timeout: 400_000 }, () => {
 	const workDir = mkdtempSync(join(tmpdir(), "quiver-pack-"));
 	try {
 		execFileSync("npm", ["pack", "--pack-destination", workDir], {
@@ -39,6 +39,16 @@ test("packed tarball installs and the bin runs", { timeout: 120_000 }, () => {
 		assert.match(out, /^Saved-To: .*multipage\.md$/m);
 		assert.match(out, /Tier: unpdf/);
 		assert.ok(existsSync(join(outDir, "multipage.md")));
+		assert.ok(existsSync(join(workDir, "node_modules", "pi-quiver", "scripts", "docx_numbering.py")), "docx_numbering.py ships in the tarball");
+		const json = String(execFileSync(bin, ["doc-to-md", "--json", "--pages", "1", "--output-dir", join(workDir, "out2"), fixture], { stdio: "pipe", shell: process.platform === "win32", timeout: 60_000, env: scrub }));
+		const h = JSON.parse(json);
+		assert.strictEqual(h.tier, "unpdf");
+		assert.ok(h.savedTo.endsWith("multipage.md"));
+		if (spawnSync("uv", ["--version"], { stdio: "ignore" }).status === 0) {
+			const md = String(execFileSync(bin, ["doc-to-md", "--output-dir", join(workDir, "out3"), join(ROOT, "test", "fixtures", "numbered.docx")], { stdio: "pipe", shell: process.platform === "win32", timeout: 300_000 }));
+			assert.match(md, /Engine: mammoth/);
+			assert.ok(readFileSync(join(workDir, "out3", "numbered.md"), "utf8").includes("3.2.1 Trip settings"));
+		}
 		// bundle purity: the CLI bundle must not pull the pi runtime or typebox
 		const bundle = readFileSync(join(workDir, "node_modules", "pi-quiver", "dist", "bin", "pi-quiver.js"), "utf8");
 		assert.ok(!bundle.includes("@earendil-works") && !bundle.includes("@sinclair/typebox"));

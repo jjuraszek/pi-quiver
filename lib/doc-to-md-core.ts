@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Bundle, abortBundle, commitBundle, openBundle, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
 import { type Engine, type HandleData, type InfoData, type OcrInfo, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
@@ -22,10 +22,10 @@ export type { Engine, HandleData, InfoData, OutlineEntry, SheetInfo, Tier, TocEn
 
 // --- Types ---
 
-export const PACKAGE_PINS = { pymupdf4llm: TUNABLE_DEFAULTS.pymupdfVersion, openpyxl: "3.1.5", xlrd: "2.0.2", pillow: "12.3.0", mammoth: "1.13.0", markdownify: "1.2.3", "python-docx": "1.2.0" } as const;
+export const PACKAGE_PINS = { pymupdf4llm: TUNABLE_DEFAULTS.pymupdfVersion, openpyxl: "3.1.5", xlrd: "2.0.2", pillow: "12.3.0", mammoth: "1.13.0", markdownify: "1.2.3", "python-docx": "1.2.0", "extract-msg": "0.56.1" } as const;
 export const KILL_GRACE_MS = 2000;
-export const VENV_DIR_NAME = "doc-to-md-venv-v3";
-export const LEGACY_VENV_DIR_NAMES = ["pymupdf-venv", "doc-to-md-venv-v2"] as const;
+export const VENV_DIR_NAME = "doc-to-md-venv-v4";
+export const LEGACY_VENV_DIR_NAMES = ["pymupdf-venv", "doc-to-md-venv-v2", "doc-to-md-venv-v3"] as const;
 const STDERR_CAP = 1_000_000;
 export const OUTPUT_MAX_BYTES = 20_000_000;
 export const EXCEL_PDF_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}';
@@ -42,14 +42,14 @@ export interface CappedResult {
 
 // --- Subprocess argv builders ---
 
-const pinSpecs = (cfg: BackendConfig) => [`pymupdf4llm==${cfg.pymupdfVersion}`, `openpyxl==${PACKAGE_PINS.openpyxl}`, `xlrd==${PACKAGE_PINS.xlrd}`, `pillow==${PACKAGE_PINS.pillow}`, `mammoth==${PACKAGE_PINS.mammoth}`, `markdownify==${PACKAGE_PINS.markdownify}`, `python-docx==${PACKAGE_PINS["python-docx"]}`];
+const pinSpecs = (cfg: BackendConfig) => [`pymupdf4llm==${cfg.pymupdfVersion}`, `openpyxl==${PACKAGE_PINS.openpyxl}`, `xlrd==${PACKAGE_PINS.xlrd}`, `pillow==${PACKAGE_PINS.pillow}`, `mammoth==${PACKAGE_PINS.mammoth}`, `markdownify==${PACKAGE_PINS.markdownify}`, `python-docx==${PACKAGE_PINS["python-docx"]}`, `extract-msg==${PACKAGE_PINS["extract-msg"]}`];
 
 function withArgs(cfg: BackendConfig): string[] { return pinSpecs(cfg).flatMap((spec) => ["--with", spec]); }
 
 export function pipInstallArgs(cfg: BackendConfig): string[] { return ["-m", "pip", "install", ...pinSpecs(cfg)]; }
 
 export function warmArgs(cfg: BackendConfig): string[] {
-	return ["run", ...withArgs(cfg), "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL, mammoth, markdownify, docx"];
+	return ["run", ...withArgs(cfg), "--python", "3.14", "python", "-c", "import pymupdf4llm, openpyxl, xlrd, PIL, mammoth, markdownify, docx, extract_msg"];
 }
 
 export function uvChildArgs(cfg: BackendConfig, script: string, mode: string): string[] {
@@ -204,6 +204,11 @@ try:
     print("DOCX", "yes")
 except Exception:
     print("DOCX", "no")
+try:
+    import extract_msg, markdownify
+    print("EMAIL", "yes")
+except Exception:
+    print("EMAIL", "no")
 `;
 export const PROBE_TIMEOUT_MS = 5000;
 
@@ -214,16 +219,16 @@ export const PYTHON_CANDIDATES = ["python3", "python"] as const;
 
 export type BackendKind = "uv" | "python" | "venv" | "none";
 export type Backend =
-	| { kind: "uv"; pdf: true; xlsx: true; docx: true }
-	| { kind: "python"; exe: string; pdf: boolean; xlsx: boolean; docx: boolean }
-	| { kind: "venv"; exe: string; pdf: true; xlsx: true; docx: true }
+	| { kind: "uv"; pdf: true; xlsx: true; docx: true; email: true }
+	| { kind: "python"; exe: string; pdf: boolean; xlsx: boolean; docx: boolean; email: boolean }
+	| { kind: "venv"; exe: string; pdf: true; xlsx: true; docx: true; email: true }
 	| { kind: "none"; reason: string };
 
-export interface ProbeResult { major: number; minor: number; pdf: boolean; xlsx: boolean; docx: boolean; }
+export interface ProbeResult { major: number; minor: number; pdf: boolean; xlsx: boolean; docx: boolean; email: boolean; }
 
 export function parseProbeOutput(stdout: string): ProbeResult | null {
-	const m = stdout.match(/^PY (\d+) (\d+)\r?\nPDF (yes|no)\r?\nXLSX (yes|no)\r?\nDOCX (yes|no)\s*$/);
-	return m ? { major: Number(m[1]), minor: Number(m[2]), pdf: m[3] === "yes", xlsx: m[4] === "yes", docx: m[5] === "yes" } : null;
+	const m = stdout.match(/^PY (\d+) (\d+)\r?\nPDF (yes|no)\r?\nXLSX (yes|no)\r?\nDOCX (yes|no)\r?\nEMAIL (yes|no)\s*$/);
+	return m ? { major: Number(m[1]), minor: Number(m[2]), pdf: m[3] === "yes", xlsx: m[4] === "yes", docx: m[5] === "yes", email: m[6] === "yes" } : null;
 }
 
 export function meetsFloor(p: ProbeResult): boolean {
@@ -266,7 +271,7 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 	};
 	const warm = await deps.run("uv", warmArgs(cfg), { timeoutMs: left(), capBytes: OUTPUT_MAX_BYTES, env: deps.env, signal });
 	if (signal?.aborted) throw new Error("aborted");
-	if (warm.code === 0 && !warm.timedOut) return { kind: "uv", pdf: true, xlsx: true, docx: true };
+	if (warm.code === 0 && !warm.timedOut) return { kind: "uv", pdf: true, xlsx: true, docx: true, email: true };
 	const uvAbsent = warm.code === null && !warm.timedOut; // spawn error (ENOENT)
 
 	type ProbeOutcome = ProbeResult | Extract<Backend, { kind: "none" }> | null;
@@ -285,21 +290,21 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 		const p = await probe(exe);
 		if (isDeadline(p)) return p;
 		if (!p || !meetsFloor(p)) continue;
-		if (p.pdf) return { kind: "python", exe, pdf: true, xlsx: p.xlsx, docx: p.docx };
+		if (p.pdf) return { kind: "python", exe, pdf: true, xlsx: p.xlsx, docx: p.docx, email: p.email };
 		eligible ??= { exe, version: `${p.major}.${p.minor}` };
 	}
 
-	const healthy = (p: ProbeResult) => meetsFloor(p) && p.pdf && p.xlsx && p.docx;
+	const healthy = (p: ProbeResult) => meetsFloor(p) && p.pdf && p.xlsx && p.docx && p.email;
 	const venvDir = join(deps.cacheRoot, VENV_DIR_NAME);
 	const venvExe = venvPython(venvDir, deps.platform);
 	const cached = await probe(venvExe);
 	if (isDeadline(cached)) return cached;
-	if (cached && healthy(cached)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
+	if (cached && healthy(cached)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true, email: true };
 
 	if (eligible) {
 		const recheck = await probe(venvExe); // a competing process may have published since the first probe
 		if (isDeadline(recheck)) return recheck;
-		if (recheck && healthy(recheck)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
+		if (recheck && healthy(recheck)) return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true, email: true };
 		// Build in a sibling tmp dir without touching venvDir - a concurrent process can never probe a half-built venv.
 		const tmp = `${venvDir}.tmp-${deps.pid}`;
 		const bootFail = (stderr: string): Backend => {
@@ -321,19 +326,19 @@ export async function resolveBackend(cfg: BackendConfig, deps: ResolverDeps, sig
 		};
 		if (publish()) {
 			for (const legacy of LEGACY_VENV_DIR_NAMES) deps.rmrf(join(deps.cacheRoot, legacy));
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true, email: true };
 		}
 		// Rename failed - a competing process may have published first, or venvDir holds a stale/broken dir.
 		const winner = await probe(venvExe, tmp);
 		if (isDeadline(winner)) return winner;
 		if (winner && healthy(winner)) {
 			deps.rmrf(tmp); // healthy winner - clean up our loser
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true, email: true };
 		}
 		deps.rmrf(venvDir); // unhealthy/absent dest - clear it and retry the rename once
 		if (publish()) {
 			for (const legacy of LEGACY_VENV_DIR_NAMES) deps.rmrf(join(deps.cacheRoot, legacy));
-			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true };
+			return { kind: "venv", exe: venvExe, pdf: true, xlsx: true, docx: true, email: true };
 		}
 		return bootFail("rename after competing bootstrap");
 	}
@@ -461,8 +466,8 @@ const lacksDocx = (b: Backend) => b.kind === "none" || !b.docx;
 const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdirSync(b.stagingDir)) rmSync(join(b.stagingDir, f), { recursive: true, force: true }); };
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
-export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx";
-export interface TierJson { ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
+export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email";
+export interface TierJson { pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
@@ -554,18 +559,21 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	const inputPath = resolve(o.path);
 	const st = statSync(inputPath, { throwIfNoEntry: false });
 	if (!st || !st.isFile()) throw new Error(`Not a readable file: ${o.path}`);
+	if (st.size === 0) throw new Error(`empty file: ${o.path}`);
 	const type = classifyInput(inputPath);
-	if (o.pages && (type === "html" || type === "image")) throw new Error(`--pages does not apply to ${type === "html" ? "HTML files" : "images"}`);
-	const isExcel = type === "xlsx" || type === "xls";
+	if (o.pages && (type === "html" || type === "image" || type === "email")) throw new Error(`--pages does not apply to ${type === "html" ? "HTML files" : type === "image" ? "images" : "email"}`);
+	const isExcel = type === "xlsx" || type === "xlsm" || type === "xls";
 	if (isExcel && o.pages) throw new Error("--pages does not apply to spreadsheets: worksheets have no stable page numbering");
 	const backend = await s.backend({ pymupdfVersion: o.pymupdfVersion, warmTimeoutMs: o.warmTimeoutMs });
 	if (isExcel && (backend.kind === "none" || !backend.xlsx)) throw new Error(`Excel conversion needs a Python backend with openpyxl, xlrd and pillow (${backend.kind === "none" ? backend.reason : `${backend.kind} lacks the Excel packages`}). ${EXCEL_REMEDY}`);
+	if (type === "email" && extname(inputPath).toLowerCase() === ".msg" && (backend.kind === "none" || !backend.email)) throw new Error(`MSG conversion needs the extract-msg package. Python backend: ${backendState(backend, "found without extract-msg")}. Remedy: install uv, or pip install extract-msg markdownify into that Python`);
+	if (type === "email" && extname(inputPath).toLowerCase() !== ".msg" && lacksDocx(backend)) throw new Error(`EML conversion needs the Python DOCX/HTML packages (mammoth, markdownify, python-docx). Python backend: ${backendState(backend, "found without mammoth/markdownify/python-docx")}. ${docxRemedy}`);
 	const stem = sanitizeStem(basename(inputPath, extname(inputPath)));
 	const b = openBundle(o.outputDir ? resolve(o.outputDir) : tempBundleRoot(), stem, o.overwrite);
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
+		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
 		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
 		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
@@ -626,11 +634,18 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 			if (!r.ok) throw officeRoute.startsWith("docx exit") ? new Error(`Conversion failed: ${officeRoute}; ${officeFailure(r).message}`) : officeFailure(r);
 			office = r; pdfPath = r.pdfPath;
 		}
-		if (type === "pptx") {
+		if (type === "doc" || type === "pptx") {
 			const r = await s.office(o.sofficeTimeoutMs, inputPath, signal);
-			if (!r.ok && r.kind === "missing") throw new Error(`PPTX conversion needs LibreOffice (soffice); direct conversion is not available. Python backend: ${backendState(backend, "available")}. Remedy: install LibreOffice`);
+			if (!r.ok && r.kind === "missing") throw new Error(`${type.toUpperCase()} conversion needs LibreOffice (soffice); direct conversion is not available. Python backend: ${backendState(backend, "available")}. Remedy: install LibreOffice`);
 			if (!r.ok) throw officeFailure(r);
 			office = r; pdfPath = r.pdfPath;
+		}
+		if (type === "email") {
+			const isMsg = extname(inputPath).toLowerCase() === ".msg";
+			const r = await s.runTier("email", { ...base, stem: b.stem, attachmentsStagingDir: b.attachmentsStagingDir }, b, signal, o.primaryTimeoutMs, backend);
+			if (!r.ok) throw new Error("userError" in r ? r.userError : `Conversion failed: email ${r.reason}${detailSuffix(r)}`);
+			publishStaged(b); publishAttachments(b);
+			tier = "email"; engine = isMsg ? "extract-msg" : "email"; json = r.json;
 		}
 		const pdfBase = { ...base, path: pdfPath };
 		if (json === undefined) {
@@ -642,7 +657,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 					throw new Error(`Excel conversion failed: ${r.reason}${detailSuffix(r)}${remedy}`);
 				}
 				publishSheetImages(b); publishSheetCsvs(b);
-				tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json; notes = [...(json.notes ?? [])];
+				tier = "excel"; engine = type === "xls" ? "xlrd" : "openpyxl"; json = r.json; notes = (json.notes ?? []).map((n) => n.replace(/sheets\/[^\s,;]+/g, (m) => b.sourceMap.get(m) ?? m));
 				const renderPages = json.renderPages ?? [];
 				let skip: string | null = null;
 				const perSheet = new Map<number, string>();
@@ -672,26 +687,29 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 			} else {
 				const p = await s.runTier("pdf-primary", pdfBase, b, signal, o.primaryTimeoutMs, backend);
 				const kept = publishStaged(b);
-				if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; }
+				if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; if (json.pageImages?.length) publishPageImages(b, json.pageCount ?? 0); }
 				else if ("userError" in p) throw new Error(p.userError);
 				else {
 					if (signal?.aborted) throw new Error("aborted");
 					const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v]));
+					rmSync(b.pagesStagingDir, { recursive: true, force: true });
 					const f = await s.runTier("pdf-fallback", { ...pdfBase, keepPages }, b, signal, o.fallbackTimeoutMs, backend);
 					publishStaged(b);
+					if (f.ok && f.json.pageImages?.length) publishPageImages(b, f.json.pageCount ?? 0);
 					if (!f.ok) throw new Error("userError" in f ? f.userError : `Conversion failed: primary ${p.reason}; fallback ${f.reason}${detailSuffix(f)}`);
 					tier = "fallback"; engine = "pymupdf-text"; json = f.json; degraded = DEGRADED_TEXT; fallbackReason = `primary ${p.reason}`;
 				}
 			}
 		}
-		if (officeRoute !== null) {
-			degraded = DEGRADED_DOCX_OFFICE;
-			fallbackReason = fallbackReason ? `${officeRoute}; ${fallbackReason}` : officeRoute;
-		}
+		if (type === "doc" || officeRoute !== null) degraded = DEGRADED_DOCX_OFFICE;
+		if (officeRoute !== null) fallbackReason = fallbackReason ? `${officeRoute}; ${fallbackReason}` : officeRoute;
 		if (tier === undefined || engine === undefined || json === undefined) throw new Error("internal: no tier produced output");
 		if (!isExcel) notes = [...notes, ...(json.notes ?? [])];
+		if (b.renamedFrom) notes.splice(notes[0]?.startsWith("preview truncated:") ? 1 : 0, 0, `renamed to ${b.stem} (${b.renameReason})`);
+		const pageImagesReason = !o.pageImages || b.pageManifest.size || tier === "primary" || tier === "fallback" ? null
+			: tier === "unpdf" ? "page images need the Python backend" : `${type} has no page geometry`;
 		const body = resolveOcrLabels(rewriteLinks(json.markdown ?? "", b.sourceMap), b.sourceMap);
-		validateImageLinks(body, b.manifest, b.csvManifest, type === "html");
+		validateImageLinks(body, b.manifest, b.csvManifest, type === "html" || type === "email", b.pageManifest, b.attachmentManifest);
 		const head: string[] = [];
 		if (degraded) head.push(`Degraded: ${degraded}`);
 		if (fallbackReason) head.push(`Fallback-Reason: ${fallbackReason}`);
@@ -701,7 +719,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr: handleOcr(tier, type, o, json) };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr: handleOcr(tier, type, o, json) };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }
@@ -712,9 +730,10 @@ export async function inspectDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	const inputPath = resolve(o.path);
 	const st = statSync(inputPath, { throwIfNoEntry: false });
 	if (!st || !st.isFile()) throw new Error(`Not a readable file: ${o.path}`);
+	if (st.size === 0) throw new Error(`empty file: ${o.path}`);
 	const type = classifyInput(inputPath);
-	if (type === "html" || type === "image") throw new Error(`info does not apply to ${type === "html" ? "HTML files" : "images"}; convert directly`);
-	const isExcel = type === "xlsx" || type === "xls";
+	if (type === "html" || type === "image" || type === "email") throw new Error(`info does not apply to ${type === "html" ? "HTML files" : type === "image" ? "images" : "email"}; convert directly`);
+	const isExcel = type === "xlsx" || type === "xlsm" || type === "xls";
 	const backend = await s.backend({ pymupdfVersion: o.pymupdfVersion, warmTimeoutMs: o.warmTimeoutMs });
 	if (isExcel && (backend.kind === "none" || !backend.xlsx)) throw new Error(`Excel inspection needs a Python backend with openpyxl, xlrd and pillow. ${EXCEL_REMEDY}`);
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
@@ -722,7 +741,7 @@ export async function inspectDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		let path = inputPath;
 		if (type === "docx") {
 			if (lacksDocx(backend)) throw new Error(`DOCX inspection needs the Python DOCX packages. Python backend: ${backendState(backend, "found without mammoth/markdownify/python-docx")}. ${docxRemedy}`);
-		} else if (type === "pptx") {
+		} else if (type === "pptx" || type === "doc") {
 			const r = await s.office(o.sofficeTimeoutMs, inputPath, signal);
 			if (!r.ok) throw officeFailure(r);
 			office = r; path = r.pdfPath;

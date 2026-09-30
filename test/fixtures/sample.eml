@@ -1,0 +1,60 @@
+From: Ann Sender <ann@example.com>
+To: Bob Reader <bob@example.com>
+Cc: cc@example.com
+Date: Mon, 02 Mar 2026 10:00:00 +0100
+Subject: Fixture: relay | settings
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="==b1=="
+
+--==b1==
+Content-Type: multipart/alternative; boundary="==b2=="
+
+--==b2==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Plain text alternative with TX-101.
+
+--==b2==
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="==b3=="
+
+--==b3==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><h1>Relay settings</h1><p>TX-101 trips at <b>85%</b>.</p><img src=
+=3D"cid:fig1@example.com" alt=3D"figure"></body></html>
+
+--==b3==
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <fig1@example.com>
+MIME-Version: 1.0
+
+iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAQUlEQVR4nO3QwQ0AMAyDwNSTZ/S+
+vQD5wAIn8WbnpNywI8wV0KqEscJRnTBWOKoTxgpHdcJY4ahOGCsc1Qljna3+zgoAvBAxqAYAAAAA
+SUVORK5CYII=
+
+--==b3==--
+
+--==b2==--
+
+--==b1==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="notes.txt"
+MIME-Version: 1.0
+
+bm90ZXMgYm9keQo=
+
+--==b1==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="../evil.txt"
+MIME-Version: 1.0
+
+ZXZpbAo=
+
+--==b1==--

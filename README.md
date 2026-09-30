@@ -16,7 +16,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 ## Why pi-quiver exists
 
-`fetch` brings real web pages and GitHub issues/PRs into context and is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint. `doc_to_md` converts local PDF/DOCX/PPTX/XLSX/XLS, HTML, and image files into a Markdown bundle on disk and returns only a concise handle; OCR is opt-in and uses optional Tesseract language data. Ingestion is what makes data-driven work possible; bounded tool results keep it safe.
+`fetch` brings real web pages and GitHub issues/PRs into context and is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint. `doc_to_md` converts local PDF/DOCX/DOC/PPTX/XLSX/XLSM/XLS, MSG/EML, HTML, and image files into a Markdown bundle on disk and returns only a concise handle; OCR is opt-in and uses optional Tesseract language data. Ingestion is what makes data-driven work possible; bounded tool results keep it safe.
 
 `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting with repo-policy injection, `@name` mention resolution, cached emails, and per-call unfurl control.
 
@@ -65,7 +65,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | Extension | Tool | What it does |
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `fetch`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
-| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/PPTX/XLSX/XLS, HTML, or image file to a Markdown bundle on disk (`<stem>.md` + `images/` and spreadsheet `sheets/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` inspects PDF/Office inputs; `pages` selects 1-based PDF/Office pages (DOCX: explicit-page-break segments); HTML and image inputs reject both; every selected PDF/PPTX page or DOCX segment when `pageCount > 1` ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. HTML keeps local and `data:` images in the bundle and remote images as links; image inputs keep the original image. Scanned PDF pages keep a page picture on both Python tiers; opt-in OCR needs Tesseract language data. DOCX converts directly (mammoth, python-docx fallback); LibreOffice pagination marks the degraded route. The Outline lists `L<line>` and `p<page>` per heading. Settings under `quiver.docToMd`. |
+| `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/DOC/PPTX/XLSX/XLSM/XLS, MSG/EML, HTML, or image file to a Markdown bundle on disk (`<stem>.md` + `images/`, spreadsheet `sheets/`, optional `pageImages` in `pages/`, and email `attachments/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` inspects PDF/Office inputs; `pages` selects 1-based PDF/Office pages (DOCX: explicit-page-break segments); HTML, image, and email inputs reject both; every selected PDF/PPTX page or DOCX segment when `pageCount > 1` ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. HTML keeps local and `data:` images in the bundle and remote images as links; image inputs keep the original image. Scanned PDF pages keep a page picture on both Python tiers; opt-in OCR needs Tesseract language data. DOCX converts directly (mammoth, python-docx fallback); LibreOffice pagination marks the degraded route. The Outline lists `L<line>` and `p<page>` per heading. Settings under `quiver.docToMd`. |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty/Herdr tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -93,7 +93,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 ## When NOT to use
 
 - You need a general-purpose web scraper (JS-rendered pages, pagination, auth flows) - `fetch` does plain HTTP + Readability extraction, nothing more.
-- You need in-grid chart/image placement, `.xls` visual detection, `.xlsm`, or range selection - out of scope; chart/image association is per sheet only.
+- You need in-grid chart/image placement, `.xls` visual detection or range selection - out of scope; chart/image association is per sheet only.
 - You want automatic session naming, a custom header, fast mode, or stall recovery without opting in - all stay off until you flip the config.
 - You need *mid-stream* stall recovery in JSON, RPC, or print runs - only the pre-first-event tier arms there; mid-stream silence falls through to pi's transport timeout.
 
@@ -133,7 +133,7 @@ The npm package's bundled JS deps install automatically on `pi install`. A few *
 | Prerequisite | Needed by | If absent |
 | --- | --- | --- |
 | `gh` (GitHub CLI, installed + `gh auth login`) | `fetch` GitHub issue/PR/repo/actions-run/actions-job routing | Falls back to an HTTP fetch of the rendered page (private repos hit a login wall). |
-| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF and Excel conversion and DOCX (preferred route), with `pymupdf4llm`, `openpyxl`, `xlrd`, `pillow`, `mammoth`, `markdownify`, and `python-docx` | Falls back to a system Python >= 3.12 or one-time managed venv; PDF degrades to `unpdf` only when no capable Python exists. Excel requires the Python backend (no JS fallback). |
+| `uv` (+ managed Python 3.14, fetched on first use) | `doc_to_md` high-fidelity PDF and Excel conversion and DOCX (preferred route), with `pymupdf4llm`, `openpyxl`, `xlrd`, `pillow`, `mammoth`, `markdownify`, `python-docx`, and `extract-msg` | Falls back to a system Python >= 3.12 or one-time managed venv; PDF degrades to `unpdf` only when no capable Python exists. Excel requires the Python backend (no JS fallback). |
 | Tesseract language data (`tesseract` on `PATH` or `TESSDATA_PREFIX`) | `doc_to_md` OCR with `ocr: true` for scanned pages and images | OCR is skipped and the handle reports `OCR: unavailable` (or an install hint when OCR is off); pages keep their picture. |
 | LibreOffice (`soffice` on `PATH`) | `doc_to_md` PPTX conversion, the DOCX fallback route, and Excel rendered views | PPTX errors with a remedy; DOCX converts directly via the Python backend (LibreOffice fills in when that backend lacks the DOCX packages or its DOCX child exits 1); Excel omits rendered views. |
 
@@ -343,7 +343,7 @@ to, and a flat `slack` block is ignored without a warning.
 
 `fetch` and `doc_to_md` cores are also published through the CLI, so Claude Code can use the same routing or bundle-and-handle behavior as pi's native tools - without pi ever seeing Claude-only files.
 
-**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill runs `npx -y pi-quiver@latest doc-to-md [flags] <path>` with full flag parity and the same handle output. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes and flags.
+**Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill is generated at release from its hand-written intro and option schema; it runs `npx -y pi-quiver@<release version> doc-to-md [flags] <path>` with full flag parity and the same handle output. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes and flags, and [install channels](doc/doc-to-md.md#install-channels) for npm versus marketplace updates.
 
 **Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
 
@@ -360,7 +360,7 @@ Add the marketplace and enable the plugin in `.claude/settings.json`:
 
 Activates on folder trust.
 
-**Release sequencing:** the skill goes live only with (or after) the npm release that ships the `pi-quiver` bin - until that tag is on npm, `npx -y pi-quiver@latest fetch` resolves a bin-less package and fails.
+The generated doc-to-md skill uses the package version at release; the marketplace entry uses that same version so plugin updates track npm releases.
 
 ## Development
 

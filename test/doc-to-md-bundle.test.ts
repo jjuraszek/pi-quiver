@@ -1,10 +1,11 @@
 import { mock, test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { abortBundle, commitBundle, openBundle, ownedCsvPattern, ownedPattern, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
+import { abortBundle, commitBundle, openBundle, ownedCsvPattern, ownedPattern, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "quiver-bundle-"));
 
@@ -23,22 +24,86 @@ test("openBundle: creates root, images, staging; lock held; second open fails fa
 		const b = openBundle(root, "manual", false);
 		assert.ok(existsSync(b.lockPath) && existsSync(b.imagesDir) && existsSync(b.stagingDir));
 		assert.ok(b.stagingDir.startsWith(join(b.imagesDir, ".stage-")));
-		for (const overwrite of [false, true]) {
-			assert.throws(() => openBundle(root, "manual", overwrite), /Another conversion owns .*manual\.md \(lock: .*\); if no conversion is running, delete the lock/);
-		}
+		assert.throws(() => openBundle(root, "manual", true), /Another conversion owns .*manual\.md/);
+		const renamed = openBundle(root, "manual", false);
+		assert.strictEqual(renamed.stem, "manual-2");
+		assert.strictEqual(renamed.renamedFrom, "manual");
+		assert.strictEqual(renamed.renameReason, "manual.md.lock held; delete it if no conversion is running");
+		abortBundle(renamed);
 		commitBundle(b, "# x\n");
 		assert.ok(!existsSync(b.lockPath) && !existsSync(b.stagingDir));
 		assert.strictEqual(readFileSync(b.mdPath, "utf8"), "# x\n");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("openBundle: existing <stem>.md without overwrite -> Output exists error, lock released", () => {
+test("openBundle: existing <stem>.md without overwrite -> <stem>-2, then -3; a held .lock is skipped too", () => {
 	const root = tmp();
 	try {
-		mkdirSync(root, { recursive: true });
 		writeFileSync(join(root, "manual.md"), "old");
-		assert.throws(() => openBundle(root, "manual", false), /Output exists: .*manual\.md \(pass overwrite\)/);
+		const b2 = openBundle(root, "manual", false);
+		assert.strictEqual(b2.stem, "manual-2");
+		assert.strictEqual(b2.renamedFrom, "manual");
+		assert.strictEqual(b2.renameReason, "manual.md exists");
+		assert.ok(b2.mdPath.endsWith("manual-2.md") && existsSync(b2.lockPath));
+		writeFileSync(join(root, "manual-3.md.lock"), "");
+		const b4 = openBundle(root, "manual", false);
+		assert.strictEqual(b4.stem, "manual-4");
+		assert.strictEqual(openBundle(root, "fresh", false).renamedFrom, null);
 		assert.ok(!existsSync(join(root, "manual.md.lock")));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("openBundle: re-checks markdown after acquiring a candidate lock", () => {
+	const root = tmp();
+	const originalOpen = fs.openSync;
+	try {
+		const injected = mock.method(fs, "openSync", (path: fs.PathLike, flags: fs.OpenMode) => {
+			if (path === join(root, "manual.md.lock")) writeFileSync(join(root, "manual.md"), "racing commit");
+			return originalOpen(path, flags);
+		});
+		syncBuiltinESMExports();
+		const b = openBundle(root, "manual", false);
+		assert.strictEqual(b.stem, "manual-2");
+		assert.strictEqual(readFileSync(join(root, "manual.md"), "utf8"), "racing commit");
+		assert.ok(!existsSync(join(root, "manual.md.lock")));
+		abortBundle(b);
+		injected.mock.restore();
+	} finally { mock.restoreAll(); syncBuiltinESMExports(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("pages/ and attachments/: staged files publish to stem-prefixed names, links rewrite and validate, abort removes them", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "m", false);
+		mkdirSync(b.pagesStagingDir, { recursive: true }); mkdirSync(b.attachmentsStagingDir, { recursive: true });
+		writeFileSync(join(b.pagesStagingDir, "p3.png"), "x"); writeFileSync(join(b.pagesStagingDir, "p12.png"), "y");
+		writeFileSync(join(b.attachmentsStagingDir, "notes.txt"), "n");
+		publishPageImages(b, 12);
+		publishAttachments(b);
+		assert.deepStrictEqual([...b.pageManifest].sort(), ["m-p03.png", "m-p12.png"]);
+		assert.deepStrictEqual([...b.attachmentManifest], ["m-notes.txt"]);
+		assert.ok(existsSync(join(root, "pages", "m-p03.png")) && existsSync(join(root, "attachments", "m-notes.txt")));
+		const md = rewriteLinks("![page 3](pages/p3.png) [`notes.txt`](attachments/notes.txt)", b.sourceMap);
+		assert.strictEqual(md, "![page 3](pages/m-p03.png) [`notes.txt`](attachments/m-notes.txt)");
+		validateImageLinks(md, b.manifest, b.csvManifest, false, b.pageManifest, b.attachmentManifest);
+		assert.throws(() => validateImageLinks("![](pages/other.png)", b.manifest, b.csvManifest, false, b.pageManifest, b.attachmentManifest), /unexpected image reference/);
+		assert.throws(() => validateImageLinks("[x](attachments/evil.txt)", b.manifest, b.csvManifest, false, b.pageManifest, b.attachmentManifest), /unexpected attachment reference/);
+		abortBundle(b);
+		assert.ok(!existsSync(join(root, "pages", "m-p03.png")) && !existsSync(join(root, "attachments", "m-notes.txt")));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("openBundle overwrite: removes linked attachments and owned pages without touching sibling attachments", () => {
+	const root = tmp();
+	try {
+		mkdirSync(join(root, "pages"), { recursive: true }); mkdirSync(join(root, "attachments"), { recursive: true });
+		writeFileSync(join(root, "m.md"), "[a](attachments/m-a.txt) [report](attachments/m-2024-x.pdf)");
+		for (const f of ["m-p01.png", "other-p01.png"]) writeFileSync(join(root, "pages", f), "x");
+		for (const f of ["m-a.txt", "m-2024-x.pdf", "m-notes-a.txt", "m-2-notes.txt", "other-a.txt"]) writeFileSync(join(root, "attachments", f), "x");
+		const b = openBundle(root, "m", true);
+		assert.deepStrictEqual(readdirSync(join(root, "pages")).filter((f) => !f.startsWith(".")), ["other-p01.png"]);
+		assert.deepStrictEqual(readdirSync(join(root, "attachments")).filter((f) => !f.startsWith(".")), ["m-2-notes.txt", "m-notes-a.txt", "other-a.txt"]);
+		abortBundle(b);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

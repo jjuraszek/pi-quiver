@@ -102,8 +102,9 @@ lib/doc-to-md-*.ts          # doc_to_md core, options, bundle protocol, handle s
 lib/slack-core.ts           # slack config/token resolution, transport, mutations, announce protocol
 lib/slack-cache.ts          # workspace-keyed channel/user name->ID cache
 bin/pi-quiver.ts            # CLI (fetch + doc-to-md); published as esbuild-built dist/, not committed
-scripts/doc_to_md.py        # doc_to_md Python child, resolved from the package root
-skills/, .claude-plugin/    # Claude Code plugin surface; invisible to pi, excluded from the npm tarball
+scripts/doc_to_md.py, docx_numbering.py # doc_to_md Python child and DOCX numbering labels
+scripts/gen-skill.mjs       # renders skills/doc-to-md/SKILL.md from the option schema
+skills/, .claude-plugin/    # Claude Code plugin surface; skills/doc-to-md/SKILL.head.md is hand-written; invisible to pi, excluded from the npm tarball
 test/                       # node --test suites, one per extension, + layout.test.ts; fixtures/ generated
 ```
 
@@ -112,8 +113,9 @@ test/                       # node --test suites, one per extension, + layout.te
 - **Only extension entry points at the top level of `extensions/`.** Pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have run. `test/layout.test.ts` enforces it.
 - **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
 - **Opt-in extensions check `enabled` per hook and do nothing when off**; `slack` additionally gates registration at `session_start` (zero tools, hooks, or I/O when disabled). Toggling takes effect next session.
+- **`skills/doc-to-md/SKILL.md` is generated** - edit `skills/doc-to-md/SKILL.head.md` or the descriptors, then run `node scripts/gen-skill.mjs`; `test/skill-generation.test.ts` fails on drift.
 - **A new extension** is documented in `README.md` and gets a `CHANGELOG.md` `## Unreleased` bullet in the same commit.
-- **Packaging:** `package.json` `files` ships `extensions`, `lib`, `dist`, `scripts/doc_to_md.py`; `dist/` is built at `prepack` (esbuild, `--packages=external`). `test/packed-install.test.ts` installs the packed tarball and runs the bin. Check with `npm pack --dry-run`.
+- **Packaging:** `package.json` `files` ships `extensions`, `lib`, `dist`, `scripts/doc_to_md.py`, `scripts/docx_numbering.py`; `dist/` is built at `prepack` (esbuild, `--packages=external`). `test/packed-install.test.ts` installs the packed tarball and runs the bin. Check with `npm pack --dry-run`.
 
 ## Testing
 
@@ -121,7 +123,7 @@ test/                       # node --test suites, one per extension, + layout.te
 
 ## Release
 
-`/skill:release` owns the flow: `release.sh <level>` promotes `## Unreleased` in `CHANGELOG.md`, bumps `package.json`, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
+`/skill:release` owns the flow: `release.sh <level>` promotes `## Unreleased` in `CHANGELOG.md`, bumps `package.json`, regenerates the doc-to-md skill and writes the matching marketplace version, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
 
 ## Routing
 

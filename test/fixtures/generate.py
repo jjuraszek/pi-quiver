@@ -2,7 +2,8 @@
 """Regenerate the doc_to_md fixtures. Run from the repo root:
 uv run --with pymupdf==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py [generator ...]
 Pass generator names to regenerate a subset (e.g. charts charts_zero_extent).
-Requires soffice on PATH (workbook.xlsx round-trip populates cached formula values)."""
+Requires soffice on PATH (workbook.xlsx round-trip populates cached formula values).
+sample.msg is a committed copy (see README.md in this directory)."""
 import base64, io, os, random, shutil, subprocess, tempfile, zipfile, re
 import pymupdf
 from PIL import Image
@@ -134,7 +135,7 @@ def bold_headings_docx():
         d.add_paragraph(f"Body text under the bold paragraph {title}.")
     d.save(os.path.join(HERE, "bold-headings.docx"))
 
-def workbook():
+def workbook_source():
     import openpyxl, datetime
     from openpyxl.drawing.image import Image as XLImage
     wb = openpyxl.Workbook()
@@ -150,6 +151,10 @@ def workbook():
     for title in ("A B", "A_B"):
         s = wb.create_sheet(title); s["A1"] = title; s.add_image(XLImage(img), "B2")
     h = wb.create_sheet("Hidden"); h["A1"] = "secret"; h.sheet_state = "hidden"
+    return wb
+
+def workbook():
+    wb = workbook_source()
     raw = os.path.join(tempfile.gettempdir(), "workbook-raw.xlsx"); wb.save(raw)
     out = tempfile.mkdtemp()
     subprocess.run(["soffice", "--headless", "--convert-to", "xlsx", "--outdir", out, raw], check=True, capture_output=True, timeout=180)
@@ -248,15 +253,6 @@ def scan_pdf():
     doc.new_page().insert_text((72, 72), "PAGE-2 has a text layer", fontsize=12)
     doc.save(os.path.join(HERE, "scan.pdf"))
 
-def logo_pdf():
-    doc = pymupdf.open()
-    for n in range(1, 4):
-        page = doc.new_page()
-        page.insert_image(pymupdf.Rect(520, 36, 560, 76), stream=noise_png(n))
-        for i in range(20):
-            page.insert_text((72, 110 + i * 14), f"PAGE-{n} line {i} about wiring and relays.", fontsize=11)
-    doc.save(os.path.join(HERE, "logo.pdf"))
-
 def ocr_images():
     open(os.path.join(HERE, "ocr.png"), "wb").write(text_png(OCR_TEXT))
     Image.new("L", (200, 10), 255).save(os.path.join(HERE, "strip.png"))  # shorter side 10 px < 16
@@ -279,7 +275,99 @@ def html_fixtures():
     cp = "<html><head><meta charset=\"windows-1250\"><title>Kodowanie</title></head><body><p>Za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144</p></body></html>"
     open(os.path.join(d, "cp1250.html"), "wb").write(cp.encode("cp1250"))
 
-GENERATORS = {"scan_pdf": scan_pdf, "logo_pdf": logo_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent}
+def mixed_images_pdf():
+    doc = pymupdf.open(); page = doc.new_page()
+    page.insert_text((72, 72), "PAGE-1 has a text layer and two pictures", fontsize=12)
+    page.insert_image(pymupdf.Rect(72, 120, 272, 270), stream=png_bytes("red"))
+    page.insert_image(pymupdf.Rect(300, 120, 500, 270), stream=png_bytes("blue"))
+    doc.save(os.path.join(HERE, "mixed-images.pdf"))
+
+def _lvl(i, fmt, text, start=1, restart=None, pstyle=None):
+    extra = (f'<w:lvlRestart w:val="{restart}"/>' if restart is not None else "") + (f'<w:pStyle w:val="{pstyle}"/>' if pstyle else "")
+    return f'<w:lvl w:ilvl="{i}"><w:start w:val="{start}"/><w:numFmt w:val="{fmt}"/>{extra}<w:lvlText w:val="{text}"/></w:lvl>'
+
+def _numbered(d, abstracts, nums):
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    numbering = d.part.numbering_part.element
+    for c in list(numbering): numbering.remove(c)
+    for aid, levels in abstracts.items():
+        numbering.append(parse_xml(f'<w:abstractNum {nsdecls("w")} w:abstractNumId="{aid}">' + "".join(levels) + "</w:abstractNum>"))
+    for nid, (aid, override) in nums.items():
+        numbering.append(parse_xml(f'<w:num {nsdecls("w")} w:numId="{nid}"><w:abstractNumId w:val="{aid}"/>{override}</w:num>'))
+    def numbered(text, nid, ilvl, style=None):
+        p = d.add_paragraph(text, style=style) if style else d.add_paragraph(text)
+        p._p.get_or_add_pPr().append(parse_xml(f'<w:numPr {nsdecls("w")}><w:ilvl w:val="{ilvl}"/><w:numId w:val="{nid}"/></w:numPr>'))
+    return numbered
+
+def numbered_docx():
+    from docx import Document
+    d = Document()
+    abstracts = {
+        "0": [_lvl(0, "decimal", "%1."), _lvl(1, "decimal", "%1.%2"), _lvl(2, "decimal", "%1.%2.%3")],
+        "1": [_lvl(0, "decimal", "%1.", pstyle="Heading1"), _lvl(1, "decimal", "%1.%2", pstyle="Heading2")],
+        "2": [_lvl(0, "decimal", "%1."), _lvl(1, "decimal", "%1.%2", restart=0)],
+        "3": [_lvl(0, "bullet", "\u2022")],
+    }
+    nums = {"1": ("0", ""), "2": ("0", '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride>'), "3": ("1", ""), "4": ("2", ""), "5": ("3", "")}
+    numbered = _numbered(d, abstracts, nums)
+    d.add_heading("Introduction", 1); d.add_heading("Scope", 2); d.add_heading("Design", 1); d.add_heading("Interfaces", 2)
+    d.add_paragraph("See 3.2.1 for trip settings.")
+    for text, lvl in [("Alpha", 0), ("Alpha one", 1), ("Beta", 0), ("Beta one", 1), ("Beta two", 1), ("Gamma", 0), ("Gamma one", 1), ("Gamma two", 1), ("Trip settings", 2)]:
+        numbered(text, "1", lvl)
+    numbered("Delta restarts", "2", 0)
+    for text, lvl in [("Ex", 0), ("Ex sub", 1), ("Why", 0), ("Why sub", 1)]:
+        numbered(text, "4", lvl)
+    numbered("Bullet item", "5", 0)
+    d.save(os.path.join(HERE, "numbered.docx"))
+    d = Document(); numbered = _numbered(d, {"0": [_lvl(0, "decimal", "%1.")]}, {"1": ("0", "")})
+    numbered("Points nowhere", "9", 0); d.add_paragraph("plain"); d.save(os.path.join(HERE, "missing-num.docx"))
+    d = Document(); numbered = _numbered(d, {"0": [_lvl(0, "chicago", "%1.")]}, {"1": ("0", "")})
+    numbered("Chicago style", "1", 0); d.save(os.path.join(HERE, "unknown-numfmt.docx"))
+
+def macros_xlsm():
+    workbook_source().save(os.path.join(HERE, "macros.xlsm"))
+
+def tall_xlsx():
+    import openpyxl
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Tall"
+    for r in range(1, 151): ws.append([r, f"item {r}", r * 1.5])
+    wide = wb.create_sheet("Wide")
+    for r in range(1, 121): wide.append([f"r{r}c{c}" for c in range(1, 61)])
+    wb.create_sheet("Small").append(["a", "b"])
+    wb.save(os.path.join(HERE, "tall.xlsx"))
+
+def tall_xls():
+    import xlwt
+    wb = xlwt.Workbook(); ws = wb.add_sheet("Tall")
+    for r in range(150):
+        for c in range(3):
+            ws.write(r, c, f"r{r + 1}c{c + 1}")
+    wb.save(os.path.join(HERE, "tall.xls"))
+
+def sample_eml():
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["From"] = "Ann Sender <ann@example.com>"; m["To"] = "Bob Reader <bob@example.com>"; m["Cc"] = "cc@example.com"
+    m["Date"] = "Mon, 02 Mar 2026 10:00:00 +0100"; m["Subject"] = "Fixture: relay | settings"
+    cid = "<fig1@example.com>"
+    m.set_content("Plain text alternative with TX-101.")
+    m.add_alternative(f'<html><body><h1>Relay settings</h1><p>TX-101 trips at <b>85%</b>.</p><img src="cid:{cid[1:-1]}" alt="figure"></body></html>', subtype="html")
+    m.get_payload()[1].add_related(png_bytes("green"), maintype="image", subtype="png", cid=cid, disposition="inline")
+    m.add_attachment(b"notes body\n", maintype="text", subtype="plain", filename="notes.txt")
+    m.add_attachment(b"evil\n", maintype="text", subtype="plain", filename="../evil.txt")
+    for i, part in enumerate((part for part in m.walk() if part.is_multipart()), 1):
+        part.set_boundary(f"==b{i}==")
+    open(os.path.join(HERE, "sample.eml"), "wb").write(m.as_bytes())
+
+def legacy_doc():
+    if not shutil.which("soffice"):
+        print("soffice not on PATH; sample.doc not regenerated"); return
+    with tempfile.TemporaryDirectory() as out:
+        subprocess.run(["soffice", "--headless", "--convert-to", "doc", "--outdir", out, os.path.join(HERE, "headings.docx")], check=True, stdout=subprocess.DEVNULL)
+        shutil.copyfile(os.path.join(out, "headings.doc"), os.path.join(HERE, "sample.doc"))
+
+GENERATORS = {"scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
 
 if __name__ == "__main__":
     import sys

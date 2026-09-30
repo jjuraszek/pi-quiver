@@ -4,7 +4,7 @@
  */
 import { extname } from "node:path";
 
-export type InputType = "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "html" | "image";
+export type InputType = "pdf" | "docx" | "doc" | "pptx" | "xlsx" | "xlsm" | "xls" | "html" | "image" | "email";
 export type ImageFormat = "png" | "jpg";
 
 export interface Tunables {
@@ -28,6 +28,7 @@ export interface DocToMdOptions extends Tunables {
 	pages: number[] | null;
 	outputDir: string | null;
 	overwrite: boolean;
+	pageImages: boolean;
 }
 
 /** What adapters pass in: intents as raw strings/booleans, tunables optional. */
@@ -37,6 +38,7 @@ export interface PerCallInput extends Partial<Tunables> {
 	pages?: string | null;
 	outputDir?: string | null;
 	overwrite?: boolean;
+	pageImages?: boolean;
 }
 
 export type DescriptorType = "string" | "int" | "bool" | "pages" | "enum" | "version" | "lang";
@@ -60,11 +62,12 @@ export const OCR_LANGUAGE_RE = /^[a-z][a-z0-9_]*(\+[a-z][a-z0-9_]*)*$/;
 export const IMAGE_EXTS: readonly string[] = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif"];
 
 export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
-	{ key: "path", flag: null, type: "string", default: null, settable: false, help: "Local .pdf .docx .pptx .xlsx .xls .html .htm .png .jpg .jpeg .tif .tiff .bmp .gif file" },
+	{ key: "path", flag: null, type: "string", default: null, settable: false, help: "Local .pdf .docx .doc .pptx .xlsx .xlsm .xls .msg .eml .html .htm .png .jpg .jpeg .tif .tiff .bmp .gif file" },
 	{ key: "info", flag: "--info", type: "bool", default: false, settable: false, help: "Inspect only (page count, metadata, TOC or sheet inventory); no bundle" },
-	{ key: "pages", flag: "--pages", type: "pages", default: null, settable: false, help: "Inclusive 1-based pages, e.g. \"12-15\" or \"3,7,10-12\" (PDF/DOCX/PPTX only); default all. DOCX: selects explicit-page-break segments; rejected when the file has none" },
-	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir" },
+	{ key: "pages", flag: "--pages", type: "pages", default: null, settable: false, help: "Inclusive 1-based pages, e.g. \"12-15\" or \"3,7,10-12\" (PDF/DOCX/DOC/PPTX only); default all; \"\" means all pages. DOCX: selects explicit-page-break segments; rejected when the file has none" },
+	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir. <stem> = basename without extension with [^A-Za-z0-9._-]+ -> _ (empty -> document); a second call on the same stem writes <stem>-2.md" },
 	{ key: "overwrite", flag: "--overwrite", type: "bool", default: false, settable: false, help: "Replace an existing completed <stem>.md bundle" },
+	{ key: "pageImages", flag: "--page-images", type: "bool", default: false, settable: false, help: "Also render every selected page to pages/<stem>-pNNN.<imageFormat> at imageDpi (PDF, PPTX, .doc, DOCX via LibreOffice); off by default" },
 	{ key: "primaryTimeoutMs", flag: "--primary-timeout", type: "int", default: 60000, settable: true, env: "PI_DOC_TO_MD_CONVERT_TIMEOUT_MS", help: "pymupdf4llm tier and DOCX child (docx mode); also the unpdf tier" },
 	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier (including DOCX LibreOffice fallback); also PDF and DOCX info and Excel rendered views" },
 	{ key: "sofficeTimeoutMs", flag: "--soffice-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS", help: "DOCX/PPTX -> PDF via LibreOffice; also Excel rendered views" },
@@ -124,7 +127,8 @@ export function coerceDocToMdSettings(raw: unknown, warn: (message: string) => v
 	return out as Partial<Tunables>;
 }
 
-export function parsePages(spec: string): number[] {
+export function parsePages(spec: string): number[] | null {
+	if (spec.trim() === "") return null;
 	const out = new Set<number>();
 	const parts = spec.split(",").map((s) => s.trim());
 	if (parts.length === 0 || parts.some((p) => p === "")) throw new UsageError(`invalid --pages "${spec}": expected e.g. "12-15" or "3,7,10-12"`);
@@ -143,7 +147,8 @@ export function sanitizeStem(base: string): string {
 	return s.length ? s : "document";
 }
 
-const SUPPORTED: Record<string, InputType> = { ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".xlsx": "xlsx", ".xls": "xls", ".html": "html", ".htm": "html", ...Object.fromEntries(IMAGE_EXTS.map((ext) => [ext, "image" as const])) };
+const SUPPORTED: Record<string, InputType> = { ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".xlsx": "xlsx", ".xls": "xls", ".xlsm": "xlsm", ".doc": "doc", ".msg": "email", ".eml": "email", ".html": "html", ".htm": "html", ...Object.fromEntries(IMAGE_EXTS.map((ext) => [ext, "image" as const])) };
+export const SUPPORTED_EXTENSIONS: readonly string[] = Object.keys(SUPPORTED);
 
 export function classifyInput(filePath: string): InputType {
 	const t = SUPPORTED[extname(filePath).toLowerCase()];
@@ -172,8 +177,8 @@ export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables
 		out[d.key] = value;
 	}
 	const o = out as unknown as DocToMdOptions;
-	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite)) {
-		throw new UsageError("--info cannot be combined with --pages, --output-dir or --overwrite");
+	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages)) {
+		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite or --page-images");
 	}
 	return o;
 }

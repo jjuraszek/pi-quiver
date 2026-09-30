@@ -1,5 +1,7 @@
 # doc_to_md: opt-in OCR, image inputs, and local HTML
 
+> **Superseded by:** [doc/specs/2026-09-30-gh-25-doc-to-md-bundle-gaps.md](./2026-09-30-gh-25-doc-to-md-bundle-gaps.md) - Design sections 3-4 (PDF OCR per-page decision and image retention) and 7 (handle lines for OCR and page renders)
+
 **Goal:** `doc_to_md` converts scanned PDFs, standalone images, and local `.html`/`.htm` files into bundles an agent can read: on the Python tiers every scanned page keeps its picture, OCR text is added on request when Tesseract is installed, and local HTML converts with full fidelity through the already-pinned markdownify with a Turndown fallback.
 
 Predecessors (both keep every clause not named here):

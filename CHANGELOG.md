@@ -11,6 +11,14 @@ via OIDC trusted publishing. The release helper at
 ## Unreleased
 
 - README: `swordHeader` note on why pi's built-in logo flashes before the sword appears and how `quietStartup` removes it.
+- `doc_to_md` keeps embedded images on text-bearing PDF pages when OCR is enabled; only textless pages run OCR.
+- Changed: the OCR handle says `no text on pages <ranges>` rather than counting pages without recognized text.
+- `.xlsm` uses the Excel route (macros ignored) with an aggregated `preview truncated: ...` note; `.doc` uses LibreOffice -> PDF and reports `Degraded:`; `.msg`/`.eml` convert email bodies and stage attachments.
+- `pageImages` / `--page-images` writes selected page renders to `pages/` and adds a `Pages-Dir:` handle line; Word auto-numbering labels are computed on the mammoth path with a non-blocking `Numbering:` fallback.
+- Zero-byte input fails at the boundary with `empty file: <path>`. `--json` prints structured conversion or info data; `--pages ""` selects all pages.
+- Changed: same-stem collisions write `<stem>-2.md` instead of failing with `Output exists`, with a `renamed to <stem>-2 (<stem>.md exists)` note (or a held-lock note when only the lock exists).
+- Changed: the managed Python venv is `doc-to-md-venv-v4` with pinned `extract-msg==0.56.1`.
+- Changed: the Claude Code `skills/doc-to-md/SKILL.md` is generated from the option schema and pins `pi-quiver@<release version>` instead of `@latest`; the marketplace `version` follows the npm version. DOCX without explicit breaks reports `Page-Count: 1 (no explicit page breaks) - no page markers; cite by Outline line`.
 
 ## v6.6.0 - 2026-09-29
 

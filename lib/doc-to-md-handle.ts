@@ -1,7 +1,7 @@
 import type { InputType } from "./doc-to-md-options.ts";
 
-export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image";
-export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy";
+export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image" | "email";
+export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy" | "extract-msg" | "email";
 export type BackendKind = "uv" | "python" | "venv" | "none";
 
 export interface OutlineEntry { line: number; level: number; title: string; page: number | null; }
@@ -31,8 +31,8 @@ export interface OcrInfo {
 }
 
 export interface HandleData {
-	savedTo: string; imagesDir: string | null; sheetsDir: string | null; type: InputType; engine: Engine; tier: Tier;
-	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; bytes: number; lines: number;
+	savedTo: string; imagesDir: string | null; sheetsDir: string | null; pagesDir: string | null; type: InputType; engine: Engine; tier: Tier;
+	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; pageImageCount: number; pageImagesReason: string | null; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number; ocr: OcrInfo | null;
 }
@@ -85,7 +85,7 @@ export function ocrLine(ocr: OcrInfo, type: InputType): string {
 		case "skipped": return "OCR: skipped - image too small";
 		case "ran": {
 			const clauses = [`OCR: ${ocr.pages.length} ${image ? "image" : "page(s)"} (${ocr.lang})`];
-			if (ocr.noText.length) clauses.push(`${ocr.noText.length} returned no text`);
+			if (ocr.noText.length) clauses.push(`no text on pages ${compactRanges(ocr.noText)}`);
 			if (ocr.ocrFailed.length) clauses.push(`${ocr.ocrFailed.length} failed and were converted without OCR`);
 			if (ocr.budgetStopped.length) {
 				const r = compactRanges(ocr.budgetStopped, Number.POSITIVE_INFINITY).replaceAll(", ", ",");
@@ -133,7 +133,7 @@ function outlineLines(entries: OutlineEntry[], total: number): string[] {
 function pageCountLabel(h: HandleData): string {
 	const n = h.pageCount ?? "?";
 	if (h.type !== "docx") return String(n);
-	if (h.tier === "docx") return `${n} (${(h.explicitBreaks ?? 0) > 0 ? "explicit page breaks, not printed pages" : "no explicit page breaks"})`;
+	if (h.tier === "docx") return (h.explicitBreaks ?? 0) > 0 ? `${n} (explicit page breaks, not printed pages)` : `${n} (no explicit page breaks) - no page markers; cite by Outline line`;
 	return `${n} (LibreOffice pagination)`;
 }
 
@@ -141,6 +141,8 @@ export function formatHandle(h: HandleData): string {
 	const lines = [`Saved-To: ${h.savedTo}`];
 	if (h.imagesDir && h.imageCount > 0) lines.push(`Images-Dir: ${h.imagesDir}`);
 	if (h.sheetsDir) lines.push(`Sheets-Dir: ${h.sheetsDir}`);
+	if (h.pagesDir && h.pageImageCount > 0) lines.push(`Pages-Dir: ${h.pagesDir} (${h.pageImageCount} pages)`);
+	else if (h.pageImagesReason) lines.push(`Pages-Dir: none - ${h.pageImagesReason}`);
 	lines.push(`Type: ${h.type}   Engine: ${h.engine}   Tier: ${h.tier}`);
 	lines.push(`Page-Count: ${pageCountLabel(h)}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);
 	if (h.degraded) lines.push(`Degraded: ${h.degraded}`);
@@ -150,7 +152,7 @@ export function formatHandle(h: HandleData): string {
 	if (h.emptyPages.length) fe.push(`Empty-Pages: ${compactRanges(h.emptyPages)}`);
 	if (fe.length) lines.push(fe.join("    "));
 	if (h.ocr) lines.push(ocrLine(h.ocr, h.type));
-	h.notes.slice(0, NOTE_MAX_LINES).forEach((n, i) => lines.push(`${i === 0 ? "Notes: " : "       "}${trunc(n, NOTE_MAX_CHARS)}`));
+	h.notes.slice(0, NOTE_MAX_LINES).forEach((n, i) => lines.push(`${i === 0 ? "Notes: " : "       "}${n.startsWith("preview truncated:") ? n : trunc(n, NOTE_MAX_CHARS)}`));
 	lines.push(...outlineLines(h.outline, h.outlineTotal));
 	return lines.join("\n");
 }

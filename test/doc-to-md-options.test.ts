@@ -11,7 +11,7 @@ test("descriptors: every tunable has a flag, default and help; per-call intents 
 		if (d.key !== "path") assert.match(d.flag!, /^--[a-z-]+$/, d.key);
 	}
 	const intents = DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map((d) => d.key).sort();
-	assert.deepStrictEqual(intents, ["info", "outputDir", "overwrite", "pages", "path"]);
+	assert.deepStrictEqual(intents, ["info", "outputDir", "overwrite", "pageImages", "pages", "path"]);
 	assert.strictEqual(TUNABLE_DEFAULTS.primaryTimeoutMs, 60000);
 	assert.strictEqual(TUNABLE_DEFAULTS.fallbackTimeoutMs, 30000);
 	assert.strictEqual(TUNABLE_DEFAULTS.sofficeTimeoutMs, 120000);
@@ -49,6 +49,7 @@ test("resolveOptions: info with a bundle option is a UsageError", () => {
 	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, pages: "1" }, {}, {}), UsageError);
 	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, outputDir: "x" }, {}, {}), UsageError);
 	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, overwrite: true }, {}, {}), UsageError);
+	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, pageImages: true }, {}, {}), UsageError);
 });
 
 test("resolveOptions: bad per-call values are UsageErrors", () => {
@@ -78,7 +79,7 @@ test("parsePages: inclusive 1-based, sorted, deduped", () => {
 	assert.deepStrictEqual(parsePages("12-15"), [12, 13, 14, 15]);
 	assert.deepStrictEqual(parsePages("3,7,10-12,7"), [3, 7, 10, 11, 12]);
 	assert.deepStrictEqual(parsePages(" 2 , 1 "), [1, 2]);
-	for (const bad of ["", "0", "a", "5-3", "1-", "-2", "1,,2", "1.5"]) assert.throws(() => parsePages(bad), UsageError, bad);
+	for (const bad of ["0", "a", "5-3", "1-", "-2", "1,,2", "1.5"]) assert.throws(() => parsePages(bad), UsageError, bad);
 });
 
 test("sanitizeStem: [A-Za-z0-9._-] only, runs collapsed, empty -> document", () => {
@@ -95,14 +96,14 @@ test("classifyInput: office/pdf types, case-insensitive; unsupported names the l
 	assert.strictEqual(classifyInput("c.pptx"), "pptx");
 	assert.strictEqual(classifyInput("d.xlsx"), "xlsx");
 	assert.strictEqual(classifyInput("e.xls"), "xls");
-	assert.throws(() => classifyInput("f.xlsm"), /supported: \.pdf, \.docx, \.pptx, \.xlsx, \.xls/);
+	assert.strictEqual(classifyInput("f.xlsm"), "xlsm");
 });
 
 test("classifyInput: html and image inputs; .webp stays unsupported", () => {
 	assert.strictEqual(classifyInput("a.html"), "html");
 	assert.strictEqual(classifyInput("A.HTM"), "html");
 	for (const e of [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif"]) assert.strictEqual(classifyInput(`x${e}`), "image", e);
-	assert.throws(() => classifyInput("x.webp"), /Unsupported file type "\.webp"; supported: \.pdf, \.docx, \.pptx, \.xlsx, \.xls, \.html, \.htm, \.png, \.jpg, \.jpeg, \.tif, \.tiff, \.bmp, \.gif/);
+	assert.throws(() => classifyInput("x.webp"), /Unsupported file type "\.webp"; supported: \.pdf, \.docx, \.pptx, \.xlsx, \.xls, \.xlsm, \.doc, \.msg, \.eml, \.html, \.htm, \.png, \.jpg, \.jpeg, \.tif, \.tiff, \.bmp, \.gif/);
 });
 
 test("ocr tunables: defaults, precedence, per-call false beats settings true", () => {
@@ -119,6 +120,34 @@ test("ocrLanguage validation: plain Tesseract codes only", () => {
 	const warnings: string[] = [];
 	assert.deepStrictEqual(coerceDocToMdSettings({ ocrLanguage: "script/Latin", ocr: true }, (m) => warnings.push(m)), { ocr: true });
 	assert.match(warnings[0], /quiver\.docToMd\.ocrLanguage must be Tesseract language codes/);
+});
+
+test("classifyInput: new office and email extensions", () => {
+	assert.strictEqual(classifyInput("a.xlsm"), "xlsm");
+	assert.strictEqual(classifyInput("a.DOC"), "doc");
+	assert.strictEqual(classifyInput("a.msg"), "email");
+	assert.strictEqual(classifyInput("a.eml"), "email");
+	assert.throws(() => classifyInput("a.webp"), /supported: .*\.xlsm.*\.doc.*\.msg.*\.eml/);
+});
+
+test("parsePages: empty string means all pages", () => {
+	assert.strictEqual(parsePages(""), null);
+	assert.strictEqual(parsePages("   "), null);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", pages: "" }, {}, {}).pages, null);
+	assert.throws(() => parsePages("1,,2"), /invalid --pages/);
+});
+
+test("pageImages: per-call bool, default false, not settable", () => {
+	const d = DOC_TO_MD_OPTIONS.find((o) => o.key === "pageImages")!;
+	assert.deepStrictEqual([d.type, d.default, d.settable, d.flag], ["bool", false, false, "--page-images"]);
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, {}, {}).pageImages, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", pageImages: true }, {}, {}).pageImages, true);
+	assert.deepStrictEqual(coerceDocToMdSettings({ pageImages: true }), {});
+});
+
+test("help text documents the stem rule and empty pages", () => {
+	assert.match(DOC_TO_MD_OPTIONS.find((o) => o.key === "outputDir")!.help, /\[\^A-Za-z0-9\._-\]\+ -> _/);
+	assert.match(DOC_TO_MD_OPTIONS.find((o) => o.key === "pages")!.help, /"" means all pages/);
 });
 
 test("renderHelp: lists every flag and both tables", () => {

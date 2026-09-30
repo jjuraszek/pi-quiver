@@ -161,10 +161,10 @@ test("docx: multipage converts without soffice and has five markers", T, async (
 
 test("docx: bold headings have no outline; sample has no explicit page breaks", T, async () => {
 	const r = await convertDocument(opts(fx("bold-headings.docx"), { outputDir: tmp }));
-	assert.match(r.output, /^Page-Count: 1 \(no explicit page breaks\)   Pages: all   Images: 0   Size: \d+(\.\d+)?(B|KB|MB) \/ \d+ lines$/m);
+	assert.match(r.output, /^Page-Count: 1 \(no explicit page breaks\) - no page markers; cite by Outline line   Pages: all   Images: 0   Size: \d+(\.\d+)?(B|KB|MB) \/ \d+ lines$/m);
 	assert.ok(r.output.split("\n").includes("Outline: none"));
 	const s = await convertDocument(opts(fx("sample.docx"), { outputDir: join(tmp, "s") }));
-	assert.match(s.output, /^Page-Count: 1 \(no explicit page breaks\)/m);
+	assert.match(s.output, /^Page-Count: 1 \(no explicit page breaks\) - no page markers; cite by Outline line   Pages: all/m);
 });
 
 test("docx: forced python-docx fallback keeps headings and markers", T, async () => {

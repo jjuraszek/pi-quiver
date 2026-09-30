@@ -1,5 +1,7 @@
 # doc_to_md: Excel output v2 - sheet inventory, per-sheet CSV, rendered visuals
 
+> **Superseded by:** [doc/specs/2026-09-30-gh-25-doc-to-md-bundle-gaps.md](./2026-09-30-gh-25-doc-to-md-bundle-gaps.md) - handle preview note and same-stem collision behavior
+
 Ticket: [jjuraszek/pi-quiver#17](https://github.com/jjuraszek/pi-quiver/issues/17) (discovery ticket; this spec widens it to an implementation - see [Deviation from the ticket](#deviation-from-the-ticket))
 Supersedes: `doc/specs/2026-09-09-gh-13-selective-image-linked-excel-conversion.md` - the "chart rendering" non-goal, the `maxCellsPerSheet` option row, and the Excel part of its Python/bundle contract (matrix budget, bundle layout, 1-based worksheet-only indices). The rest of #13 (PDF tiers, DOCX/PPTX, handle shape, lock/staging protocol) stays live.
 

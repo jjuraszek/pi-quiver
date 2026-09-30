@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages | docx | html | image); options JSON on stdin;
+"""doc_to_md child. argv[1] = mode (info | pdf-primary | pdf-fallback | xlsx | render-pages | docx | html | image | email); options JSON on stdin;
 one JSON result on stdout. Exit 0 ok, 1 conversion failure (traceback on stderr), 3 user error
 ({"error", "pageCount"} on stdout). Library chatter is redirected to stderr so stdout is the result only.
 Imports `pymupdf` / `pymupdf4llm` (never the deprecated `fitz` alias)."""
@@ -12,6 +12,8 @@ import sys
 import tempfile
 import traceback
 import warnings
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 SEP = "\n\n--- end of page.page_number={n} ---\n\n"
 PAGEBREAK_SENTINEL = "\x00PAGEBREAK\x00"
@@ -93,7 +95,6 @@ def mark_done(d):
 
 
 OCR_SENTINEL = "\x00OCR {}\x00"
-SMALL_IMAGE_FRACTION = 0.05
 MIN_OCR_SIDE_PX = 16
 OCR_BUDGET_RESERVE_MS, OCR_EST_INITIAL_MS, PAGE_EST_INITIAL_MS = 5000, 4000, 250
 
@@ -158,31 +159,30 @@ def render_textless_page(page, d, o):
     return name
 
 
-def small_image_gate(page):
-    import pymupdf
-    from pymupdf4llm.helpers.utils import analyze_page
-    a = analyze_page(page)
-    if not a.get("needs_ocr") or a.get("reason") != "img_text":
-        return False
-    pr = page.rect
-    area, short = pr.width * pr.height, min(pr.width, pr.height)
-    for image in page.get_image_info():
-        r = pymupdf.Rect(image["bbox"]) & pr
-        if r.width * r.height >= SMALL_IMAGE_FRACTION * area and min(r.width, r.height) >= SMALL_IMAGE_FRACTION * short:
-            return False
-    return True
+def render_page_image(page, n, o, page_images):
+    d = o["pagesStagingDir"]
+    eff = clamped_dpi(page.rect.width, page.rect.height, o["imageDpi"])
+    if eff is None:
+        return None
+    os.makedirs(d, exist_ok=True)
+    name = f"p{n}.{o['imageFormat']}"
+    target = os.path.join(d, name)
+    try:
+        page.get_pixmap(dpi=eff).save(target)
+    except Exception:
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        return None
+    page_images.append({"page": n, "file": name})
+    return name
 
 
-def page_ocr_kwargs(page, textless, lang):
+def page_ocr_kwargs(textless, lang):
     if textless:
         return {"use_ocr": True, "force_ocr": True, "ocr_language": lang}
-    if not page.get_images():
-        return {"use_ocr": True, "ocr_language": lang}
-    try:
-        skip = small_image_gate(page)
-    except Exception:  # noqa: BLE001 - internal API may differ under version override
-        skip = False
-    return {"use_ocr": False} if skip else {"use_ocr": True, "ocr_language": lang}
+    return {"use_ocr": False}
 
 
 def image_ocr_dpi(px_w, pt_w, pt_h):
@@ -259,6 +259,7 @@ def mode_pdf_primary(o):
     doc = open_pdf(o["path"])
     pages = check_pages(o.get("pages"), doc.page_count)
     staging, out, empty, failed, notes = o["stagingDir"], [], [], [], []
+    page_images = []
     lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
     info = new_ocr(lang)
     status = ocr_status(True, lang) if o.get("ocr") else None
@@ -272,14 +273,13 @@ def mode_pdf_primary(o):
                 info["textless"].append(n)
                 if status is None:
                     status = ocr_status(False, lang)
-            kw = page_ocr_kwargs(page, textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
+            kw = page_ocr_kwargs(textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
             if kw["use_ocr"]:
                 elapsed = (time.monotonic() - start) * 1000
                 est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
                 est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
                 if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
-                    if textless:
-                        info["budgetStopped"].append(n)
+                    info["budgetStopped"].append(n)
                     kw = {"use_ocr": False}
             t0 = time.monotonic()
             try:
@@ -287,27 +287,30 @@ def mode_pdf_primary(o):
             except Exception:  # noqa: BLE001
                 if not kw["use_ocr"]:
                     raise
-                kw, t0 = {"use_ocr": False}, time.monotonic()
-                md = primary_page_markdown(doc, n, d, o, kw, not textless) if not textless else ""
-                if textless:
-                    info["ocrFailed"].append(n)
-            (ocr_ms if kw["use_ocr"] and textless else plain_ms).append((time.monotonic() - t0) * 1000)
+                kw, t0, md = {"use_ocr": False}, time.monotonic(), ""
+                info["ocrFailed"].append(n)
+            (ocr_ms if kw["use_ocr"] else plain_ms).append((time.monotonic() - t0) * 1000)
             if textless:
-                pic = render_textless_page(page, d, o)
-                parts = [f"![page {n}](p{n}/{pic})"] if pic else []
+                pic = None if o.get("pageImages") else render_textless_page(page, d, o)
                 text = md.strip()
                 if kw["use_ocr"] and text:
                     info["pages"].append(n)
-                    parts.append(ocr_block(f"p{n}/{pic}" if pic else "-", text))
                 else:
                     if kw["use_ocr"]:
                         info["noText"].append(n)
                     empty.append(n)
-                md = "\n\n".join(parts)
             elif not md.strip():
                 empty.append(n)
-            out.append(md.rstrip())
             mark_done(d)
+            page_pic = render_page_image(page, n, o, page_images) if o.get("pageImages") else None
+            if textless:
+                parts = [f"![page {n}](p{n}/{pic})"] if pic else []
+                if kw["use_ocr"] and text:
+                    parts.append(ocr_block(f"pages/{page_pic}" if page_pic else f"p{n}/{pic}" if pic else "-", text))
+                md = "\n\n".join(parts)
+            if page_pic:
+                md = "\n\n".join(x for x in [md.rstrip(), f"![page {n}](pages/{page_pic})"] if x)
+            out.append(md.rstrip())
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(d, ignore_errors=True)
             failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
@@ -318,8 +321,11 @@ def mode_pdf_primary(o):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
     if status is not None:
         apply_status(info, status)
+    missing = len(pages) - len(page_images) if o.get("pageImages") else 0
+    if missing:
+        notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info}
+            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images}
 
 
 def mode_pdf_fallback(o):
@@ -328,12 +334,14 @@ def mode_pdf_fallback(o):
     pages = check_pages(o.get("pages"), doc.page_count)
     keep = {int(k): v for k, v in (o.get("keepPages") or {}).items()}
     staging, out, empty, failed = o["stagingDir"], [], [], []
+    page_images = []
     lang = o.get("ocrLanguage", "eng")
     ocr_info = new_ocr(lang)
     status = {"status": "unavailable", "reason": "fallback tier", "tesseract": None} if o.get("ocr") else None
     for n in pages:
         links = [f"![](images/{f})" for f in keep.get(n, [])]
         text = ""
+        page_pic = None
         try:
             page = doc[n - 1]
             text = page.get_text("text").strip()
@@ -343,11 +351,11 @@ def mode_pdf_fallback(o):
                     status = ocr_status(False, lang)
             if n not in keep:
                 d = page_dir(staging, n)
-                if not text:
+                if not text and not o.get("pageImages"):
                     pic = render_textless_page(page, d, o)
                     if pic:
                         links.append(f"![page {n}](p{n}/{pic})")
-                else:
+                elif text:
                     i = 0
                     for image in page.get_image_info(xrefs=True):
                         i += 1
@@ -362,6 +370,7 @@ def mode_pdf_fallback(o):
                             page.get_pixmap(clip=pymupdf.Rect(image["bbox"]), dpi=o["imageDpi"]).save(os.path.join(d, name))
                         links.append(f"![](p{n}/{name})")
                 mark_done(d)
+            page_pic = render_page_image(page, n, o, page_images) if o.get("pageImages") else None
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
             text = ""
@@ -369,14 +378,18 @@ def mode_pdf_fallback(o):
             failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
         if not text:
             empty.append(n)
-        out.append("\n\n".join(x for x in [text, "\n".join(links)] if x))
+        out.append("\n\n".join(x for x in [text, "\n".join(links), f"![page {n}](pages/{page_pic})" if page_pic else ""] if x))
         out.append(SEP.format(n=n).strip("\n"))
     if failed and len(failed) == len(pages):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
     if status is not None:
         apply_status(ocr_info, status)
+    notes = [DEGRADED_NOTE]
+    missing = len(pages) - len(page_images) if o.get("pageImages") else 0
+    if missing:
+        notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": [DEGRADED_NOTE], "ocr": ocr_info}
+            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images}
 
 
 def esc(v):
@@ -518,11 +531,12 @@ def preview_and_profile(lines, cells, profiles, R, C, continuation):
                 out.append(esc(src))
         lines.append(f"| {r} | " + " | ".join(out) + " |")
     if not truncated:
-        return
+        return r_lim, c_lim
     lines += ["", "Columns:", "| col | header | type | non-empty | min | max | distinct |", "|---|---|---|---|---|---|---|"]
     for c, p in enumerate(profiles[:C], 1):
         h = cells[0][c - 1][0]
         lines.append(p.row(col_letter(c), esc(h) if isinstance(h, str) and not is_formula(h) else "-"))
+    return r_lim, c_lim
 
 
 def inv_row(idx, name, kind, size, hidden, charts, images, rvs, data):
@@ -692,28 +706,215 @@ def mode_html(o):
     return {"markdown": md + "\n", "pageCount": None, "engine": "markdownify", "emptyPages": [], "failedPages": [], "notes": []}
 
 
+SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def format_size(n):
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
+def safe_attachment_name(name, index):
+    base = os.path.basename((name or "").replace("\\", "/"))
+    stem, ext = os.path.splitext(base)
+    stem = SAFE_NAME_RE.sub("_", stem)
+    ext = SAFE_NAME_RE.sub("", ext).lower()
+    return (stem if stem.strip("._") else f"attachment-{index + 1}") + ext
+
+
+def dedupe_names(names):
+    seen, out = {}, []
+    for name in names:
+        stem, ext = os.path.splitext(name)
+        candidate = name
+        suffix = 2
+        while candidate.lower() in seen:
+            candidate = f"{stem}-{suffix}{ext}"
+            suffix += 1
+        seen[candidate.lower()] = True
+        out.append(candidate)
+    return out
+
+
+def email_table(headers):
+    rows = [f"| {key} | {esc(value)} |" for key, value in headers if key != "Cc" or value]
+    return "| Header | Value |\n|---|---|\n" + "\n".join(rows)
+
+
+def parse_eml(path):
+    import email
+    import email.policy
+    with open(path, "rb") as fh:
+        msg = email.message_from_bytes(fh.read(), policy=email.policy.default)
+    def h(name):
+        return str(msg[name] or "")
+    parsed_date = msg["Date"].datetime if msg["Date"] else None
+    date = parsed_date.isoformat() if parsed_date else h("Date")
+    body = msg.get_body(preferencelist=("html", "plain"))
+    html = text = None
+    if body is not None:
+        content = body.get_content()
+        if body.get_content_type() == "text/html":
+            html = content
+        else:
+            text = content
+    inline, attachments = {}, []
+    pending = [msg]
+    while pending:
+        part = pending.pop()
+        if part.get_content_type() == "message/rfc822":
+            attachments.append((part.get_filename() or "message.eml", part.get_payload(0).as_bytes(), "message/rfc822", None))
+            continue
+        if part.is_multipart():
+            pending.extend(reversed(list(part.iter_parts())))
+            continue
+        if part is body:
+            continue
+        cid = (part.get("Content-ID") or "").strip("<>")
+        data = part.get_payload(decode=True)
+        if data is None:
+            continue
+        if cid and html and f"cid:{cid}" in html:
+            inline[cid] = (data, image_ext(part.get_content_type()))
+        elif part.get_content_disposition() in ("attachment", "inline") or part.get_filename():
+            attachments.append((part.get_filename(), data, part.get_content_type(), None))
+    return {"From": h("From"), "To": h("To"), "Cc": h("Cc"), "Date": date, "Subject": h("Subject")}, html, text, inline, attachments
+
+
+def parse_msg(path):
+    import extract_msg
+    msg = extract_msg.openMsg(path)
+    html = msg.htmlBody.decode("utf-8", "replace") if isinstance(msg.htmlBody, bytes) else msg.htmlBody
+    inline, attachments = {}, []
+    for part in msg.attachments:
+        name = part.longFilename or part.shortFilename
+        try:
+            data = part.data
+            if isinstance(part, extract_msg.attachments.EmbeddedMsgAttachment) and data is not None:
+                attachments.append((name if not name or name.lower().endswith(".msg") else f"{name}.msg", data.exportBytes(), "application/vnd.ms-outlook", None))
+                continue
+        except NotImplementedError as exc:
+            attachments.append((name, None, "application/octet-stream", str(exc) or "unsupported attachment"))
+            continue
+        if not isinstance(data, (bytes, bytearray)):
+            attachments.append((name, None, "application/octet-stream", "data unavailable"))
+            continue
+        cid = part.cid
+        if cid and html and f"cid:{cid}" in html:
+            inline[cid] = (bytes(data), image_ext(part.mimetype or "image/png"))
+        else:
+            attachments.append((name, bytes(data), part.mimetype or "application/octet-stream", None))
+    date = msg.date
+    headers = {"From": msg.sender or "", "To": msg.to or "", "Cc": msg.cc or "",
+               "Date": date.isoformat() if date else "", "Subject": msg.subject or ""}
+    return headers, html, None if html else msg.body, inline, attachments
+
+
+def mode_email(o):
+    from bs4 import BeautifulSoup
+    path = o["path"]
+    is_msg = path.lower().endswith(".msg")
+    try:
+        headers, html, text, inline, attachments = parse_msg(path) if is_msg else parse_eml(path)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"email parse failed: {type(exc).__name__}: {exc}") from exc
+    d = page_dir(o["stagingDir"], 1)
+    sources = {}
+    for i, (cid, (data, ext)) in enumerate(inline.items(), 1):
+        name = f"img{i}.{ext}"
+        with open(os.path.join(d, name), "wb") as fh:
+            fh.write(data)
+        sources[f"cid:{cid}"] = f"p1/{name}"
+    mark_done(d)
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            if src in sources:
+                img["src"] = sources[src]
+        body_md = markdown_converter(pagebreaks=False).convert_soup(soup).strip()
+    elif text:
+        body_md = text
+    else:
+        body_md = "Body: none"
+    names = dedupe_names([safe_attachment_name(name, i) for i, (name, _, _, _) in enumerate(attachments)])
+    rows = []
+    os.makedirs(o["attachmentsStagingDir"], exist_ok=True)
+    for name, (_, data, ctype, reason) in zip(names, attachments):
+        if reason is not None:
+            rows.append(f"- `{name}` ({ctype}) (not extracted: {reason})")
+            continue
+        with open(os.path.join(o["attachmentsStagingDir"], name), "wb") as fh:
+            fh.write(data)
+        rows.append(f"- [`{name}`](attachments/{name}) ({format_size(len(data))}, {ctype})")
+    md = f"# {esc(headers['Subject'] or '(no subject)')}\n\n{email_table(headers.items())}\n\n{body_md}\n"
+    if rows:
+        md += "\n## Attachments\n\n" + "\n".join(rows) + "\n"
+    return {"markdown": md, "pageCount": None, "engine": "extract-msg" if is_msg else "email",
+            "emptyPages": [], "failedPages": [], "notes": []}
+
+
+def numbering_transform(labels):
+    from mammoth import documents, transforms
+    it = iter(labels)
+    _END = object()
+    state = {"drift": False}
+
+    def fn(p):
+        label = next(it, _END)
+        if label is _END:
+            state["drift"] = True
+            return p
+        if label is None:
+            return p.copy(numbering=None)
+        return p.copy(numbering=None, children=[documents.run([documents.text(label + " ")])] + list(p.children))
+
+    return transforms.paragraph(fn), it, state, _END
+
+
 def docx_mammoth(path):
     import mammoth
     from bs4 import BeautifulSoup
-    images = {}
+    import docx_numbering
+    notes = []
+    try:
+        labels = docx_numbering.compute_labels(path)
+    except Exception as exc:  # noqa: BLE001 - labels never block conversion
+        labels, notes = None, [f"Numbering: labels unavailable ({type(exc).__name__}: {exc})"]
 
-    def convert_image(image):
-        with image.open() as fh:
-            data = fh.read()
-        images[len(images) + 1] = (data, image_ext(image.content_type))
-        return {"src": f"__docximg{len(images)}__"}
+    def convert(transform):
+        images = {}
 
-    with open(path, "rb") as fh:
-        result = mammoth.convert_to_html(fh, style_map=DOCX_STYLE_MAP, convert_image=mammoth.images.img_element(convert_image))
+        def convert_image(image):
+            with image.open() as fh:
+                data = fh.read()
+            images[len(images) + 1] = (data, image_ext(image.content_type))
+            return {"src": f"__docximg{len(images)}__"}
+
+        with open(path, "rb") as fh:
+            kwargs = {"transform_document": transform} if transform else {}
+            return mammoth.convert_to_html(fh, style_map=DOCX_STYLE_MAP, convert_image=mammoth.images.img_element(convert_image), **kwargs), images
+
+    if labels is not None:
+        transform, it, state, _END = numbering_transform(labels)
+        result, images = convert(transform)
+        if state["drift"] or next(it, _END) is not _END:
+            notes = ["Numbering: labels unavailable (paragraph sequence differs from mammoth's)"]
+            result, images = convert(None)
+    else:
+        result, images = convert(None)
     soup = BeautifulSoup(result.value, "html.parser")
     hoist_breaks(soup)
-    notes = split_footnotes(soup)
+    footnote_nodes = split_footnotes(soup)
 
     conv = markdown_converter(pagebreaks=True)
     body = conv.convert_soup(soup)
     segs = finish_segments([s.strip("\n") for s in re.split(r"\n*\x00PAGEBREAK\x00\n*", body)])
-    footnotes = {nid: conv.convert("".join(str(c) for c in li.children)).strip() for nid, li in notes.items()}
-    return segs, images, footnotes
+    footnotes = {nid: conv.convert("".join(str(c) for c in li.children)).strip() for nid, li in footnote_nodes.items()}
+    return segs, images, footnotes, notes
 
 
 def docx_fallback(path):
@@ -775,12 +976,13 @@ def mode_docx(o):
     try:
         if os.environ.get("DOC_TO_MD_FORCE_DOCX_FALLBACK") == "1":
             raise RuntimeError("forced by DOC_TO_MD_FORCE_DOCX_FALLBACK")
-        segs, images, footnotes = docx_mammoth(o["path"])
+        segs, images, footnotes, notes = docx_mammoth(o["path"])
     except Exception as exc:  # noqa: BLE001
         first = f"{type(exc).__name__}: {exc}"
         try:
             segs = docx_fallback(o["path"])
             images, footnotes = {}, {}
+            notes = ["Numbering: labels unavailable (python-docx fallback)"]
         except Exception as exc2:  # noqa: BLE001
             raise RuntimeError(f"mammoth failed: {first}; python-docx failed: {type(exc2).__name__}: {exc2}") from exc2
         engine, degraded, reason = "python-docx", True, f"mammoth {first}"
@@ -798,7 +1000,7 @@ def mode_docx(o):
             shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
         raise
     return {"markdown": md + "\n", "pages": selected, "pageCount": page_count, "explicitBreaks": explicit,
-            "engine": engine, "degraded": degraded, "fallbackReason": reason, "emptyPages": [], "failedPages": [], "notes": []}
+            "engine": engine, "degraded": degraded, "fallbackReason": reason, "emptyPages": [], "failedPages": [], "notes": notes}
 
 
 def mode_info_docx(o):
@@ -830,6 +1032,14 @@ def mode_info_docx(o):
     return {"pageCount": page_count, "explicitBreaks": explicit, "metadata": meta, "toc": toc}
 
 
+def preview_note(truncated):
+    if not truncated:
+        return None
+    parts = [f"{esc(t)} ({r_lim} of {R} rows" + (f", {c_lim} of {C} columns" if c_lim < C else "") + ")"
+             for t, R, C, r_lim, c_lim, _ in truncated]
+    return "preview truncated: " + "; ".join(parts) + "; full data: " + ", ".join(rel for *_, rel in truncated)
+
+
 def mode_xlsx(o):
     path, staging, csv_dir = o["path"], o["stagingDir"], o["sheetsStagingDir"]
     if path.lower().endswith(".xls"):
@@ -840,6 +1050,7 @@ def mode_xlsx(o):
     wb_v = openpyxl.load_workbook(path, data_only=True)
     stem = os.path.splitext(os.path.basename(path))[0]
     notes, images, sheets, render, inv, sections = [], [], [], [], [], []
+    truncated = []
     for idx, ws in enumerate(wb_f._sheets):
         hidden = ws.sheet_state != "visible"
         charts = list(getattr(ws, "_charts", []) or [])
@@ -916,11 +1127,17 @@ def mode_xlsx(o):
                     for c in range(rng.min_col, rng.max_col + 1):
                         if (r, c) != (rng.min_row, rng.min_col):
                             continuation.add((r, c))
-            preview_and_profile(lines, cells, profiles, R, C, continuation)
+            r_lim, c_lim = preview_and_profile(lines, cells, profiles, R, C, continuation)
+            if r_lim < R or c_lim < C:
+                truncated.append((ws.title, R, C, r_lim, c_lim, csv_rel))
         inv.append(inv_row(idx, ws.title, "worksheet", f"{R} x {C}", hidden, len(charts), len(raw_images),
                            f"<!--rvs:{idx}-->" if visual else "-", f"[{csv_rel}]({csv_rel})" if csv_rel else "-"))
         sheets.append(sheet_info(idx, ws.title, "worksheet", hidden, R, C, len(hr), len(hc), len(charts), len(raw_images), csv_rel))
         sections.append("\n".join(lines))
+    if note := preview_note(truncated):
+        notes.insert(0, note)
+    if path.lower().endswith(".xlsm"):
+        notes.append("macros ignored (VBA project not converted)")
     md = f"# {esc(stem)}\n\n## Sheets\n" + INV_HEADER + "\n".join(inv) + "\n\n" + "\n\n".join(sections) + "\n"
     return {"markdown": md, "images": images, "notes": notes, "sheets": sheets, "renderPages": render, "sheetCount": len(wb_f._sheets)}
 
@@ -929,7 +1146,7 @@ def mode_xls(o):
     path, csv_dir = o["path"], o["sheetsStagingDir"]
     book = xlrd.open_workbook(path, formatting_info=True, logfile=sys.stderr)
     stem = os.path.splitext(os.path.basename(path))[0]
-    sheets, inv, sections = [], [], []
+    sheets, inv, sections, truncated = [], [], [], []
     for idx in range(book.nsheets):
         sh = book.sheet_by_index(idx)
         hidden = sh.visibility != 0
@@ -969,12 +1186,15 @@ def mode_xls(o):
         lines.append(data_line(R, C, csv_rel, 0))
         if R:
             continuation = {(r + 1, c + 1) for r0, r1, c0, c1 in sh.merged_cells for r in range(r0, r1) for c in range(c0, c1) if (r, c) != (r0, c0)}
-            preview_and_profile(lines, cells, profiles, R, C, continuation)
+            r_lim, c_lim = preview_and_profile(lines, cells, profiles, R, C, continuation)
+            if r_lim < R or c_lim < C:
+                truncated.append((sh.name, R, C, r_lim, c_lim, csv_rel))
         inv.append(inv_row(idx, sh.name, "worksheet", f"{R} x {C}", hidden, 0, 0, "-", f"[{csv_rel}]({csv_rel})" if csv_rel else "-"))
         sheets.append(sheet_info(idx, sh.name, "worksheet", hidden, R, C, len(hr), len(hc), 0, 0, csv_rel))
         sections.append("\n".join(lines))
     md = f"# {esc(stem)}\n\n## Sheets\n" + INV_HEADER + "\n".join(inv) + "\n\n" + XLS_NOTE + "\n\n" + "\n\n".join(sections) + "\n"
-    return {"markdown": md, "images": [], "notes": [XLS_NOTE], "sheets": sheets, "renderPages": [], "sheetCount": book.nsheets}
+    note = preview_note(truncated)
+    return {"markdown": md, "images": [], "notes": ([note] if note else []) + [XLS_NOTE], "sheets": sheets, "renderPages": [], "sheetCount": book.nsheets}
 
 def mode_info_excel(o):
     path = o["path"]
@@ -1029,12 +1249,12 @@ def mode_render_pages(o):
     return {"ok": True, "rendered": rendered, "failed": failed}
 
 
-MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx, "html": mode_html, "image": mode_image}
+MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx, "html": mode_html, "image": mode_image, "email": mode_email}
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in MODES:
-        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx|html|image>  (options JSON on stdin)", file=sys.stderr)
+        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx|html|image|email>  (options JSON on stdin)", file=sys.stderr)
         return 1
     mode = sys.argv[1]
     o = json.loads(sys.stdin.read() or "{}")
@@ -1044,7 +1264,7 @@ def main():
             with contextlib.redirect_stdout(sys.stderr):
                 if mode == "info":
                     lower = o["path"].lower()
-                    if lower.endswith((".xlsx", ".xls")):
+                    if lower.endswith((".xlsx", ".xlsm", ".xls")):
                         result = mode_info_excel(o)
                     elif lower.endswith(".docx"):
                         result = mode_info_docx(o)

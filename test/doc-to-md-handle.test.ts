@@ -3,8 +3,8 @@ import assert from "node:assert";
 import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline, ocrLine, type HandleData, type OcrInfo } from "../lib/doc-to-md-handle.ts";
 
 const base: HandleData = {
-	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
-	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
+	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
+	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, pageImageCount: 0, pageImagesReason: null, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
 	failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
 };
 
@@ -41,6 +41,17 @@ test("formatHandle: degraded/fallback/failed/empty/notes lines, Images-Dir omitt
 	assert.strictEqual(lines.at(-1), "  (+40 more)");
 });
 
+test("formatHandle: workbook preview note keeps all sheet CSV references; ordinary notes keep the character cap", () => {
+	const sheets = Array.from({ length: 8 }, (_, i) => `Sheet${i + 1}`);
+	const preview = `preview truncated: ${sheets.map((s) => `${s} (100 of 150 rows)`).join("; ")}; full data: ${sheets.map((s) => `sheets/book-${s}.csv`).join(", ")}`;
+	const ordinary = "x".repeat(210);
+	assert.ok(preview.length > 200);
+	const lines = formatHandle({ ...base, type: "xlsx", engine: "openpyxl", tier: "excel", notes: [preview, ordinary, "last"] }).split("\n");
+	assert.ok(lines.includes(`Notes: ${preview}`));
+	assert.ok(lines.includes(`       ${"x".repeat(197)}...`));
+	assert.ok(lines.includes("       last"));
+});
+
 test("compactRanges: ranges, cap with +N more", () => {
 	assert.strictEqual(compactRanges([1, 2, 3, 7, 10, 11, 12]), "1-3, 7, 10-12");
 	const many = Array.from({ length: 25 }, (_, i) => i * 2 + 1);
@@ -70,7 +81,7 @@ test("formatHandle: Outline page column, Outline: none, Page-Count suffixes", ()
 	assert.ok(none.some((l) => l.startsWith("Page-Count: 42   Pages: 3-5   Images: 4   Size: ")));
 	const docx = { ...base, type: "docx" as const, tier: "docx" as const, engine: "mammoth" as const, pages: null, pageCount: 5 };
 	assert.ok(formatHandle({ ...docx, explicitBreaks: 4 }).includes("Page-Count: 5 (explicit page breaks, not printed pages)   Pages: all"));
-	assert.ok(formatHandle({ ...docx, pageCount: 1, explicitBreaks: 0 }).includes("Page-Count: 1 (no explicit page breaks)   Pages: all"));
+	assert.ok(formatHandle({ ...docx, pageCount: 1, explicitBreaks: 0 }).includes("Page-Count: 1 (no explicit page breaks) - no page markers; cite by Outline line   Pages: all"));
 	assert.ok(formatHandle({ ...docx, tier: "primary", engine: "pymupdf4llm", explicitBreaks: null }).includes("Page-Count: 5 (LibreOffice pagination)   Pages: all"));
 	assert.ok(formatHandle({ ...base, explicitBreaks: 0 }).includes("Page-Count: 42   Pages: 3-5"));
 });
@@ -96,10 +107,28 @@ test("formatInfoHandle: pdf and xlsx shapes", () => {
 });
 
 test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
-	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
+	const base = { savedTo: "/out/book.md", imagesDir: "/out/images", pagesDir: null, type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
 	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
 	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
 	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));
+});
+
+test("formatHandle: Pages-Dir printed after Sheets-Dir when page images exist; none-variant when requested and unavailable", () => {
+	const withPages = formatHandle({ ...base, sheetsDir: "/out/sheets", pagesDir: "/out/pages", pageImageCount: 3 }).split("\n");
+	assert.deepStrictEqual(withPages.slice(0, 4), ["Saved-To: /out/manual.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets", "Pages-Dir: /out/pages (3 pages)"]);
+	const none = formatHandle({ ...base, pageImagesReason: "docx has no page geometry" });
+	assert.match(none, /^Pages-Dir: none - docx has no page geometry$/m);
+	assert.ok(!formatHandle(base).includes("Pages-Dir"));
+});
+
+test("ocrLine: ran with no-text pages lists the page ranges", () => {
+	const ocr: OcrInfo = { status: "ran", lang: "eng", textless: [1, 2, 3, 7], pages: [1, 2, 3, 7], noText: [2, 3, 7], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+	assert.strictEqual(ocrLine(ocr, "pdf"), "OCR: 4 page(s) (eng); no text on pages 2-3, 7");
+});
+
+test("formatHandle: DOCX without explicit breaks carries the citation suffix", () => {
+	const h = formatHandle({ ...base, type: "docx", tier: "docx", engine: "mammoth", pageCount: 1, pages: null, explicitBreaks: 0 });
+	assert.match(h, /^Page-Count: 1 \(no explicit page breaks\) - no page markers; cite by Outline line   Pages: all/m);
 });
 
 test("formatSize", () => {
@@ -120,12 +149,12 @@ test("ocrLine: every row and clause, first match wins", () => {
 	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1, 2, 3] }, "pdf"), "OCR: 3 page(s) (eng)");
 	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1] }, "image"), "OCR: 1 image (eng)");
 	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", lang: "deu+eng", pages: [1, 2], noText: [5], ocrFailed: [6, 7], budgetStopped: [3, 7, 8, 9] }, "pdf"),
-		"OCR: 2 page(s) (deu+eng); 1 returned no text; 2 failed and were converted without OCR; time budget reached for pages=3,7-9; rerun with pages=3,7-9 or raise primaryTimeoutMs");
+		"OCR: 2 page(s) (deu+eng); no text on pages 5; 2 failed and were converted without OCR; time budget reached for pages=3,7-9; rerun with pages=3,7-9 or raise primaryTimeoutMs");
 	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", textless: [1, 2], budgetStopped: [18, 19, 20] }, "pdf"), "OCR: 0 page(s) (eng); time budget reached for pages=18-20; rerun with pages=18-20 or raise primaryTimeoutMs");
 });
 
 test("formatHandle: OCR line after Failed/Empty-Pages, omitted when ocr is null; OCR blockquote headings not in the Outline", () => {
-	const h: HandleData = { savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
+	const h: HandleData = { savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
 	const lines = formatHandle(h).split("\n");
 	assert.strictEqual(lines[lines.indexOf("Empty-Pages: 1") + 1], "OCR: off - 1 page(s) without a text layer; rerun with ocr=true");
 	assert.ok(!formatHandle({ ...h, ocr: null }).includes("OCR:"));
