@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.7.0 - 2026-09-30
 
 - README: `swordHeader` note on why pi's built-in logo flashes before the sword appears and how `quietStartup` removes it.
 - `doc_to_md` keeps embedded images on text-bearing PDF pages when OCR is enabled; only textless pages run OCR.

@@ -1,14 +1,19 @@
 {
 	"name": "pi-quiver",
-	"owner": { "name": "jjuraszek" },
+	"owner": {
+		"name": "jjuraszek"
+	},
 	"plugins": [
 		{
 			"name": "quiver",
-			"version": "6.6.0",
+			"version": "6.7.0",
 			"source": "./",
 			"description": "Claude Code skills backed by the pi-quiver toolbox",
 			"strict": false,
-			"skills": ["./skills/fetch", "./skills/doc-to-md"]
+			"skills": [
+				"./skills/fetch",
+				"./skills/doc-to-md"
+			]
 		}
 	]
 }
