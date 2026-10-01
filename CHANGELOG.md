@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `session-name`: opt-in automatic naming starts in the background after three completed model/tool rounds. Shorter runs start a non-blocking attempt at run end; initial generation is best-effort with a 30-second local deadline and no automatic retry per session activation.
+
 ## v6.7.1 - 2026-10-01
 
 - `slack_post`/`slack_update` explain native Slack representations for skill-required formatting, with complete readable fallback; otherwise plain content stays plain.

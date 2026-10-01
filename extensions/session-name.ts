@@ -2,7 +2,7 @@
  * Session naming.
  *
  * - /session-name [name]  : manually set or show the session name.
- * - Auto-naming           : after the first agent turn, derive a concise name
+ * - Auto-naming           : after three rounds (or a shorter run), derive a name
  *                           from the conversation (unless one is already set).
  * - Revisiting            : re-derive the name later in a long session, once
  *                           the work has revealed what it actually is.
@@ -372,16 +372,21 @@ export function withAuthBaseUrl<M extends { baseUrl: string }>(
 	return auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 }
 
-async function generateName(
+export async function generateName(
 	ctx: ExtensionContext,
 	opts: PromptOptions = {},
+	signal?: AbortSignal,
+	getComplete: () => Promise<CompleteFn> = loadComplete,
 ): Promise<typeof KEEP | GeneratedName | undefined> {
+	if (signal?.aborted) return undefined;
 	const conversation = buildConversationText(ctx, 4000, Boolean(opts.currentName));
 	if (conversation.length < 8) return undefined;
 
 	const model = ctx.model;
 	if (!model) return undefined;
+	const prompt = buildNamingPrompt(conversation, opts);
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (signal?.aborted) return undefined;
 	// ok=true with apiKey=undefined is the env-key path: the key lives in
 	// process.env (e.g. ANTHROPIC_API_KEY), not auth.json. getApiKeyAndHeaders
 	// deliberately opts out of the env fallback (includeFallback: false), so it
@@ -389,9 +394,8 @@ async function generateName(
 	// itself via withEnvApiKey/getEnvApiKey. Only bail when auth genuinely failed.
 	if (!auth?.ok) return undefined;
 
-	const prompt = buildNamingPrompt(conversation, opts);
-
-	const complete = await loadComplete();
+	const complete = await getComplete();
+	if (signal?.aborted) return undefined;
 	const response = await complete(
 		withAuthBaseUrl(model, auth),
 		{
@@ -399,9 +403,10 @@ async function generateName(
 				{ role: "user" as const, content: [{ type: "text" as const, text: prompt }], timestamp: Date.now() },
 			],
 		},
-		{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, reasoningEffort: "low" },
+		{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, reasoningEffort: "low", signal },
 	);
 
+	if (signal?.aborted) return undefined;
 	const raw = response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")
 		.map((c) => c.text)
@@ -413,10 +418,16 @@ async function generateName(
 type NameGenerator = (
 	ctx: ExtensionContext,
 	opts?: PromptOptions,
+	signal?: AbortSignal,
 ) => Promise<typeof KEEP | GeneratedName | undefined>;
 
 export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = generateName) {
 	let autoNameTried = false;
+	let activation = 0;
+	let initialRounds = 0;
+	let initialDone: Promise<void> = Promise.resolve();
+	let initialAttempt: { cancel: () => void } | null = null;
+	const invalidateInitial = (): void => { initialAttempt?.cancel(); };
 	// Who chose the current name. A human's wording is never overwritten by a
 	// revisit - at most we suggest - so unknown provenance (a resumed session, a
 	// rename from outside this extension) is treated as human.
@@ -472,6 +483,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		tabLabel?: string,
 		author?: NameAuthor,
 		mode?: Mode,
+		ownsName?: () => boolean,
 	): Promise<void> => {
 		const clean = applyDenyList(name, cfg.deny);
 		if (author) recordNameAuthor(clean, author);
@@ -480,7 +492,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		lastSyncedName = clean;
 		currentTabLabel = toTabLabel(applyDenyList(tabLabel ?? clean, cfg.deny));
 		renameGhosttyTab(currentTabLabel, cfg.ghosttyTab);
-		await syncHerdrTab(cfg, currentTabLabel, mode);
+		await syncHerdrTab(cfg, currentTabLabel, mode, ownsName);
 	};
 
 	// Re-assert the tab from the current session name. Self-heals when the name
@@ -533,19 +545,23 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		return { claimable: false, armed: false };
 	};
 
-	const syncHerdrTab = (cfg: Config, label: string | null, mode: Mode | undefined): Promise<void> => {
+	const syncHerdrTab = (cfg: Config, label: string | null, mode: Mode | undefined, ownsName?: () => boolean): Promise<void> => {
 		const run = async (): Promise<void> => {
+			if (ownsName && !ownsName()) return;
 			if (!cfg.herdrTab || mode !== "tui" || !label) return;
 			if (!isHerdrActive()) return;
 			const sock = process.env.HERDR_SOCKET_PATH as string;
 			const tabId = process.env.HERDR_TAB_ID as string;
 			const live = await getTab(sock, tabId, HERDR_TIMEOUT_MS);
+			if (ownsName && !ownsName()) return;
 			if (!live) return; // transient or stale tab id; a failed read is never a human rename
 			if (typeof herdrClaim === "object" && herdrClaim !== null) {
 				const owned = matchOwned(live.label, herdrClaim.lastWritten);
 				if (owned.owned) {
 					if (label === herdrClaim.lastWritten) return;
-					if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) herdrClaim.lastWritten = label;
+					if (await renameTab(sock, tabId, (owned.armed ? ARMED_PREFIX : "") + label, HERDR_TIMEOUT_MS)) {
+						herdrClaim.lastWritten = label;
+					}
 					return;
 				}
 			}
@@ -589,6 +605,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		handler: async (args, ctx) => {
 			const name = args.trim();
 			if (name) {
+				invalidateInitial();
 				autoNameTried = true; // manual name wins; don't auto-overwrite later
 				await setName(loadConfig(ctx), name, undefined, "human", ctx.mode);
 				ctx.ui.notify(`Session named: ${pi.getSessionName()}`, "info");
@@ -600,6 +617,15 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		invalidateInitial();
+		activation++;
+		autoNameTried = false;
+		initialRounds = 0;
+		nameAuthor = "human";
+		lastRevisitAt = 0;
+		expectedInternalName = null;
+		lastSyncedName = null;
+		currentTabLabel = null;
 		// Every session claims afresh, exactly like a fresh process: /new, resume,
 		// and fork each tear the previous session down (restore included) first.
 		// Before loadConfig so `enabled: false, herdrTab: true` resets too.
@@ -636,6 +662,8 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 			return;
 		}
 		expectedInternalName = null;
+		invalidateInitial();
+		autoNameTried = true;
 		if (!current) return;
 		const cfg = loadConfig(ctx);
 		if (!cfg.enabled) return;
@@ -659,24 +687,60 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 	// internally a custom name - Herdr has no clear-to-auto API - so it won't
 	// renumber on reorders; the successor claims any numeric label regardless.
 	pi.on("session_shutdown", async () => {
+		invalidateInitial();
+		activation++;
 		await restoreHerdrTab();
 	});
 
-	pi.on("agent_end", async (_event, ctx) => {
+	const startInitial = (ctx: ExtensionContext): void => {
 		if (autoNameTried || pi.getSessionName()) return;
 		const cfg = loadConfig(ctx);
-		if (!cfg.enabled) return; // off by default; opt in via settings.json
+		if (!cfg.enabled) return;
 		autoNameTried = true;
-		try {
-			const generated = await generate(ctx, { rules: cfg.rules });
-			if (generated && generated !== KEEP && !pi.getSessionName()) {
-				await setName(cfg, generated.sessionName, generated.tabLabel, "auto", ctx.mode);
-				if (ctx.hasUI) ctx.ui.notify(`Auto-named session: ${pi.getSessionName()}`, "info");
+		const identity = activation;
+		const mode = ctx.mode;
+		const notify = ctx.hasUI ? ctx.ui.notify.bind(ctx.ui) : undefined;
+		const controller = new AbortController();
+		let active = true;
+		let settle!: () => void;
+		initialDone = new Promise<void>((resolve) => { settle = resolve; });
+		const finish = (): void => {
+			if (!active) return;
+			active = false;
+			clearTimeout(timer);
+			if (initialAttempt === attempt) initialAttempt = null;
+			settle();
+		};
+		const attempt = { cancel: (): void => { finish(); controller.abort(); } };
+		const timer = setTimeout(attempt.cancel, 30_000);
+		timer.unref();
+		initialAttempt = attempt;
+		void (async () => {
+			try {
+				const generated = await generate(ctx, { rules: cfg.rules }, controller.signal);
+				if (!active || identity !== activation || controller.signal.aborted) return;
+				if (!generated || generated === KEEP || pi.getSessionName()) return;
+				clearTimeout(timer);
+				const applied = applyDenyList(generated.sessionName, cfg.deny);
+				await setName(cfg, generated.sessionName, generated.tabLabel, "auto", mode,
+					() => active && identity === activation && !controller.signal.aborted && pi.getSessionName() === applied);
+				if (active && identity === activation && !controller.signal.aborted && pi.getSessionName() === applied) {
+					notify?.(`Auto-named session: ${applied}`, "info");
+				}
+			} catch {
+				// Naming is best-effort, including late failures after cancellation.
+			} finally {
+				finish();
 			}
-		} catch {
-			// best-effort; ignore failures
-		}
+		})();
+	};
+
+	pi.on("agent_start", () => { initialRounds = 0; });
+	pi.on("turn_end", (_event, ctx) => {
+		initialRounds++;
+		if (initialRounds >= 3) startInitial(ctx);
 	});
+	pi.on("agent_end", (_event, ctx) => { startInitial(ctx); });
 
 	// Revisit. A name derived from the first turn describes the opening move,
 	// which is frequently not what the session turns out to be about - the work
@@ -724,7 +788,7 @@ export function installSessionName(pi: ExtensionAPI, generate: NameGenerator = g
 		})();
 	});
 
-	return { revisitSettled: () => revisitDone };
+	return { initialSettled: () => initialDone, revisitSettled: () => revisitDone };
 }
 
 export default function (pi: ExtensionAPI) {

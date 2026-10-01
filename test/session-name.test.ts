@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import * as naming from "../extensions/session-name.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -267,6 +268,7 @@ type Hook = (event: any, ctx: any) => Promise<void>;
 function extensionHarness(
 	generated: Array<typeof KEEP | { sessionName: string; tabLabel: string }>,
 	settingsOverride?: Record<string, unknown>,
+	controlledGenerate?: Parameters<typeof installSessionName>[1],
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "session-name-test-"));
 	mkdirSync(join(cwd, ".pi"));
@@ -310,7 +312,7 @@ function extensionHarness(
 		sessionManager: { getEntries: () => entries },
 	};
 	const generate = async () => generated.shift();
-	const installed = installSessionName(pi, generate);
+	const installed = installSessionName(pi, controlledGenerate ?? generate);
 	// agent_settled fires the revisit detached so it never holds anything up;
 	// tests drive the hook then await settlement explicitly.
 	const runAgentSettled = async (currentInstalled = installed) => {
@@ -318,6 +320,7 @@ function extensionHarness(
 		await currentInstalled.revisitSettled();
 	};
 	return {
+		installed,
 		ctx,
 		entries,
 		hooks,
@@ -334,7 +337,7 @@ function extensionHarness(
 // with the real nested envelope, and records every rename.
 function fakeHerdr(
 	tabs: Array<{ tab_id: string; workspace_id: string; label: string; number: number }>,
-	opts: { delayMs?: number } = {},
+	opts: { delayMs?: number; beforeReply?: (method: string) => Promise<void> } = {},
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "session-name-herdr-"));
 	const clientPath = process.platform === "win32"
@@ -357,6 +360,7 @@ function fakeHerdr(
 				requests.push(msg.method);
 				const reply = (body: Record<string, unknown>) => conn.write(`${JSON.stringify({ id: msg.id, ...body })}\n`);
 				const respond = async () => {
+					if (msg.method !== "tab.rename") await opts.beforeReply?.(msg.method);
 					if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
 					const found = tabs.find((t) => t.tab_id === msg.params?.tab_id);
 					if (failReads && msg.method !== "tab.rename") {
@@ -369,6 +373,7 @@ function fakeHerdr(
 						if (!found) { reply({ error: { code: "not_found", message: "no tab" } }); return; }
 						found.label = String(msg.params.label);
 						renames.push({ tab_id: found.tab_id, label: found.label });
+						await opts.beforeReply?.(msg.method);
 						reply({ result: { type: "tab_info", tab: found } });
 					}
 				};
@@ -453,6 +458,7 @@ test("installed extension: auto names revisit silently and retain provenance acr
 	try {
 		await h.hooks.get("session_start")!({}, h.ctx);
 		await h.hooks.get("agent_end")!({}, h.ctx);
+		await h.installed.initialSettled();
 		assert.equal(h.getName(), "setup", "deny list cleans the initial auto name");
 
 		addRoundTrips(h.entries, 10);
@@ -902,6 +908,7 @@ test("herdr sync: /new in one install restores, resets the claim, and re-claims 
 		h.setExternalName(undefined); // pi presents an unnamed successor session
 		await h.hooks.get("session_start")!({}, h.ctx);
 		await h.hooks.get("agent_end")!({}, h.ctx);
+		await h.installed.initialSettled();
 
 		assert.deepEqual(fake.renames.map((r) => r.label), ["First task", "2", "Second task"]);
 	} finally {
@@ -980,6 +987,7 @@ test("herdr sync: a successor never inherits the predecessor's claim on a non-nu
 		h.setExternalName(undefined);
 		await h.hooks.get("session_start")!({}, h.ctx);
 		await h.hooks.get("agent_end")!({}, h.ctx);
+		await h.installed.initialSettled();
 
 		const own = fake.tabs.find((t) => t.tab_id === "w1:t2")!;
 		assert.equal(own.label, "First task");
@@ -1307,3 +1315,421 @@ test("herdr sync: manual /session-name works with enabled:false (herdrTab-only g
 		await fake.close();
 	}
 });
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+	return { promise, resolve, reject };
+}
+
+test("generateName: cancellation gates every asynchronous preparation stage and late output", async () => {
+	assert.equal(typeof naming.generateName, "function");
+	for (const stage of ["before", "auth", "loader", "response"]) {
+		const controller = new AbortController();
+		const auth = deferred<any>();
+		const loader = deferred<any>();
+		const response = deferred<any>();
+		let loads = 0, calls = 0;
+		const ctx: any = {
+			model: { baseUrl: "catalog" },
+			sessionManager: { getEntries: () => [{ type: "message", message: { role: "user", content: "opening task" } }] },
+			modelRegistry: { getApiKeyAndHeaders: () => auth.promise },
+		};
+		const complete = async (model: any, context: any, options: any) => {
+			calls++;
+			assert.equal(model.baseUrl, "account");
+			assert.equal(options.signal, controller.signal);
+			assert.equal(options.apiKey, undefined);
+			assert.deepEqual(options.headers, { test: "header" });
+			assert.deepEqual(options.env, { TEST: "env" });
+			assert.equal(options.reasoningEffort, "low");
+			assert.match(context.messages[0].content[0].text, /User: opening task/);
+			return response.promise;
+		};
+		if (stage === "before") controller.abort();
+		const result = naming.generateName(ctx, {}, controller.signal, () => { loads++; return loader.promise; });
+		if (stage === "auth") controller.abort();
+		auth.resolve({ ok: true, baseUrl: "account", headers: { test: "header" }, env: { TEST: "env" } });
+		await Promise.resolve(); await Promise.resolve();
+		if (stage === "loader") controller.abort();
+		loader.resolve(complete);
+		await Promise.resolve(); await Promise.resolve();
+		if (stage === "response") controller.abort();
+		response.resolve({ content: [{ type: "text", text: "SESSION: Late name\nTAB: Late" }] });
+		assert.equal(await result, undefined);
+		assert.equal(loads, stage === "before" || stage === "auth" ? 0 : 1);
+		assert.equal(calls, stage === "response" ? 1 : 0);
+	}
+});
+
+test("initial naming: third round and fallback return synchronously and remain one-shot", async () => {
+	const pending = deferred<any>();
+	let calls = 0;
+	const h = extensionHarness([], {}, async () => { calls++; return pending.promise; });
+	try {
+		await h.hooks.get("session_start")!({}, h.ctx);
+		h.hooks.get("agent_start")!({}, h.ctx);
+		for (let round = 1; round <= 4; round++) {
+			assert.equal(h.hooks.get("turn_end")!({ toolResults: [{}, {}], stopReason: "error" }, h.ctx), undefined);
+			assert.equal(calls, round < 3 ? 0 : 1);
+			if (round === 3) {
+				const nextRoundStarted = h.hooks.get("turn_start")!({}, h.ctx).then(() => true);
+				assert.equal(await Promise.race([
+					nextRoundStarted,
+					new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+				]), true, "fourth-round turn_start settles while initial generation is unresolved");
+				assert.equal(h.getName(), undefined);
+				assert.equal(calls, 1);
+			}
+		}
+		assert.equal(h.hooks.get("agent_end")!({}, h.ctx), undefined);
+		pending.resolve({ sessionName: "GridStrong task", tabLabel: "Task" });
+		await h.installed.initialSettled();
+		assert.equal(h.getName(), "task");
+		assert.equal(calls, 1);
+	} finally {
+		pending.resolve(undefined);
+		await h.installed.initialSettled();
+		h.destroy();
+	}
+});
+
+for (const late of ["fulfillment", "rejection"]) {
+test(`initial naming: deadline abandons ignored cancellation and consumes late ${late}`, async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+	let handle: ReturnType<typeof setTimeout> | undefined;
+	const cleared: unknown[] = [];
+	globalThis.setTimeout = ((...args: Parameters<typeof originalSet>) => { handle = originalSet(...args); return handle; }) as any;
+	globalThis.clearTimeout = ((timer: any) => { cleared.push(timer); originalClear(timer); }) as any;
+	const pending = deferred<any>();
+	let signal: AbortSignal | undefined, calls = 0;
+	const h = extensionHarness([], {}, async (_ctx, _opts, s) => { signal = s; calls++; return pending.promise; });
+	try {
+		assert.equal(h.hooks.get("agent_end")!({}, h.ctx), undefined);
+		t.mock.timers.tick(29999);
+		assert.equal(signal?.aborted, false);
+		t.mock.timers.tick(1);
+		assert.equal(signal?.aborted, true);
+		assert.deepEqual(cleared, [handle], "expiry clears the deadline while generation is still pending");
+		await h.installed.initialSettled();
+		h.hooks.get("agent_end")!({}, h.ctx);
+		if (late === "rejection") pending.reject(new Error("late provider failure"));
+		else pending.resolve({ sessionName: "Late task", tabLabel: "Late" });
+		await Promise.resolve(); await Promise.resolve();
+		assert.equal(calls, 1);
+		assert.equal(h.getName(), undefined);
+		assert.deepEqual(h.notifications, []);
+	} finally { h.destroy(); globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; t.mock.timers.reset(); }
+});
+
+}
+
+for (const invalidate of ["shutdown", "replacement", "manual", "external", "external-then-clear"]) {
+	test(`initial naming: ${invalidate} invalidates old work without joining it`, async () => {
+		const pending = deferred<any>();
+		let signal: AbortSignal | undefined;
+		const h = extensionHarness([], {}, async (_ctx, _opts, s) => { signal = s; return pending.promise; });
+		try {
+			await h.hooks.get("session_start")!({}, h.ctx);
+			assert.equal(h.hooks.get("agent_end")!({}, h.ctx), undefined);
+			if (invalidate === "shutdown") {
+				await h.hooks.get("session_shutdown")!({}, h.ctx);
+				await h.hooks.get("session_shutdown")!({}, h.ctx);
+			} else if (invalidate === "replacement") {
+				await h.hooks.get("session_start")!({}, h.ctx);
+			} else if (invalidate === "manual") {
+				await h.commands.get("session-name")!("Human task", h.ctx);
+			} else {
+				h.setExternalName("Human task");
+				await h.hooks.get("session_info_changed")!({}, h.ctx);
+				if (invalidate === "external-then-clear") {
+					h.setExternalName(undefined);
+					await h.hooks.get("session_info_changed")!({}, h.ctx);
+				}
+			}
+			assert.equal(signal?.aborted, true);
+			await h.installed.initialSettled();
+			let staleContextAccesses = 0;
+			Object.defineProperty(h.ctx, "hasUI", { get: () => { staleContextAccesses++; throw new Error("stale context"); } });
+			pending.resolve({ sessionName: "Old result", tabLabel: "Old" });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(staleContextAccesses, 0, "late fulfillment never reads the invalid context");
+			if (invalidate === "manual" || invalidate === "external") {
+				assert.equal(h.getName(), "Human task", "late generation preserves the human name");
+				assert.deepEqual(
+					h.entries.filter((entry) => entry.type === "custom" && entry.customType === "pi-quiver.session-name-author").at(-1)?.data,
+					{ name: "Human task", author: "human" },
+					"late generation preserves the latest stored human provenance",
+				);
+			} else if (invalidate === "external-then-clear") {
+				assert.equal(h.getName(), undefined, "late generation cannot restore a cleared human name");
+			} else {
+				assert.notEqual(h.getName(), "Old result");
+			}
+		} finally { h.destroy(); }
+	});
+}
+
+test("generateName: keeps sampling, auth and parser behavior without provider I/O", async () => {
+	const entries = [
+		{ type: "message", message: { role: "user", content: '<skill name="fix">' + "x".repeat(5000) + '</skill> opening task' } },
+		{ type: "message", message: { role: "toolResult", content: "z".repeat(600) } },
+	];
+	const ctx: any = { model: { baseUrl: "catalog" }, sessionManager: { getEntries: () => entries }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true }) } };
+	let raw = "SESSION: Fix opening task\nTAB: Fix task";
+	const loader = async () => (async (_model: any, context: any) => {
+		const prompt = context.messages[0].content[0].text;
+		assert.match(prompt, /\[skill: fix\] opening task/);
+		assert.ok(prompt.includes("Result: " + "z".repeat(400)));
+		assert.ok(!prompt.includes("z".repeat(401)));
+		return { content: [{ type: "text", text: raw }] };
+	}) as any;
+	assert.deepEqual(await naming.generateName(ctx, {}, undefined, loader), { sessionName: "Fix opening task", tabLabel: "Fix task" });
+	raw = "invalid";
+	assert.equal(await naming.generateName(ctx, {}, undefined, loader), undefined);
+	raw = "KEEP";
+	assert.equal(await naming.generateName(ctx, { currentName: "Fix task" }, undefined, loader), KEEP);
+	ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: false });
+	assert.equal(await naming.generateName(ctx, {}, undefined, () => { throw new Error("must not load"); }), undefined);
+	ctx.modelRegistry.getApiKeyAndHeaders = async () => { throw new Error("auth failed"); };
+	await assert.rejects(naming.generateName(ctx, {}, undefined, loader), /auth failed/);
+	ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true });
+	await assert.rejects(naming.generateName(ctx, {}, undefined, async () => { throw new Error("load failed"); }), /load failed/);
+	await assert.rejects(naming.generateName(ctx, {}, undefined, async () => (async () => { throw new Error("provider failed"); }) as any), /provider failed/);
+	ctx.model = undefined;
+	assert.equal(await naming.generateName(ctx, {}, undefined, loader), undefined);
+});
+
+test("initial naming: expired real credentials never advance to completion", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const auth = deferred<any>();
+	let loads = 0;
+	const h = extensionHarness([], {}, (ctx, opts, signal) => naming.generateName(ctx, opts, signal, async () => { loads++; throw new Error("unexpected completion"); }));
+	h.ctx.model = { baseUrl: "catalog" };
+	h.ctx.modelRegistry = { getApiKeyAndHeaders: () => auth.promise };
+	h.entries.push({ type: "message", message: { role: "user", content: "real preparation task" } });
+	try {
+		h.hooks.get("agent_end")!({}, h.ctx);
+		t.mock.timers.tick(30000);
+		await h.installed.initialSettled();
+		auth.resolve({ ok: true });
+		await Promise.resolve(); await Promise.resolve();
+		assert.equal(loads, 0);
+		assert.equal(h.getName(), undefined);
+	} finally { h.destroy(); t.mock.timers.reset(); }
+});
+
+test("initial naming: disabled and named resumes never create deadlines; old history does not count", async (t) => {
+	const timer = t.mock.method(globalThis, "setTimeout");
+	for (const kind of ["disabled", "named", "unnamed"]) {
+		let calls = 0;
+		const h = extensionHarness([], { enabled: kind !== "disabled", herdrTab: false }, async () => { calls++; return undefined; });
+		try {
+			addRoundTrips(h.entries, 100);
+			if (kind === "named") h.setExternalName("Resumed task");
+			await h.hooks.get("session_start")!({}, h.ctx);
+			h.hooks.get("agent_start")!({}, h.ctx);
+			for (let n = 0; n < 2; n++) h.hooks.get("turn_end")!({ stopReason: "aborted" }, h.ctx);
+			assert.equal(calls, 0);
+			assert.equal(timer.mock.callCount(), 0);
+			h.hooks.get("turn_end")!({}, h.ctx);
+			await h.installed.initialSettled();
+			assert.equal(calls, kind === "unnamed" ? 1 : 0);
+		} finally { h.destroy(); }
+	}
+});
+
+for (const late of ["fulfillment", "rejection"]) {
+	for (const cleanup of ["completion", "shutdown", "deadline"]) {
+		test(`initial naming: old ${late} preserves pending successor and its ${cleanup} cleanup`, async (t) => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const old = deferred<any>(), next = deferred<any>();
+			const signals: AbortSignal[] = [];
+			let calls = 0, staleContextAccesses = 0, oldContextValid = true;
+			const h = extensionHarness([], { herdrTab: false }, async (_ctx, _opts, signal) => {
+				signals.push(signal!);
+				return ++calls === 1 ? old.promise : next.promise;
+			});
+			const oldCtx = new Proxy(h.ctx, {
+				get(target, key, receiver) {
+					if (!oldContextValid) staleContextAccesses++;
+					return Reflect.get(target, key, receiver);
+				},
+			});
+			try {
+				await h.hooks.get("session_start")!({}, oldCtx);
+				h.hooks.get("agent_end")!({}, oldCtx);
+				await h.hooks.get("session_shutdown")!({}, oldCtx);
+				await h.hooks.get("session_shutdown")!({}, oldCtx);
+				assert.equal(signals[0].aborted, true);
+				await h.installed.initialSettled();
+				oldContextValid = false;
+				await h.hooks.get("session_start")!({}, h.ctx);
+				h.hooks.get("agent_end")!({}, h.ctx);
+				let successorSettled = false;
+				const observation = h.installed.initialSettled().then(() => { successorSettled = true; });
+				if (late === "rejection") old.reject(new Error("old provider failure"));
+				else old.resolve({ sessionName: "Old name", tabLabel: "Old" });
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(staleContextAccesses, 0, "old continuation and cleanup never read the invalid context");
+				assert.equal(successorSettled, false, "old cleanup leaves successor observation pending");
+				assert.equal(signals[1].aborted, false, "old cleanup does not cancel successor");
+				assert.equal(h.getName(), undefined);
+				assert.equal(calls, 2);
+				if (cleanup === "shutdown") {
+					await h.hooks.get("session_shutdown")!({}, h.ctx);
+					await h.hooks.get("session_shutdown")!({}, h.ctx);
+				} else if (cleanup === "deadline") {
+					t.mock.timers.tick(30000);
+				} else {
+					next.resolve({ sessionName: "Successor task", tabLabel: "Successor" });
+				}
+				await observation;
+				assert.equal(successorSettled, true, "successor's own cleanup settles its observation");
+				assert.equal(signals[1].aborted, cleanup !== "completion");
+				next.resolve({ sessionName: "Successor task", tabLabel: "Successor" });
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(h.getName(), cleanup === "completion" ? "Successor task" : undefined);
+				assert.equal(staleContextAccesses, 0);
+				assert.deepEqual(h.notifications, cleanup === "completion" ? ["Auto-named session: Successor task"] : []);
+			} finally {
+				await h.hooks.get("session_shutdown")!({}, h.ctx);
+				old.resolve(undefined);
+				next.resolve(undefined);
+				await h.installed.initialSettled();
+				h.destroy();
+				t.mock.timers.reset();
+			}
+		});
+	}
+}
+
+for (const rounds of [1, 2]) {
+	test(`initial naming: ${rounds}-round fallback stays detached and preserves revisit eligibility`, async () => {
+		const pending = deferred<any>();
+		let calls = 0;
+		const h = extensionHarness([], { herdrTab: false, revisitFirstTurn: 1 }, async () => ++calls === 1 ? pending.promise : KEEP);
+		try {
+			await h.hooks.get("session_start")!({}, h.ctx);
+			h.hooks.get("agent_start")!({}, h.ctx);
+			for (let n = 0; n < rounds; n++) h.hooks.get("turn_end")!({}, h.ctx);
+			assert.equal(calls, 0);
+			assert.equal(h.hooks.get("agent_end")!({}, h.ctx), undefined);
+			addRoundTrips(h.entries, rounds);
+			await h.runAgentSettled();
+			assert.equal(calls, 1);
+			h.hooks.get("agent_start")!({}, h.ctx);
+			const nextRoundStarted = h.hooks.get("turn_start")!({}, h.ctx).then(() => true);
+			assert.equal(await Promise.race([
+				nextRoundStarted,
+				new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+			]), true, "next-run turn_start settles while fallback generation is unresolved");
+			assert.equal(h.getName(), undefined);
+			assert.equal(calls, 1);
+			pending.resolve({ sessionName: "Initial task", tabLabel: "Initial" });
+			await h.installed.initialSettled();
+			await h.runAgentSettled();
+			assert.equal(calls, 2);
+		} finally {
+			pending.resolve(undefined);
+			await h.installed.initialSettled();
+			h.destroy();
+		}
+	});
+}
+
+test("initial naming: disabled replacement invalidates before its gate", async () => {
+	const pending = deferred<any>();
+	let signal: AbortSignal | undefined;
+	const h = extensionHarness([], {}, async (_ctx, _opts, s) => { signal = s; return pending.promise; });
+	try {
+		h.hooks.get("agent_end")!({}, h.ctx);
+		writeFileSync(join(h.ctx.cwd, ".pi", "settings.json"), JSON.stringify({ quiver: { sessionAutoName: false } }));
+		await h.hooks.get("session_start")!({}, h.ctx);
+		assert.equal(signal?.aborted, true);
+		await h.installed.initialSettled();
+		let staleContextAccesses = 0;
+		Object.defineProperty(h.ctx, "mode", { get: () => { staleContextAccesses++; throw new Error("stale context"); } });
+		pending.resolve({ sessionName: "Old task", tabLabel: "Old" });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(staleContextAccesses, 0, "disabled successor never exposes stale context to old fulfillment");
+		assert.equal(h.getName(), undefined);
+	} finally { h.destroy(); }
+});
+
+for (const change of ["replace", "rename"]) {
+	test(`initial naming: ${change} during bounded sink suppresses notification without rollback`, async () => {
+		const fake = fakeHerdr([{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1 }], { delayMs: 10 });
+		await fake.listening;
+		const restore = withHerdrEnv(fake.clientPath, "w1:t1");
+		const h = extensionHarness([{ sessionName: "Accepted task", tabLabel: "Accepted" }]);
+		try {
+			h.hooks.get("agent_end")!({}, h.ctx);
+			await Promise.resolve(); await Promise.resolve();
+			assert.equal(h.getName(), "Accepted task");
+			const completion = h.installed.initialSettled();
+			if (change === "replace") await h.hooks.get("session_start")!({}, h.ctx);
+			else {
+				h.setExternalName("Human task");
+				await h.hooks.get("session_info_changed")!({}, h.ctx);
+			}
+			await completion;
+			await h.hooks.get("turn_start")!({}, h.ctx);
+			assert.equal(h.getName(), change === "replace" ? "Accepted task" : "Human task");
+			assert.deepEqual(h.notifications, []);
+		} finally { restore(); h.destroy(); await fake.close(); }
+	});
+}
+
+for (const outcome of ["success", "undefined", "keep", "failure", "shutdown"]) {
+	test(`initial naming: ${outcome} clears an unreferenced deadline`, async () => {
+		const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+		let handle: ReturnType<typeof setTimeout> | undefined;
+		let cleared = false;
+		globalThis.setTimeout = ((...args: Parameters<typeof originalSet>) => { handle = originalSet(...args); return handle; }) as any;
+		globalThis.clearTimeout = ((timer: any) => { if (timer === handle) cleared = true; originalClear(timer); }) as any;
+		const pending = deferred<any>();
+		const h = extensionHarness([], { herdrTab: false }, async () => pending.promise);
+		try {
+			h.hooks.get("agent_end")!({}, h.ctx);
+			assert.equal(handle!.hasRef(), false);
+			if (outcome === "shutdown") await h.hooks.get("session_shutdown")!({}, h.ctx);
+			else if (outcome === "failure") pending.reject(new Error("failure"));
+			else pending.resolve(outcome === "success" ? { sessionName: "Task name", tabLabel: "Task" } : outcome === "keep" ? KEEP : undefined);
+			await h.installed.initialSettled();
+			assert.equal(cleared, true);
+			assert.equal(h.getName(), outcome === "success" ? "Task name" : undefined);
+		} finally { globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; h.destroy(); }
+	});
+}
+
+for (const stage of ["tab.get", "tab.rename"]) {
+	test(`initial naming: shutdown during ${stage} rejects planned writes but restores completed writes`, async () => {
+		const reached = deferred<void>(), release = deferred<void>();
+		let held = false;
+		const fake = fakeHerdr([{ tab_id: "w1:t1", workspace_id: "w1", label: "* 1", number: 1 }], {
+			beforeReply: async (method) => {
+				if (method === stage && !held) {
+					held = true;
+					reached.resolve();
+					await release.promise;
+				}
+			},
+		});
+		await fake.listening;
+		const restore = withHerdrEnv(fake.clientPath, "w1:t1");
+		const h = extensionHarness([{ sessionName: "Accepted task", tabLabel: "Accepted" }]);
+		try {
+			h.hooks.get("agent_end")!({}, h.ctx);
+			await reached.promise;
+			const shutdown = h.hooks.get("session_shutdown")!({}, h.ctx);
+			release.resolve();
+			await shutdown;
+			assert.deepEqual(fake.renames.map((r) => r.label), stage === "tab.get" ? [] : ["* Accepted", "* 1"]);
+			assert.equal(fake.tabs[0].label, "* 1");
+			assert.deepEqual(h.notifications, []);
+		} finally { release.resolve(); restore(); h.destroy(); await fake.close(); }
+	});
+}
