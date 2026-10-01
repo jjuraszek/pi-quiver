@@ -972,6 +972,48 @@ test("registration gate: quiver.slack.enabled = true -> exactly 8 tools, self-su
 	});
 });
 
+test("Slack posting tools share conditional formatting guidance without policyPath", async () => {
+	await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+		const { api, defs, handlers } = makeMockApi();
+		slackExtension(api);
+		await handlers.session_start({}, makeFakeCtx(cwd));
+		const post = defs.find((d) => d.name === "slack_post")!;
+		const update = defs.find((d) => d.name === "slack_update")!;
+		assert.ok(post.promptGuidelines?.length);
+		assert.strictEqual(post.promptGuidelines, update.promptGuidelines);
+		const deliveryRule = post.promptGuidelines.find((rule) => rule.includes("MAX_TEXT_LENGTH"));
+		assert.ok(deliveryRule);
+		assert.match(deliveryRule, /never use threshold-based or msg_too_long upload fallback/);
+		assert.equal(post.promptGuidelines.filter((rule) => /recover|recovery|artifact|pending/.test(rule)).length, 0);
+		assert.match(post.description, /Recovery: re-invoke with `thread_ts` set/);
+		assert.match(post.description, /the returned error supplies recovery-artifact details/);
+		for (const tool of [post, update]) {
+			for (const rule of tool.promptGuidelines!) {
+				assert.match(rule, /^For slack_post and slack_update, /);
+				assert.ok(tool.description.includes(rule));
+			}
+			for (const fragment of [
+				"calling skill", "Keep otherwise plain content plain", 'style: "bullet"', 'style: "ordered"',
+				"rich_text_section", "rich_text_quote", "attribution", "bold", "italic", "strike", "code",
+				"rich_text_preformatted", "link elements", "*bold*", "_italic_", "~strike~", "<url|label>",
+				"backticks", "quoted lines", "code alone", "echo \\@alice", "echo @alice",
+				"text and thread_body", "@name in blocks", "item boundaries", "commentary",
+				"thread_body ?? text", "without thread_ts", "MAX_TEXT_LENGTH", "msg_too_long",
+			]) assert.ok(tool.description.includes(fragment), `${tool.name} missing ${fragment}`);
+			assert.equal(tool.description.split("Native list example:").length, 2);
+			const example = JSON.parse(tool.description.split("Native list example: ")[1]);
+			assert.equal(example.text, "- First\n- Second");
+			assert.deepEqual(example.blocks, [{ type: "rich_text", elements: [{
+				type: "rich_text_list", style: "bullet", elements: ["First", "Second"].map((text) => ({
+					type: "rich_text_section", elements: [{ type: "text", text }],
+				})),
+			}] }]);
+			assert.doesNotMatch(tool.description, /when useful|when appropriate|thread_blocks/);
+		}
+		assert.equal(handlers.before_agent_start, undefined);
+	});
+});
+
 test("registration gate: boolean shorthand quiver.slack = true -> 8 tools", async () => {
 	await withSettingsAsync({}, { quiver: { slack: true } }, async (cwd) => {
 		const { api, defs, handlers } = makeMockApi();

@@ -800,7 +800,7 @@ export async function postPlain(
 	},
 	deps: CoreDeps,
 ): Promise<MutationResult> {
-	assertTextWithinLimit(args.text);
+	if (!(args.blocks && args.thread_ts !== undefined)) assertTextWithinLimit(args.text);
 
 	const params: Record<string, unknown> = { channel: args.channel };
 	if (args.text !== undefined) params.text = args.text;
@@ -947,13 +947,13 @@ export function formatUnresolvedSuffix(
 	return suffix;
 }
 
-export function persistDetail(body: string): string {
+export function persistDetail(body: string, format: "md" | "json" = "md"): string {
 	const dir = join(tmpdir(), "pi-slack");
 	mkdirSync(dir, { recursive: true });
 	const hash = createHash("sha256").update(body).digest("hex").slice(0, 8);
 	// Same-millisecond re-invocation with identical content hashes to the same filename and
 	// overwrites with byte-identical bytes - harmless, so no collision handling is needed here.
-	const path = join(dir, `${Date.now()}-${hash}-detail.md`);
+	const path = join(dir, `${Date.now()}-${hash}-detail.${format}`);
 	writeFileSync(path, body, "utf8");
 	return path;
 }
@@ -1007,7 +1007,7 @@ async function deliverDetailUploadOrPersist(
 	channel: string,
 	threadTs: string,
 	body: string,
-	deps: CoreDeps & { uploadBytes: UploadBytes; persist?: (body: string) => string },
+	deps: CoreDeps & { uploadBytes: UploadBytes; persist?: (body: string, format?: "md" | "json") => string },
 ): Promise<{ detailTs?: string }> {
 	try {
 		return await deliverDetailUpload(channel, threadTs, body, deps);
@@ -1028,14 +1028,22 @@ async function deliverDetailUploadOrPersist(
  * also failed and the (now unrecoverable) detail body's length, and omit detailPath from the
  * caller's structured error data.
  */
-function persistOrDescribe(body: string, persist: (body: string) => string): { detailPath?: string; note: string } {
+function persistOrDescribe(
+	body: string,
+	persist: (body: string, format?: "md" | "json") => string,
+	format: "md" | "json" = "md",
+	knownHeadline = true,
+): { detailPath?: string; note: string } {
 	try {
-		const detailPath = persist(body);
-		return { detailPath, note: `the full detail was saved to ${detailPath}` };
+		const detailPath = persist(body, format);
+		const recovery = format === "json"
+			? `${knownHeadline ? "; recover with saved text as thread_body and saved blocks using the known thread_ts" : "; locate the headline in the channel and obtain its ts before recovering with saved text as thread_body and saved blocks using that thread_ts"}; correct rejected blocks before recovery, preserving the original artifact`
+			: "";
+		return { detailPath, note: `the full detail was saved to ${detailPath}${format === "json" ? " (json)" : ""}${recovery}` };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		return {
-			note: `persisting the ${body.length}-char detail body ALSO failed (${msg}) - the detail is unrecoverable`,
+			note: `persisting the ${body.length}-char detail ${format === "json" ? "payload" : "body"} ALSO failed (${msg}) - the detail is unrecoverable`,
 		};
 	}
 }
@@ -1055,9 +1063,10 @@ async function recoverFromDetailFailure(
 	ts: string,
 	permalink: string | undefined,
 	deps: CoreDeps,
-	persist: (body: string) => string,
+	persist: (body: string, format?: "md" | "json") => string,
+	format: "md" | "json" = "md",
 ): Promise<never> {
-	const { detailPath, note } = persistOrDescribe(detailBody, persist);
+	const { detailPath, note } = persistOrDescribe(detailBody, persist, format);
 
 	let markerFailureMessage: string | undefined;
 	try {
@@ -1085,17 +1094,19 @@ async function recoverFromDetailFailure(
 }
 
 export async function announce(
-	args: { channel: string; text: string; thread_body: string },
+	args: { channel: string; text: string; thread_body: string; blocks?: unknown[] },
 	deps: CoreDeps & {
 		uploadBytes: UploadBytes;
 		thresholdChars: number;
-		persist?: (body: string) => string;
+		persist?: (body: string, format?: "md" | "json") => string;
 		unfurl_links?: boolean;
 		unfurl_media?: boolean;
 	},
 ): Promise<AnnounceResult> {
 	assertHeadline(args.text);
 	const persist = deps.persist ?? persistDetail;
+	const detailFormat = args.blocks ? "json" : "md";
+	const detailBody = args.blocks ? JSON.stringify({ text: args.thread_body, blocks: args.blocks }) : args.thread_body;
 	const unfurl: Record<string, unknown> = {};
 	if (deps.unfurl_links !== undefined) unfurl.unfurl_links = deps.unfurl_links;
 	if (deps.unfurl_media !== undefined) unfurl.unfurl_media = deps.unfurl_media;
@@ -1105,7 +1116,7 @@ export async function announce(
 		headlineData = await deps.apiCall("chat.postMessage", deps.token, { channel: args.channel, text: args.text, ...unfurl }, { retry: false, signal: deps.signal });
 	} catch (err) {
 		if (err instanceof SlackError && err.code === "transport") {
-			const { detailPath, note } = persistOrDescribe(args.thread_body, persist);
+			const { detailPath, note } = persistOrDescribe(detailBody, persist, detailFormat, false);
 			throw new SlackError(
 				"outcome_unknown",
 				`Headline post to ${args.channel} may or may not have reached Slack (${err.message}); check the channel before re-invoking slack_post. ${capitalize(note)}.`,
@@ -1125,24 +1136,24 @@ export async function announce(
 	try {
 		ts = requireResponseString(headlineData, "chat.postMessage", "ts");
 	} catch (err) {
-		const { detailPath, note } = persistOrDescribe(args.thread_body, persist);
+		const { detailPath, note } = persistOrDescribe(detailBody, persist, detailFormat, false);
 		const detail = err instanceof Error ? err.message : String(err);
 		throw new SlackError(
 			"outcome_unknown",
-			`Headline post to ${channel} WAS accepted by Slack (ok:true) but the response was unparseable (${detail}); do NOT re-invoke slack_post - thread the detail manually. ${capitalize(note)}.`,
+			`Headline post to ${channel} WAS accepted by Slack (ok:true) but the response was unparseable (${detail}); ${args.blocks ? "do NOT repost the headline - recover only into its thread" : "do NOT re-invoke slack_post - thread the detail manually"}. ${capitalize(note)}.`,
 			{ channel, ...(detailPath ? { detailPath } : {}) },
 		);
 	}
 
 	const { permalink, warning } = await withPermalink(deps, channel, ts);
 
-	if (linkCollapsedLength(args.thread_body) > deps.thresholdChars) {
+	if (!args.blocks && linkCollapsedLength(args.thread_body) > deps.thresholdChars) {
 		let detailTs: string | undefined;
 		try {
 			({ detailTs } = await deliverDetailUpload(channel, ts, args.thread_body, deps));
 		} catch (err) {
 			const causeMessage = err instanceof Error ? err.message : String(err);
-			return recoverFromDetailFailure(causeMessage, args.text, args.thread_body, channel, ts, permalink, deps, persist);
+			return recoverFromDetailFailure(causeMessage, args.text, detailBody, channel, ts, permalink, deps, persist, detailFormat);
 		}
 		return { channel, ts, permalink, warning, detailTs, detailUploaded: true };
 	}
@@ -1152,21 +1163,21 @@ export async function announce(
 		detailData = await deps.apiCall(
 			"chat.postMessage",
 			deps.token,
-			{ channel, text: args.thread_body, thread_ts: ts, ...unfurl },
+			{ channel, text: args.thread_body, thread_ts: ts, ...(args.blocks ? { blocks: args.blocks } : {}), ...unfurl },
 			{ retry: true, signal: deps.signal },
 		);
 	} catch (err) {
-		if (err instanceof SlackError && err.code === "msg_too_long") {
+		if (!args.blocks && err instanceof SlackError && err.code === "msg_too_long") {
 			try {
 				const { detailTs } = await deliverDetailUpload(channel, ts, args.thread_body, deps);
 				return { channel, ts, permalink, warning, detailTs, detailUploaded: true };
 			} catch (uploadErr) {
 				const causeMessage = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
-				return recoverFromDetailFailure(causeMessage, args.text, args.thread_body, channel, ts, permalink, deps, persist);
+				return recoverFromDetailFailure(causeMessage, args.text, detailBody, channel, ts, permalink, deps, persist, detailFormat);
 			}
 		}
-		const causeMessage = err instanceof Error ? err.message : String(err);
-		return recoverFromDetailFailure(causeMessage, args.text, args.thread_body, channel, ts, permalink, deps, persist);
+		const causeMessage = args.blocks && err instanceof SlackError && !err.message.startsWith(`${err.code}:`) ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
+		return recoverFromDetailFailure(causeMessage, args.text, detailBody, channel, ts, permalink, deps, persist, detailFormat);
 	}
 
 	const detailTs = requireResponseString(detailData, "chat.postMessage", "ts");
@@ -1183,11 +1194,11 @@ export async function postMessage(
 		unfurl_links?: boolean;
 		unfurl_media?: boolean;
 	},
-	deps: CoreDeps & { uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string) => string },
+	deps: CoreDeps & { uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string, format?: "md" | "json") => string },
 ): Promise<MutationResult | AnnounceResult> {
 	if (args.thread_body !== undefined && args.thread_ts === undefined) {
 		return announce(
-			{ channel: args.channel, text: args.text ?? "", thread_body: args.thread_body },
+			{ channel: args.channel, text: args.text ?? "", thread_body: args.thread_body, blocks: args.blocks },
 			{ ...deps, unfurl_links: args.unfurl_links, unfurl_media: args.unfurl_media },
 		);
 	}

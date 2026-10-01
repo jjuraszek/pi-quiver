@@ -40,6 +40,19 @@ import {
 } from "../lib/slack-core.ts";
 import { cacheFilePath, teamIdFor, resolveChannel, refreshCache, resolveMentions, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
 
+const SLACK_FORMATTING_GUIDANCE: { rules: string[]; example: string } = {
+	rules: [
+		"For slack_post and slack_update, represent only formatting required by the calling skill. Keep otherwise plain content plain; preserve required structure rather than flattening it to a prose paragraph.",
+		'For slack_post and slack_update, use required lists as rich_text blocks containing rich_text_list with style: "bullet" or style: "ordered" and rich_text_section items. Preserve order and item boundaries; use line-separated text markers only in fallback, not as a substitute for the native list.',
+		"For slack_post and slack_update, represent required block quotations with rich_text_quote inside rich_text. Preserve quoted wording and supplied attribution. In text-only fallback, put > at the start of quoted lines and distinguish quotation from commentary; retain the required native quotation.",
+		"For slack_post and slack_update, inside rich_text represent required emphasis with text-element style properties bold, italic, strike; use code style for inline code, rich_text_preformatted for multiline code, and native link elements for labeled links. Keep mrkdwn delimiters out of native text leaves. On text-only surfaces, use *bold*, _italic_, ~strike~, backticks for inline code, triple-backticks for multiline code, and <url|label> for labeled links; code alone does not introduce blocks.",
+		"For slack_post and slack_update, preserve literal code. In text-only code and fallback, supply \\@name for literal mention-like names, including echo \\@alice for literal echo @alice; backticks do not suppress mention scanning. Rely on name lookup only in text and thread_body; treat @name in blocks as literal.",
+		"For slack_post and slack_update, when authoring blocks also supply complete readable fallback with substantive content, list item boundaries, and quotation/commentary distinctions for notifications and screen readers. Pair blocks with text for ordinary posts and updates, with thread_body ?? text for existing-thread replies, and with thread_body for announcement detail without thread_ts. Keep the announcement text headline text-only; blocks belong only to its detail. Without thread_body, blocks do not create an announcement. Pass caller-authored blocks through for Slack validation; existing blocks-only callers remain supported.",
+		"For slack_post and slack_update, keep blocks-bearing threaded replies and announcement details as messages: they bypass the local MAX_TEXT_LENGTH fallback guard and never use threshold-based or msg_too_long upload fallback.",
+	],
+	example: 'Native list example: {"text":"- First\\n- Second","blocks":[{"type":"rich_text","elements":[{"type":"rich_text_list","style":"bullet","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"First"}]},{"type":"rich_text_section","elements":[{"type":"text","text":"Second"}]}]}]}]}',
+};
+
 const IDENTITY = Type.Union([Type.Literal("user"), Type.Literal("bot")], {
 	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which credential source is used and whose name shows as the author.',
 });
@@ -302,14 +315,15 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Post",
 			promptSnippet: "Post a Slack message, reply, or headline+detail announcement",
 			description:
-				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts `thread_body` as the first threaded reply in the same call; if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the error names the path. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
+				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts the detail `blocks` with `thread_body` fallback (or text-only `thread_body`) as the first threaded reply in the same call; for text-only detail, if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the returned error supplies recovery-artifact details. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact." + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
+			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
-				text: Type.Optional(Type.String({ description: "Message text, or the announce headline when thread_body is set" })),
-				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON array, passed through unvalidated" })),
+				text: Type.Optional(Type.String({ description: "Message fallback, or text-only announcement headline when thread_body is set without thread_ts" })),
+				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON for the posted body, or detail reply in combined announcements; passed through unvalidated" })),
 				thread_ts: Type.Optional(Type.String({ description: "Reply into this existing thread instead of posting a new headline" })),
-				thread_body: Type.Optional(Type.String({ description: "Detail body for an announce headline, or the reply body when thread_ts is set" })),
+				thread_body: Type.Optional(Type.String({ description: "Detail fallback in announce mode without thread_ts, or reply fallback when thread_ts is set" })),
 				unfurl_links: Type.Optional(
 					Type.Boolean({ description: "Slack unfurls link previews by default; pass false to suppress text-link previews for this message." }),
 				),
@@ -384,13 +398,14 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Update",
 			promptSnippet: "Edit an existing Slack message",
 			description:
-				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).',
+				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).' + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
+			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
 				ts: Type.String({ description: "Timestamp of the message to edit" }),
-				text: Type.Optional(Type.String()),
-				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON array, passed through unvalidated" })),
+				text: Type.Optional(Type.String({ description: "Readable message fallback with blocks, or text-only message body" })),
+				blocks: Type.Optional(Type.Array(Type.Unknown(), { description: "Block Kit JSON for the edited message body, passed through unvalidated" })),
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {

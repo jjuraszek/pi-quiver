@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
@@ -1153,11 +1154,12 @@ test("announce: detail post fails -> headline gets pending marker, detail persis
 		(err: unknown) => {
 			assert.ok(err instanceof SlackError);
 			assert.equal(err.code, "detail_failed");
-			assert.match(err.message, /internal_error/);
+			const detailPath = err.data?.detailPath as string;
+			assert.equal(err.message, `Detail post to the thread failed (internal_error); the headline was marked "detail pending" and the full detail was saved to ${detailPath}.`);
+			assert.equal("thread_ts" in (err.data ?? {}), false);
 			assert.equal((err.data as Record<string, unknown>)?.ts, "11.1");
 			assert.equal((err.data as Record<string, unknown>)?.channel, "C1");
 			assert.equal((err.data as Record<string, unknown>)?.permalink, "https://x.slack.com/archives/C1/p11000001");
-			const detailPath = (err.data as Record<string, unknown>)?.detailPath as string;
 			assert.ok(detailPath && detailPath.includes("pi-slack"));
 			assert.equal(readFileSync(detailPath, "utf8"), "Detail body verbatim");
 			return true;
@@ -1701,4 +1703,199 @@ test("announce: unfurl params never reach the Detail attached. upload stub", asy
 	const stub = calls.filter((c) => c.method === "chat.postMessage").find((c) => c.params.text === DETAIL_INTRO);
 	assert.ok(stub, "expected the Detail attached. stub post");
 	assert.equal("unfurl_links" in stub.params, false);
+});
+
+const nativeBlocks = [{
+	type: "rich_text",
+	elements: [
+		{ type: "rich_text_list", style: "bullet", elements: [
+			{ type: "rich_text_section", elements: [{ type: "text", text: "First" }] },
+			{ type: "rich_text_section", elements: [{ type: "text", text: "Second" }] },
+		] },
+		{ type: "rich_text_list", style: "ordered", elements: [
+			{ type: "rich_text_section", elements: [{ type: "text", text: "Next" }] },
+		] },
+		{ type: "rich_text_quote", elements: [{ type: "text", text: "Quoted words - Alice" }] },
+		{ type: "rich_text_section", elements: [
+			{ type: "text", text: "Styled", style: { bold: true, italic: true, strike: true } },
+			{ type: "text", text: "echo @alice", style: { code: true } },
+		] },
+		{ type: "rich_text_preformatted", elements: [{ type: "text", text: "echo @alice\necho done" }] },
+	],
+}];
+
+for (const body of ["- First\n- Second\n1. Next\n> Quoted words - Alice", "x".repeat(MAX_TEXT_LENGTH + 1)]) {
+	test(`postMessage: native announcement keeps detail blocks without upload (${body.length} chars)`, async () => {
+		const { apiCall, calls } = recordingApiCall((method, params) => {
+			if (method === "chat.postMessage") return { ok: true, channel: "C1", ts: params.thread_ts ? "50.2" : "50.1" };
+			if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+			throw new Error(`unexpected method ${method}`);
+		});
+		await postMessage({ channel: "C1", text: "Headline", thread_body: body, blocks: nativeBlocks }, announceDeps(apiCall));
+		const posts = calls.filter((c) => c.method === "chat.postMessage");
+		assert.equal(posts.length, 2);
+		assert.equal(posts[0].params.text, "Headline");
+		assert.equal(posts[0].params.blocks, undefined);
+		assert.equal(posts[0].params.thread_ts, undefined);
+		assert.equal(posts[0].opts?.retry, false);
+		assert.equal(posts[1].params.text, body);
+		assert.equal(posts[1].params.thread_ts, "50.1");
+		assert.deepEqual(posts[1].params.blocks, nativeBlocks);
+		assert.equal(calls.some((c) => c.method.startsWith("files.")), false);
+	});
+}
+
+for (const code of ["internal_error", "invalid_blocks", "msg_too_long"]) {
+	test(`postMessage: native ${code} detail saves JSON and recovers only into its thread`, async () => {
+		const body = "x".repeat(MAX_TEXT_LENGTH + 1);
+		let rejected = false;
+		let formatSeen: string | undefined;
+		const { apiCall, calls } = recordingApiCall((method, params) => {
+			if (method === "chat.postMessage" && !params.thread_ts) return { ok: true, channel: "C1", ts: "51.1" };
+			if (method === "chat.postMessage" && !rejected) { rejected = true; return new SlackError(code, "generic rejection"); }
+			if (method === "chat.postMessage" || method === "chat.update") return { ok: true, channel: "C1", ts: "51.2" };
+			if (method === "chat.getPermalink") return { ok: true, permalink: "https://x/p1" };
+			throw new Error(`unexpected method ${method}`);
+		});
+		const deps = { ...announceDeps(apiCall), persist: (contents: string, format?: "md" | "json") => {
+			formatSeen = format;
+			return persistDetail(contents, format);
+		} };
+		let detailPath = "";
+		let threadTs = "";
+		await assert.rejects(postMessage({ channel: "C1", text: "Headline", thread_body: body, blocks: nativeBlocks }, deps), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, "detail_failed");
+			assert.match(err.message, new RegExp(code));
+			assert.match(err.message, /thread_body.*blocks/);
+			assert.equal(err.data?.ts, "51.1");
+			assert.equal("thread_ts" in (err.data ?? {}), false);
+			threadTs = err.data?.ts as string;
+			detailPath = err.data?.detailPath as string;
+			return true;
+		});
+		assert.equal(formatSeen, "json");
+		assert.match(detailPath, /\.json$/);
+		const original = readFileSync(detailPath, "utf8");
+		const saved = JSON.parse(original);
+		assert.deepEqual(saved, { text: body, blocks: nativeBlocks });
+		const correctedBlocks = code === "invalid_blocks" ? [{ type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: "Corrected" }] }] }] : saved.blocks;
+		await postMessage({ channel: "C1", thread_ts: threadTs, thread_body: saved.text, blocks: correctedBlocks }, deps);
+		assert.equal(readFileSync(detailPath, "utf8"), original);
+		const posts = calls.filter((c) => c.method === "chat.postMessage");
+		assert.equal(posts.length, 3);
+		assert.equal(posts.filter((c) => !c.params.thread_ts).length, 1);
+		assert.equal(posts[2].params.text, body);
+		assert.deepEqual(posts[2].params.blocks, correctedBlocks);
+		assert.equal(posts[2].params.thread_ts, "51.1");
+		assert.equal(calls.find((c) => c.method === "chat.update")?.params.text, `Headline${DETAIL_PENDING_MARKER}`);
+		assert.equal(calls.some((c) => c.method.startsWith("files.")), false);
+	});
+}
+
+test("postMessage: uncertain native headline persists full JSON without replay", async () => {
+	const { apiCall, calls } = recordingApiCall(() => new SlackError("transport", "timeout"));
+	await assert.rejects(postMessage({ channel: "C1", text: "Headline", thread_body: "detail", blocks: nativeBlocks }, announceDeps(apiCall)), (err: unknown) => {
+		assert.ok(err instanceof SlackError);
+		assert.equal(err.code, "outcome_unknown");
+		assert.match(err.message, /locate the headline.*obtain its ts/);
+		assert.doesNotMatch(err.message, /known thread_ts/);
+		assert.match(err.data?.detailPath as string, /\.json$/);
+		assert.deepEqual(JSON.parse(readFileSync(err.data?.detailPath as string, "utf8")), { text: "detail", blocks: nativeBlocks });
+		return true;
+	});
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].opts?.retry, false);
+});
+
+test("native blocks: plain/update pass-through, optional fallback and retained local limits", async () => {
+	const { apiCall, calls } = recordingApiCall((method) => {
+		if (method === "chat.postMessage" || method === "chat.update") return { ok: true, channel: "C1", ts: "52.1" };
+		if (method === "chat.getPermalink") return { ok: true };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await postPlain({ channel: "C1", blocks: nativeBlocks }, { apiCall, token: "t" });
+	await updateMessage({ channel: "C1", ts: "52.1", blocks: nativeBlocks }, { apiCall, token: "t" });
+	for (const call of calls.filter((c) => c.method !== "chat.getPermalink")) {
+		assert.deepEqual(call.params.blocks, nativeBlocks);
+		assert.equal(call.params.text, undefined);
+	}
+	const count = calls.length;
+	const text = "x".repeat(MAX_TEXT_LENGTH + 1);
+	await assert.rejects(postPlain({ channel: "C1", text, blocks: nativeBlocks }, { apiCall, token: "t" }), { code: "text_too_long" });
+	await assert.rejects(updateMessage({ channel: "C1", ts: "52.1", text, blocks: nativeBlocks }, { apiCall, token: "t" }), { code: "text_too_long" });
+	await assert.rejects(postMessage({ channel: "C1", text, thread_body: "detail", blocks: nativeBlocks }, announceDeps(apiCall)), { code: "text_too_long" });
+	assert.equal(calls.length, count);
+});
+
+test("postMessage: oversized native existing-thread rejection surfaces Slack error without upload", async () => {
+	const { apiCall, calls } = recordingApiCall(() => new SlackError("msg_too_long", "rejected"));
+	await assert.rejects(postMessage({ channel: "C1", thread_ts: "53.1", text: "x".repeat(MAX_TEXT_LENGTH + 1), blocks: nativeBlocks }, announceDeps(apiCall)), { code: "msg_too_long" });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].params.thread_ts, "53.1");
+	assert.deepEqual(calls[0].params.blocks, nativeBlocks);
+});
+
+test("persistDetail: default md and explicit json retain exact contents", () => {
+	const body = JSON.stringify({ text: "fallback", blocks: nativeBlocks });
+	for (const format of ["md", "json"] as const) {
+		const path = format === "md" ? persistDetail(body) : persistDetail(body, format);
+		const hash = createHash("sha256").update(body).digest("hex").slice(0, 8);
+		assert.match(path, new RegExp(`\\d+-${hash}-detail\\.${format}$`));
+		assert.equal(readFileSync(path, "utf8"), body);
+	}
+});
+
+test("postMessage: native persistence and marker failures do not mask detail failure", async () => {
+	const { apiCall } = recordingApiCall((method, params) => {
+		if (method === "chat.postMessage" && !params.thread_ts) return { ok: true, ts: "54.1" };
+		if (method === "chat.postMessage") return new SlackError("invalid_blocks", "generic rejection");
+		if (method === "chat.update") return new SlackError("edit_window_closed", "edit_window_closed");
+		if (method === "chat.getPermalink") return { ok: true };
+		throw new Error(`unexpected method ${method}`);
+	});
+	await assert.rejects(postMessage({ channel: "C1", text: "Headline", thread_body: "detail", blocks: nativeBlocks }, {
+		...announceDeps(apiCall), persist: (_body, format) => { assert.equal(format, "json"); throw new Error("disk full"); },
+	}), (err: unknown) => {
+		assert.ok(err instanceof SlackError);
+		assert.equal(err.code, "detail_failed");
+		assert.match(err.message, /invalid_blocks/);
+		assert.match(err.message, /\d+-char detail payload ALSO failed.*disk full/);
+		assert.match(err.message, /edit_window_closed/);
+		assert.equal(err.data?.detailPath, undefined);
+		return true;
+	});
+});
+
+for (const message of ["generic rejection", "invalid_blocks: rejected"]) {
+	test(`postMessage: native rejection identifier appears once (${message})`, async () => {
+		const { apiCall } = recordingApiCall((method, params) => {
+			if (method === "chat.postMessage" && !params.thread_ts) return { ok: true, ts: "55.1" };
+			if (method === "chat.postMessage") return new SlackError("invalid_blocks", message);
+			return { ok: true };
+		});
+		await assert.rejects(postMessage({ channel: "C1", text: "Headline", thread_body: "detail", blocks: nativeBlocks }, {
+			...announceDeps(apiCall), persist: () => "/tmp/detail.json",
+		}), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.message.split("invalid_blocks").length - 1, 1);
+			assert.match(err.message, /known thread_ts/);
+			return true;
+		});
+	});
+}
+
+test("postMessage: accepted native headline with missing ts requires discovery, not reposting", async () => {
+	const { apiCall, calls } = recordingApiCall(() => ({ ok: true }));
+	await assert.rejects(postMessage({ channel: "C1", text: "Headline", thread_body: "detail", blocks: nativeBlocks }, {
+		...announceDeps(apiCall), persist: () => "/tmp/detail.json",
+	}), (err: unknown) => {
+		assert.ok(err instanceof SlackError);
+		assert.equal(err.code, "outcome_unknown");
+		assert.match(err.message, /do NOT repost the headline/);
+		assert.match(err.message, /locate the headline.*obtain its ts/);
+		assert.doesNotMatch(err.message, /known thread_ts|do NOT re-invoke slack_post/);
+		return true;
+	});
+	assert.equal(calls.length, 1);
 });

@@ -28,7 +28,7 @@ All keys live under `quiver.slack`:
 | `userTokenCommand` | non-empty string array | unset | executable argv that prints the current user token to stdout on each user-identity tool call |
 | `userTokenCommandTimeoutSeconds` | positive finite number | `10` | timeout in seconds for the user credential command |
 | `botTokenEnv` | string | `SLACK_BOT_TOKEN` | env var name holding the bot token |
-| `uploadThresholdChars` | number | `4000` | link-collapsed length above which an announce `thread_body` becomes a threaded file upload |
+| `uploadThresholdChars` | number | `4000` | link-collapsed length above which text-only announce detail or a text-only threaded reply becomes a file upload |
 
 ### Resolution ladder
 
@@ -228,7 +228,7 @@ returned by `slack_post { as: "bot" }` is not readable there
 |---|---|---|---|
 | `slack_search` | always user | `query`, `count` (<=100), `page` | `search.messages` with Slack's operator grammar (`in:#chan`, `from:@name`); one page per call, size-gated output |
 | `slack_thread` | always user | `channel`+`ts`, or `permalink`, optional `cursor` to resume, optional `raw` | `conversations.replies`, cursor-paginated to completion or a 50-page/5000-message cap (returns `next_cursor` when capped); default Block Kit flattening or raw JSON; size-gated |
-| `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body`, optional `unfurl_links`/`unfurl_media` | plain post, threaded reply, or announce (headline + threaded detail) - see below |
+| `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body`, optional `unfurl_links`/`unfurl_media` | plain post, existing-thread reply (no headline), or announce (`text` headline + detail `blocks` with `thread_body` fallback) - see below |
 | `slack_update` | `as` | `channel`, `ts`, `text`/`blocks` | `chat.update`; only the original poster's identity can edit |
 | `slack_delete` | `as` | `channel`, `ts` | `chat.delete`; same ownership constraint |
 | `slack_pin` | `as` | `channel`, `ts` | `pins.add`; maps `already_pinned`/`not_pinnable`/`too_many_pins` |
@@ -253,6 +253,38 @@ complete array. Attempt `JSON.parse` on the content; on failure, read the file
 named in the truncation line. When completeness matters, run default (compact)
 mode first so `complete:` and `next_cursor` appear inline, then use `raw: true`
 for extraction or a round-trip.
+
+### Conditional formatting (`slack_post`, `slack_update`)
+
+The calling skill chooses whether formatting is required; the enabled tools
+supply Slack representations in their descriptions and prompt guidelines,
+independent of optional `quiver.slack.policyPath`. Customer policy owns
+channel choice, tone, approvals, and templates. Keep otherwise plain content
+plain; preserve the structure the skill requires.
+
+Use native `rich_text_list` elements (`bullet` or `ordered`, with
+`rich_text_section` items) for required lists and `rich_text_quote` for
+required quotations. Preserve item boundaries, order, quoted wording, and
+supplied attribution. Inside rich text, use text-element styles `bold`,
+`italic`, `strike`, and `code`, `rich_text_preformatted` for multiline code,
+and native link elements. On text-only surfaces, use Slack mrkdwn:
+`*bold*`, `_italic_`, `~strike~`, backticks or triple-backtick code fences,
+and `<url|label>` links. Code alone does not require blocks.
+
+Supply complete readable fallback when authoring blocks, including the
+substantive content, list-item boundaries, and quotation/commentary
+distinction, for notifications and screen readers. Pair blocks with `text`
+for ordinary posts and updates, `thread_body ?? text` for existing-thread
+replies, and `thread_body` for announcement detail. Blocks without
+`thread_body` do not create an announcement. Existing blocks-only callers
+remain supported; blocks pass through without conversion for Slack validation.
+
+Escape literal mention-like names in text-only code and fallback with
+`\@name`; supply `echo \@alice` to retain literal `echo @alice`.
+Backticks do not suppress mention scanning throughout a code span. Name
+lookup scans only `text` and `thread_body`; `@name` in block text/code leaves
+stays literal. See [Mentions](#mentions-slack_post-slack_update) for the scan
+boundaries.
 
 ### Mentions (`slack_post`, `slack_update`)
 
@@ -302,7 +334,8 @@ can't be changed after it's posted.
 
 `slack_post` with `thread_body` set and `thread_ts` **absent** triggers
 announce mode: post a short headline, then post the detail as the first
-threaded reply, in one call.
+threaded reply, in one call. The headline is text-only `text`; original
+`blocks` belong to the detail reply with `thread_body` as its fallback.
 
 - **Pre-flight**: the headline (`text`) must be non-empty, a single line,
   and <= 4000 UTF-16 code units - checked before any network call.
@@ -311,32 +344,52 @@ threaded reply, in one call.
   already accepted it - a retry could double-post a visible notification.
 - **`outcome_unknown`**: a transport failure on the headline (or an
   `ok:true` response with an unparseable `ts`) returns `outcome_unknown`.
-  The caller must check the channel manually and must **not** re-invoke -
-  the composed detail is persisted to a temp file under
-  `tmpdir()/pi-slack` so it is not lost.
-- **Recovery**: re-invoke with `thread_ts` set to post only into the
-  existing thread; a second headline is never sent on that path.
+  Locate the actual headline in the channel and obtain its `ts` before
+  recovery; do not repost the headline. The composed detail is persisted
+  under `tmpdir()/pi-slack` so it is not lost.
+- **Recovery**: read `detailPath`; text-only detail is a `.md` body, while
+  structured detail is `.json` containing `{ "text": <fallback>, "blocks":
+  <original blocks> }`. Both use timestamp/hash `-detail` filenames under
+  `tmpdir()/pi-slack`. For structured recovery, call `slack_post` with saved
+  `text` as `thread_body`, saved `blocks`, and `thread_ts` set to the known
+  headline `ts` (returned as `ts` on announcement `detail_failed`). Reuse the
+  saved blocks after a transient failure; correct payload rejections such
+  as `invalid_blocks` before recovery and retain the original artifact.
+  Text-only recovery uses the saved body as `thread_body`. Recovery posts
+  only into the existing thread, never a second headline; there is no
+  automatic replay.
 - **Detail-pending marker**: if the detail leg fails after its own single
   `Retry-After` retry, the headline is edited (`chat.update`) to append the
   frozen marker ` _(detail pending)_`, the detail body is persisted to a
   temp file, and a structured error names the headline `ts`/channel/permalink
-  and the file path.
-- **Oversized detail -> upload**: when the detail's *link-collapsed* length
+  and the file path. The error remains `detail_failed`, with the underlying
+  Slack rejection identified. Marker edits are best-effort: an edit failure
+  is reported without masking the detail failure. Persistence failure is
+  also reported and omits `detailPath`; no saved artifact is available then.
+- **Native detail limits**: blocks-bearing announcement details and
+  existing-thread replies bypass `uploadThresholdChars`, the local
+  `MAX_TEXT_LENGTH` fallback-text guard, and `msg_too_long` upload fallback.
+  They remain messages, not files. Slack payload limits still apply:
+  announcement rejection uses structured recovery; an existing-thread
+  rejection surfaces the Slack error. Headline, non-threaded-post, update,
+  and text-only limits remain intact.
+- **Oversized text-only detail -> upload**: when the detail's *link-collapsed* length
   exceeds `uploadThresholdChars` (default 4000), it is delivered instead as
   a threaded reply with the frozen intro line `Detail attached.` followed by
   a file upload named `slack-detail.md` in the same thread.
 - **Same gate on plain threaded replies**: this oversize->upload gate is not
-  announce-only - a plain `slack_post` call with `thread_ts` set (a threaded
+  announce-only - a text-only `slack_post` call with `thread_ts` set (a threaded
   reply, no headline involved) is checked against the same
   `uploadThresholdChars` link-collapsed length and falls back to the same
   upload delivery when it's exceeded.
 - **Two length counters**: hard pre-flight checks (headline <= 4000, and the
-  underlying `chat.postMessage`/`chat.update` MAX_TEXT_LENGTH assert) use
+  local `MAX_TEXT_LENGTH` assert where applicable) use
   raw UTF-16 `.length` - Slack's own `msg_too_long` unit. The
   `uploadThresholdChars` gate uses a link-collapsed counter (`<url|label>`
   counts as `label`, bare `<url>` counts as one placeholder word) so a
-  permalink-heavy detail isn't needlessly bounced to a file; a `msg_too_long`
-  that slips through that gate still falls back to upload at API-error time.
+  permalink-heavy text-only detail isn't needlessly bounced to a file; a
+  text-only `msg_too_long` that slips through that gate still falls back to
+  upload at API-error time.
 - **Upload rendering trade-off**: Slack renders an uploaded `.md` file as
   raw source with an "expand" affordance, not as rendered Markdown - a
   deliberate trade for the length/formatting headroom a file gives over an
@@ -395,8 +448,21 @@ threaded reply, in one call.
 
 No live Slack call runs in automated tests. Before shipping a change that
 touches the transport, cache, or announce protocol, verify against a real
-test workspace/channel:
+test workspace/channel. Configure workspace credentials and obtain approval
+to post in that channel before running this checklist. Mocked API checks
+and model authoring samples do not verify live Slack client rendering.
 
+- Post native bullet and ordered lists; confirm item boundaries and order.
+- Post a native quote with attribution, required styles, inline/multiline
+  code, and a labeled link; inspect their rendering in Slack.
+- Inspect fallback text for complete content, separate list items, and
+  quotation/commentary distinctions. Confirm literal `echo @alice` stays
+  literal when supplied as `echo \@alice` in text/fallback.
+- Announce with blocks and fallback; confirm a text-only headline and native
+  detail in its thread. In an approved failure exercise, reject detail
+  blocks, inspect the `.json` artifact, correct the rejected payload while
+  retaining the original artifact, and recover with saved fallback/blocks
+  into the known `thread_ts`; confirm no second headline or file upload.
 - Post a plain message as `user` and as `bot`.
 - Announce with a detail body large enough to trip the upload fallback.
 - Update a message.
