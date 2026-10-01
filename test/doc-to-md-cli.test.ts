@@ -154,7 +154,7 @@ test("CLI subprocess: --json prints one HandleData object and nothing else; --js
 	try {
 		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--pages", "", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
 		const h = JSON.parse(stdout);
-		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type"].sort());
+		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "ocrDir", "pageStats", "pageStatsPath", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type"].sort());
 		assert.strictEqual(h.tier, "unpdf"); assert.strictEqual(h.pages, null);
 		assert.ok(!stdout.includes("Saved-To:"));
 		const info = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--info", MULTIPAGE], { env: scrubbedEnv(tmp) });
@@ -170,4 +170,34 @@ test("CLI subprocess: --help lists --page-images and the empty file error is exi
 		writeFileSync(join(tmp, "zero.pdf"), "");
 		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", join(tmp, "zero.pdf")], { env: scrubbedEnv(tmp) }), (e: { code?: number; stderr?: string }) => e.code === 1 && /doc-to-md failed: empty file: .*zero\.pdf/.test(e.stderr ?? ""));
 	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+
+test("parseCliArgs: --ocr-mode maps to perCall.ocrMode", () => {
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr", "--ocr-mode", "all", "--pages", "2", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: true, ocrMode: "all", pages: "2" }, json: false });
+});
+
+test("CLI subprocess: --ocr-mode all usage errors exit 2 with the guard message; no backend is exit 1", async () => {
+	const tmp = mkdtempSync(join(tmpdir(), "quiver-ocr-mode-"));
+	try {
+		const cases: [string[], RegExp][] = [
+			[["--ocr-mode", "all", "--pages", "2", MULTIPAGE], /^--ocr-mode all requires --ocr$/m],
+			[["--ocr", "--ocr-mode", "all", MULTIPAGE], /^--ocr-mode all requires an explicit --pages selection \(e\.g\. --pages 2,7\); omitted pages and --pages "" mean all pages and are refused to keep OCR cost bounded$/m],
+			[["--ocr", "--ocr-mode", "all", "--pages", "", MULTIPAGE], /requires an explicit --pages selection/],
+			...[FIXTURE_DOCX, fileURLToPath(new URL("./fixtures/html/page.html", import.meta.url)), fileURLToPath(new URL("./fixtures/ocr.png", import.meta.url))].map((path): [string[], RegExp] => [["--ocr", "--ocr-mode", "all", "--pages", "1", path], /^--ocr-mode all applies to PDF, PPTX and DOC inputs only \(DOCX pages are page-break segments, not PDF pages; convert the DOCX to PDF first\)$/m]),
+			[["--info", "--ocr-mode", "all", MULTIPAGE], /--info cannot be combined with .*--ocr-mode all/],
+			[["--ocr-mode", "sometimes", MULTIPAGE], /--ocr-mode must be one of textless, all/],
+		];
+		for (const [argv, re] of cases) {
+			await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", ...argv], { env: scrubbedEnv(tmp) }), (e: { code?: number; stderr?: string }) => e.code === 2 && re.test(e.stderr ?? "") && /Usage:/.test(e.stderr ?? "") && /\[--ocr\] \[--ocr-mode textless\|all\]/.test(e.stderr ?? ""), JSON.stringify(argv));
+		}
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr", "--ocr-mode", "all", "--pages", "1", MULTIPAGE], { env: scrubbedEnv(tmp) }), (e: { code?: number; stderr?: string }) => e.code === 1 && /doc-to-md failed: --ocr-mode all cannot run: no Python backend/.test(e.stderr ?? ""));
+	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("CLI subprocess: --help lists --ocr-mode and the two-pass recipe", async () => {
+	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
+	assert.ok(stdout.includes("--ocr-mode"));
+	assert.ok(stdout.includes("Two-pass OCR (PDF, PPTX, DOC):"));
+	assert.ok(stdout.includes("pi-quiver doc-to-md report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json"));
 });

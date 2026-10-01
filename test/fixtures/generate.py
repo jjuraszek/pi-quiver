@@ -360,6 +360,16 @@ def sample_eml():
         part.set_boundary(f"==b{i}==")
     open(os.path.join(HERE, "sample.eml"), "wb").write(m.as_bytes())
 
+def short_text_ocr_pdf():
+    doc = pymupdf.open()
+    page = doc.new_page()
+    body = " ".join(f"Line {i}: the quick brown fox jumps over the lazy dog." for i in range(1, 7))
+    page.insert_textbox(pymupdf.Rect(72, 72, 540, 720), body, fontsize=11)
+    scan = doc.new_page(width=612, height=792)
+    scan.insert_image(scan.rect, stream=text_png(OCR_TEXT, w_pt=612, h_pt=792))
+    scan.insert_text((72, 60), "3", fontsize=12)
+    doc.save(os.path.join(HERE, "short-text-ocr.pdf"), deflate=True, garbage=4)
+
 def legacy_doc():
     if not shutil.which("soffice"):
         print("soffice not on PATH; sample.doc not regenerated"); return
@@ -367,7 +377,7 @@ def legacy_doc():
         subprocess.run(["soffice", "--headless", "--convert-to", "doc", "--outdir", out, os.path.join(HERE, "headings.docx")], check=True, stdout=subprocess.DEVNULL)
         shutil.copyfile(os.path.join(out, "headings.doc"), os.path.join(HERE, "sample.doc"))
 
-GENERATORS = {"scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
+GENERATORS = {"short_text_ocr_pdf": short_text_ocr_pdf, "scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
 
 if __name__ == "__main__":
     import sys

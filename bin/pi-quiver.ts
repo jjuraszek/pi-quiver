@@ -19,7 +19,7 @@ import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunable
 
 const USAGE =
 	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]\n" +
-	"       pi-quiver doc-to-md [--json] [--info] [--page-images] [--pages <spec>] [--output-dir <dir>] [--overwrite] [tunable flags] <path>   (--help for all flags)";
+	"       pi-quiver doc-to-md [--json] [--info] [--page-images] [--pages <spec>] [--output-dir <dir>] [--overwrite] [--ocr] [--ocr-mode textless|all] [tunable flags] <path>   (--help for all flags)";
 
 export type ParsedArgs =
 	| { ok: true; cmd: "fetch"; opts: FetchOptions }
@@ -153,6 +153,7 @@ async function main(): Promise<number> {
 			} else process.stdout.write(`${r.output}\n`);
 			return 0;
 		} catch (err) {
+			if (err instanceof UsageError) { process.stderr.write(`${err.message}\n${USAGE}\n`); return 2; }
 			process.stderr.write(`doc-to-md failed: ${err instanceof Error ? err.message : String(err)}\n`);
 			return 1;
 		}

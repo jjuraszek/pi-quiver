@@ -790,6 +790,115 @@ test("docx numbering fallback: missing numId, unknown numFmt and python-docx rou
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 
+test("page stats: both PDF tiers return chars, images and clamped coverage per selected page", T, async () => {
+	const d = dirs();
+	try {
+		const p = await child("pdf-primary", { path: fx("scan.pdf"), stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: false });
+		assert.deepEqual(p.pageStats.map((s: { page: number }) => s.page), [1, 2]);
+		assert.deepEqual(p.pageStats[0], { page: 1, chars: 0, images: 1, imageCoverage: 0.11 });
+		assert.deepEqual(p.pageStats[1], { page: 2, chars: 23, images: 0, imageCoverage: 0 });
+		const f = await child("pdf-fallback", { path: fx("scan.pdf"), pages: [2], stagingDir: join(d.root, "fb"), imageFormat: "png", imageDpi: 72, ocr: false });
+		assert.deepEqual(f.pageStats, [{ page: 2, chars: 23, images: 0, imageCoverage: 0 }]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("page stats: coverage clamps to 1.0 and a stats-only exception keeps the page's Markdown", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py([
+			"import pymupdf",
+			`doc = pymupdf.open(); image = open(${JSON.stringify(fx("ocr.png"))}, 'rb').read()`,
+			"page = doc.new_page(); page.insert_image(page.rect, stream=image, keep_proportion=False); page.insert_image(page.rect, stream=image, keep_proportion=False)",
+			`path = os.path.join(${JSON.stringify(d.root)}, 'double.pdf'); doc.save(path); doc.close()`,
+			"full = m.page_stats(pymupdf.open(path), 1)",
+			"orig = pymupdf.Page.get_image_info",
+			"def boom(self, *a, **k): raise RuntimeError('bomb')",
+			"pymupdf.Page.get_image_info = boom",
+			`r = m.mode_pdf_primary({"path": ${JSON.stringify(fx("scan.pdf"))}, "pages": [2], "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 72, "ocr": False, "ocrLanguage": "eng", "ocrBudgetMs": 60000})`,
+			`f = m.mode_pdf_fallback({"path": ${JSON.stringify(fx("scan.pdf"))}, "pages": [2], "keepPages": {2: []}, "stagingDir": ${JSON.stringify(join(d.root, "fb"))}, "imageFormat": "png", "imageDpi": 72, "ocr": False})`,
+			"pymupdf.Page.get_image_info = orig",
+			"OUT = [full, r['pageStats'], r['failedPages'], r['markdown'], f['pageStats'], f['failedPages'], f['markdown']]",
+		].join("\n"));
+		assert.deepEqual(out[0], { page: 1, chars: 0, images: 2, imageCoverage: 1 });
+		for (const index of [1, 4]) {
+			assert.deepEqual(out[index], [{ page: 2, error: "RuntimeError: bomb" }]);
+			assert.deepEqual(out[index + 1], []);
+			assert.ok(out[index + 2].includes("PAGE-2"), out[index + 2]);
+		}
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+const ocrPagesOpts = (staging: string, pages: number[], budget = 60000) => `{"path": ${JSON.stringify(fx("scan.pdf"))}, "pages": ${JSON.stringify(pages)}, "stem": "scan", "stagingDir": ${JSON.stringify(staging)}, "ocrLanguage": "eng", "ocrBudgetMs": ${budget}, "dpi": 72}`;
+const FAKE_OCR = [
+	"import pymupdf",
+	"def fake(self, flags=3, language='eng', dpi=72, full=False, tessdata=None):",
+	"    if self.number == 0: raise RuntimeError('tesseract exploded')",
+	"    return self.get_textpage()",
+	"pymupdf.Page.get_textpage_ocr = fake",
+].join("\n");
+
+test("ocr-pages child: per-page failure writes .failed, success writes the sidecar and .done, active is cleared", T, async () => {
+	const d = dirs();
+	try {
+		const staging = join(d.root, "ocr", ".stage-x");
+		const out = await py([READY, FAKE_OCR,
+			`r = m.mode_ocr_pages(${ocrPagesOpts(staging, [1, 2])})`,
+			`p1 = sorted(os.listdir(os.path.join(${JSON.stringify(staging)}, 'p001')))`,
+			`p2 = sorted(os.listdir(os.path.join(${JSON.stringify(staging)}, 'p002')))`,
+			`failed = open(os.path.join(${JSON.stringify(staging)}, 'p001', '.failed')).read()`,
+			`side = open(os.path.join(${JSON.stringify(staging)}, 'p002', 'scan-p002.md')).read()`,
+			"import time", "clock = [0.0]", "time.monotonic = lambda: clock[0]",
+			"def slow(self, **k):", "    clock[0] += 4.0", "    raise RuntimeError('x' * 400)",
+			"pymupdf.Page.get_textpage_ocr = slow",
+			`b = m.mode_ocr_pages(${ocrPagesOpts(join(d.root, "budget"), [1, 2], 12000)})`,
+			`long_failed = open(os.path.join(${JSON.stringify(join(d.root, "budget"))}, f"p{b['ocrFailed'][0]:03d}", '.failed')).read()`,
+			`OUT = [r, p1, p2, failed, side, os.path.exists(os.path.join(${JSON.stringify(staging)}, 'active')), b, long_failed]`].join("\n"));
+		assert.deepEqual(out[0], { status: "ran", written: [2], noText: [], ocrFailed: [1], ocrErrors: { "1": "RuntimeError: tesseract exploded" }, budgetStopped: [] });
+		assert.deepEqual(out[1], [".failed"]); assert.deepEqual(out[2], [".done", "scan-p002.md"]);
+		assert.equal(out[3], "RuntimeError: tesseract exploded");
+		assert.ok(out[4].startsWith("<!-- OCR of page 2 (tesseract eng); recognized text, not the text layer -->\n\nPAGE-2 has a text layer"), out[4]);
+		assert.ok(out[4].endsWith("\n\n--- end of page.page_number=2 ---\n"), out[4]);
+		assert.equal(out[5], false);
+		assert.deepEqual(out[6].budgetStopped, [2]);
+		assert.equal(out[6].ocrErrors[1], `RuntimeError: ${"x".repeat(400)}`);
+		assert.equal(out[7], out[6].ocrErrors[1]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("ocr-pages child: empty recognized text is a header-only sidecar in noText; unavailable Tesseract returns status only", T, async () => {
+	const d = dirs();
+	try {
+		const staging = join(d.root, "ocr", ".stage-x");
+		const out = await py([READY, "import pymupdf",
+			"pymupdf.Page.get_textpage_ocr = lambda self, **k: self.get_textpage()",
+			`r = m.mode_ocr_pages(${ocrPagesOpts(staging, [1])})`,
+			`side = open(os.path.join(${JSON.stringify(staging)}, 'p001', 'scan-p001.md')).read()`,
+			`m.ocr_status = lambda ocr, lang: {"status": "unavailable", "reason": "language data for eng not installed", "tesseract": None}`,
+			`u = m.mode_ocr_pages(${ocrPagesOpts(join(d.root, "u"), [1])})`,
+			`OUT = [r, side, u, os.path.exists(os.path.join(${JSON.stringify(join(d.root, "u"))}, 'p001'))]`].join("\n"));
+		assert.deepEqual(out[0], { status: "ran", written: [], noText: [1], ocrFailed: [], ocrErrors: {}, budgetStopped: [] });
+		assert.equal(out[1], "<!-- OCR of page 1 (tesseract eng); recognized text, not the text layer -->\n\n--- end of page.page_number=1 ---\n");
+		assert.deepEqual(out[2], { status: "unavailable", reason: "language data for eng not installed" });
+		assert.equal(out[3], false);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("ocr-pages child: budget stop lists the current and remaining pages with a controlled clock", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py([READY, "import pymupdf, time", "clock = [0.0]", "time.monotonic = lambda: clock[0]",
+			"def slow(self, **k):", "    clock[0] += 4.0", "    return self.get_textpage()",
+			"pymupdf.Page.get_textpage_ocr = slow",
+			`a = m.mode_ocr_pages(${ocrPagesOpts(join(d.root, "a"), [1, 2], 12000)})`,
+			"clock[0] = 0.0",
+			`b = m.mode_ocr_pages(${ocrPagesOpts(join(d.root, "b"), [1, 2], 8000)})`,
+			`OUT = [a, b, os.path.exists(os.path.join(${JSON.stringify(join(d.root, "b"))}, 'active'))]`].join("\n"));
+		assert.deepEqual([out[0].noText, out[0].budgetStopped], [[1], [2]]);
+		assert.deepEqual([out[1].written, out[1].noText, out[1].budgetStopped], [[], [], [1, 2]]);
+		assert.equal(out[2], false);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
 const emailDirs = () => { const d = dirs(); return { ...d, attachmentsStagingDir: join(d.root, "attachments", ".stage-x") }; };
 
 test("email child: .eml HTML, headers, inline image, safe attachments", T, async () => {

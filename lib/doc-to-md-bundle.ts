@@ -1,23 +1,26 @@
 /**
  * Bundle protocol: a call owns `<stem>` for its whole duration via `<stem>.md.lock`;
- * children stage assets under `images/`, `sheets/`, `pages/`, and `attachments/` staging dirs;
- * Node publishes them to stem-prefixed files in those four dirs and records every file it
+ * children stage assets under `images/`, `sheets/`, `pages/`, `attachments/`, and `ocr/` staging dirs;
+ * Node publishes them to stem-prefixed files in those asset dirs and records every file it
  * wrote in a manifest, and commits `<stem>.md` atomically (tmp + rename).
  */
 import fs, { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import type { PageStat } from "./doc-to-md-handle.ts";
 
 export interface Bundle {
 	root: string; stem: string; renamedFrom: string | null; renameReason: string | null; mdPath: string; lockPath: string; imagesDir: string; stagingDir: string; lockId: string;
 	sheetsDir: string; sheetsStagingDir: string;
 	pagesDir: string; pagesStagingDir: string;
 	attachmentsDir: string; attachmentsStagingDir: string;
+	ocrDir: string; ocrStagingDir: string; pageStatsPath: string;
 	manifest: Set<string>;
 	csvManifest: Set<string>;
 	pageManifest: Set<string>;
 	attachmentManifest: Set<string>;
+	ocrManifest: Set<string>;
 	sourceMap: Map<string, string>;
 }
 
@@ -32,6 +35,8 @@ export function ownedCsvPattern(stem: string): RegExp {
 }
 
 export function ownedPagePattern(stem: string): RegExp { return new RegExp(`^${escRe(stem)}-p\\d+\\.[a-z0-9]+$`); }
+
+export function ownedOcrPattern(stem: string): RegExp { return new RegExp(`^${escRe(stem)}-p\\d+\\.md$`); }
 
 const FILE_LINK_RE = /\[[^\]]*\]\(\s*((?:sheets|attachments)\/[^)\s]+)\s*\)/g;
 const IMG_LINK_RE = /!\[[^\]]*\]\(\s*(?:<([^>]*)>|([^)]*?))\s*\)|<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi;
@@ -75,6 +80,7 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 	const sheetsDir = join(root, "sheets");
 	const pagesDir = join(root, "pages");
 	const attachmentsDir = join(root, "attachments");
+	const ocrDir = join(root, "ocr");
 	try {
 		if (existsSync(mdPath) && overwrite) {
 			const owned = ownedPattern(stem), ownedCsv = ownedCsvPattern(stem), ownedPage = ownedPagePattern(stem);
@@ -87,6 +93,9 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 			if (existsSync(sheetsDir)) for (const f of readdirSync(sheetsDir)) if (ownedCsv.test(f)) rmSync(join(sheetsDir, f), { force: true });
 			if (existsSync(pagesDir)) for (const f of readdirSync(pagesDir)) if (ownedPage.test(f)) rmSync(join(pagesDir, f), { force: true });
 			if (existsSync(attachmentsDir)) for (const f of readdirSync(attachmentsDir)) if (attachments.has(f)) rmSync(join(attachmentsDir, f), { force: true });
+			rmSync(join(root, `${stem}.pages.json`), { force: true });
+			const ownedOcr = ownedOcrPattern(stem);
+			if (existsSync(ocrDir)) for (const f of readdirSync(ocrDir)) if (ownedOcr.test(f)) rmSync(join(ocrDir, f), { force: true });
 		}
 		const lockId = randomBytes(6).toString("hex");
 		const stagingDir = join(imagesDir, `.stage-${lockId}`);
@@ -94,7 +103,8 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 		mkdirSync(stagingDir, { recursive: true });
 		const pagesStagingDir = join(pagesDir, `.stage-${lockId}`);
 		const attachmentsStagingDir = join(attachmentsDir, `.stage-${lockId}`);
-		return { root, stem, renamedFrom, renameReason, mdPath, lockPath, imagesDir, stagingDir, lockId, sheetsDir, sheetsStagingDir, pagesDir, pagesStagingDir, attachmentsDir, attachmentsStagingDir, manifest: new Set(), csvManifest: new Set(), pageManifest: new Set(), attachmentManifest: new Set(), sourceMap: new Map() };
+		const ocrStagingDir = join(ocrDir, `.stage-${lockId}`);
+		return { root, stem, renamedFrom, renameReason, mdPath, lockPath, imagesDir, stagingDir, lockId, sheetsDir, sheetsStagingDir, pagesDir, pagesStagingDir, attachmentsDir, attachmentsStagingDir, ocrDir, ocrStagingDir, pageStatsPath: join(root, `${stem}.pages.json`), ocrManifest: new Set(), manifest: new Set(), csvManifest: new Set(), pageManifest: new Set(), attachmentManifest: new Set(), sourceMap: new Map() };
 	} catch (e) { rmSync(lockPath, { force: true }); throw e; }
 }
 
@@ -160,6 +170,30 @@ export function publishPageImages(b: Bundle, pageCount: number): void {
 	rmSync(b.pagesStagingDir, { recursive: true, force: true });
 }
 
+export function writePageStats(b: Bundle, stats: PageStat[]): void {
+	writeFileSync(b.pageStatsPath, `${JSON.stringify(stats, null, 2)}\n`, "utf8");
+}
+
+/** Move every `.done`-gated `pNNN/<stem>-pNNN.md` into `ocr/`; partial page dirs and the checkpoint are dropped with the staging dir. Returns page -> absolute sidecar path. */
+export function publishSidecars(b: Bundle): Map<number, string> {
+	const out = new Map<number, string>();
+	if (!existsSync(b.ocrStagingDir)) return out;
+	for (const dir of readdirSync(b.ocrStagingDir).sort()) {
+		const m = dir.match(/^p(\d+)$/);
+		if (!m) continue;
+		const pageDir = join(b.ocrStagingDir, dir);
+		if (!existsSync(join(pageDir, ".done"))) continue;
+		const file = `${b.stem}-${dir}.md`;
+		if (!existsSync(join(pageDir, file))) continue;
+		mkdirSync(b.ocrDir, { recursive: true });
+		renameSync(join(pageDir, file), join(b.ocrDir, file));
+		b.ocrManifest.add(file);
+		out.set(Number(m[1]), join(b.ocrDir, file));
+	}
+	rmSync(b.ocrStagingDir, { recursive: true, force: true });
+	return out;
+}
+
 export function publishAttachments(b: Bundle): void {
 	if (!existsSync(b.attachmentsStagingDir)) return;
 	for (const f of readdirSync(b.attachmentsStagingDir).sort()) {
@@ -208,6 +242,7 @@ export function commitBundle(b: Bundle, markdown: string): void {
 	try { fs.rmSync(b.sheetsStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 	try { fs.rmSync(b.pagesStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 	try { fs.rmSync(b.attachmentsStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+	try { fs.rmSync(b.ocrStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 	try { fs.rmSync(b.lockPath, { force: true }); } catch { /* Markdown is published; cleanup is best-effort. */ }
 }
 
@@ -216,6 +251,9 @@ export function abortBundle(b: Bundle): void {
 	for (const f of b.csvManifest) rmSync(join(b.sheetsDir, f), { force: true });
 	for (const f of b.pageManifest) rmSync(join(b.pagesDir, f), { force: true });
 	for (const f of b.attachmentManifest) rmSync(join(b.attachmentsDir, f), { force: true });
+	for (const f of b.ocrManifest) rmSync(join(b.ocrDir, f), { force: true });
+	rmSync(b.ocrStagingDir, { recursive: true, force: true });
+	rmSync(b.pageStatsPath, { force: true });
 	rmSync(`${b.mdPath}.tmp`, { force: true });
 	rmSync(b.stagingDir, { recursive: true, force: true });
 	rmSync(b.sheetsStagingDir, { recursive: true, force: true });

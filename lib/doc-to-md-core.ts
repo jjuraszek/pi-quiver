@@ -12,9 +12,9 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
-import { type Engine, type HandleData, type InfoData, type OcrInfo, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
-import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
+import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
+import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, UsageError, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
 export * from "./doc-to-md-options.ts";
 export { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline } from "./doc-to-md-handle.ts";
@@ -466,8 +466,8 @@ const lacksDocx = (b: Backend) => b.kind === "none" || !b.docx;
 const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdirSync(b.stagingDir)) rmSync(join(b.stagingDir, f), { recursive: true, force: true }); };
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
-export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email";
-export interface TierJson { pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
+export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email" | "ocr-pages";
+export interface TierJson { pageStats?: PageStat[]; status?: string; written?: number[]; noText?: number[]; ocrFailed?: number[]; ocrErrors?: Record<string, string>; budgetStopped?: number[]; pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
@@ -490,7 +490,7 @@ function unpdfWorkerPath(): string {
 	], existsSync);
 }
 
-async function runTierReal(mode: Mode, childOptions: Record<string, unknown>, _b: Pick<Bundle, "stagingDir">, signal: AbortSignal | undefined, timeoutMs: number, backend: Backend): Promise<TierResult> {
+export async function runTierReal(mode: Mode, childOptions: Record<string, unknown>, _b: Pick<Bundle, "stagingDir">, signal: AbortSignal | undefined, timeoutMs: number, backend: Backend): Promise<TierResult> {
 	const cfg = { pymupdfVersion: String(childOptions.pymupdfVersion), warmTimeoutMs: 0 };
 	let cmd: string, args: string[];
 	if (mode === "pdf-text" || (mode === "info" && backend.kind === "none")) { cmd = process.execPath; args = [unpdfWorkerPath(), mode]; }
@@ -536,7 +536,39 @@ export function reconcileRenderMarkers(md: string, renderPages: number[], fmt: s
 	return md;
 }
 
-export const emptyOcr = (lang: string): OcrInfo => ({ status: "off", lang, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null });
+export const emptyOcr = (lang: string): OcrInfo => ({ status: "off", lang, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null });
+
+export interface OcrPagesOutcome { written: number[]; noText: number[]; ocrFailed: number[]; ocrErrors: Record<number, string>; budgetStopped: number[]; killed: number | null; notAttempted: number[]; childError: string | null; }
+const emptyOutcome = (): OcrPagesOutcome => ({ written: [], noText: [], ocrFailed: [], ocrErrors: {}, budgetStopped: [], killed: null, notAttempted: [], childError: null });
+const ocrPagesTag = (n: number) => `p${String(n).padStart(3, "0")}`;
+const SIDE_MARKER_RE = /^--- end of page\.page_number=\d+ ---$/;
+
+function sidecarHasText(dir: string): boolean {
+	const file = readdirSync(dir).find((f) => f.endsWith(".md"));
+	if (!file) return false;
+	return readFileSync(join(dir, file), "utf8").split("\n").slice(1).some((l) => l.trim() && !SIDE_MARKER_RE.test(l));
+}
+
+/** Rebuild the outcome from staging markers after the child died or returned garbage. */
+export function recoverOcrPages(stagingDir: string, pages: number[], detail: string): OcrPagesOutcome {
+	const out = emptyOutcome();
+	const activePath = join(stagingDir, "active");
+	const active = existsSync(activePath) ? Number(readFileSync(activePath, "utf8").trim()) || null : null;
+	let sawPage = false;
+	for (const n of pages) {
+		const dir = join(stagingDir, ocrPagesTag(n));
+		if (existsSync(join(dir, ".done"))) { sawPage = true; (sidecarHasText(dir) ? out.written : out.noText).push(n); }
+		else if (existsSync(join(dir, ".failed"))) { sawPage = true; out.ocrFailed.push(n); out.ocrErrors[n] = readFileSync(join(dir, ".failed"), "utf8").trim() || "unknown error"; }
+		else if (n === active) out.killed = n;
+		else out.notAttempted.push(n);
+	}
+	if (active === null && !sawPage) out.childError = detail;
+	return out;
+}
+
+function outcomeFromChild(j: TierJson): OcrPagesOutcome {
+	return { ...emptyOutcome(), written: j.written ?? [], noText: j.noText ?? [], ocrFailed: j.ocrFailed ?? [], ocrErrors: j.ocrErrors ?? {}, budgetStopped: j.budgetStopped ?? [] };
+}
 const OCR_SENTINEL_RE = /\x00OCR ([^\x00]*)\x00/g;
 
 /** Child OCR labels name staged files; the published name exists only after publishStaged. */
@@ -551,7 +583,7 @@ function handleOcr(tier: Tier, type: InputType, o: DocToMdOptions, json: TierJso
 	if (tier === "unpdf") return o.ocr ? { ...emptyOcr(o.ocrLanguage), status: "unavailable", reason: "no Python backend" } : null;
 	const x = json.ocr;
 	if (!x || (type !== "image" && !x.textless.length && !x.pages.length && !x.ocrFailed.length)) return null;
-	return x;
+	return { ...emptyOcr(o.ocrLanguage), ...x };
 }
 
 export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, seams?: Partial<PipelineSeams>): Promise<ConvertOutcome> {
@@ -561,10 +593,17 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	if (!st || !st.isFile()) throw new Error(`Not a readable file: ${o.path}`);
 	if (st.size === 0) throw new Error(`empty file: ${o.path}`);
 	const type = classifyInput(inputPath);
+	const forced = o.ocrMode === "all";
+	if (forced) {
+		if (!o.ocr) throw new UsageError("--ocr-mode all requires --ocr");
+		if (o.pages === null) throw new UsageError('--ocr-mode all requires an explicit --pages selection (e.g. --pages 2,7); omitted pages and --pages "" mean all pages and are refused to keep OCR cost bounded');
+		if (type !== "pdf" && type !== "pptx" && type !== "doc") throw new UsageError("--ocr-mode all applies to PDF, PPTX and DOC inputs only (DOCX pages are page-break segments, not PDF pages; convert the DOCX to PDF first)");
+	}
 	if (o.pages && (type === "html" || type === "image" || type === "email")) throw new Error(`--pages does not apply to ${type === "html" ? "HTML files" : type === "image" ? "images" : "email"}`);
 	const isExcel = type === "xlsx" || type === "xlsm" || type === "xls";
 	if (isExcel && o.pages) throw new Error("--pages does not apply to spreadsheets: worksheets have no stable page numbering");
 	const backend = await s.backend({ pymupdfVersion: o.pymupdfVersion, warmTimeoutMs: o.warmTimeoutMs });
+	if (forced && backend.kind === "none") throw new Error(`--ocr-mode all cannot run: no Python backend (${backend.reason})`);
 	if (isExcel && (backend.kind === "none" || !backend.xlsx)) throw new Error(`Excel conversion needs a Python backend with openpyxl, xlrd and pillow (${backend.kind === "none" ? backend.reason : `${backend.kind} lacks the Excel packages`}). ${EXCEL_REMEDY}`);
 	if (type === "email" && extname(inputPath).toLowerCase() === ".msg" && (backend.kind === "none" || !backend.email)) throw new Error(`MSG conversion needs the extract-msg package. Python backend: ${backendState(backend, "found without extract-msg")}. Remedy: install uv, or pip install extract-msg markdownify into that Python`);
 	if (type === "email" && extname(inputPath).toLowerCase() !== ".msg" && lacksDocx(backend)) throw new Error(`EML conversion needs the Python DOCX/HTML packages (mammoth, markdownify, python-docx). Python backend: ${backendState(backend, "found without mammoth/markdownify/python-docx")}. ${docxRemedy}`);
@@ -573,7 +612,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
+		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
 		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
 		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
@@ -704,6 +743,18 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		if (type === "doc" || officeRoute !== null) degraded = DEGRADED_DOCX_OFFICE;
 		if (officeRoute !== null) fallbackReason = fallbackReason ? `${officeRoute}; ${fallbackReason}` : officeRoute;
 		if (tier === undefined || engine === undefined || json === undefined) throw new Error("internal: no tier produced output");
+		const pageStats = json.pageStats ?? null;
+		if (pageStats) writePageStats(b, pageStats);
+		let ocr = handleOcr(tier, type, o, json);
+		if (forced) {
+			const r = await s.runTier("ocr-pages", { path: pdfPath, pages: o.pages, stem: b.stem, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, stagingDir: b.ocrStagingDir, dpi: o.imageDpi, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.primaryTimeoutMs, backend);
+			if (signal?.aborted || (!r.ok && "reason" in r && r.reason === "aborted")) throw new Error("aborted");
+			if (r.ok && r.json.status === "unavailable") throw new Error(`OCR unavailable: ${r.json.reason} (install Tesseract; see doc/doc-to-md.md)`);
+			const outcome = r.ok && r.json.status === "ran" ? outcomeFromChild(r.json)
+				: recoverOcrPages(b.ocrStagingDir, o.pages!, !r.ok ? ("userError" in r ? r.userError : `${r.reason}${detailSuffix(r)}`) : "malformed child output");
+			const sidecars = publishSidecars(b);
+			ocr = { ...emptyOcr(o.ocrLanguage), ...json.ocr, status: "ran", reason: null, mode: "all", pages: outcome.written, noText: outcome.noText, ocrFailed: outcome.ocrFailed, ocrErrors: outcome.ocrErrors, budgetStopped: outcome.budgetStopped, killed: outcome.killed, notAttempted: outcome.notAttempted, childError: outcome.childError, sidecars: Object.fromEntries(sidecars) };
+		}
 		if (!isExcel) notes = [...notes, ...(json.notes ?? [])];
 		if (b.renamedFrom) notes.splice(notes[0]?.startsWith("preview truncated:") ? 1 : 0, 0, `renamed to ${b.stem} (${b.renameReason})`);
 		const pageImagesReason = !o.pageImages || b.pageManifest.size || tier === "primary" || tier === "fallback" ? null
@@ -719,7 +770,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr: handleOcr(tier, type, o, json) };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr, pageStats, pageStatsPath: pageStats ? b.pageStatsPath : null, ocrDir: b.ocrManifest.size ? b.ocrDir : null };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }

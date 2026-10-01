@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import * as core from "../lib/doc-to-md-core.ts";
 import assert from "node:assert/strict";
 import { dirname, join, sep } from "node:path";
 import { execFile } from "node:child_process";
@@ -16,12 +17,135 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 test("tool description names supported formats and bundle locations", () => {
 	let description = "";
 	docToMdExtension({ registerTool: (tool: { description: string }) => { description = tool.description; } } as unknown as ExtensionAPI);
-	for (const term of ["DOC", "XLSM", ".msg", ".eml", "pageImages", "pages/", "attachments/"]) assert.ok(description.includes(term), term);
+	for (const term of ["DOC", "XLSM", ".msg", ".eml", "pageImages", "pages/", "attachments/", "Two-pass OCR", "ocrMode", "Page-Stats"]) assert.ok(description.includes(term), term);
 	assert.doesNotMatch(description, /Pages without a text layer and image inputs always keep their picture in images\//);
 	assert.ok(!description.includes("\n"));
 });
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
+
+test("forced OCR uses office PDF through fallback, reports all child outcomes and holds lock", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-office-ocr-"));
+	try {
+		const modes: string[] = [];
+		const r = await convertDocument(opts({ path: PPTX, outputDir: out, ocr: true, ocrMode: "all", pages: "1,2,3" }), undefined, {
+			...seamsWith(async (mode, co) => {
+				modes.push(mode); assert.equal(co.path, MULTIPAGE);
+				if (mode === "pdf-primary") return { ok: false, reason: "timeout" };
+				if (mode === "pdf-fallback") { assert.equal(co.ocr, false); return { ok: true, json: { markdown: "original\n", ocr: { ...OCR0, status: "unavailable", reason: "fallback tier", textless: [1] } } }; }
+				await assert.rejects(convertDocument(opts({ path: PPTX, outputDir: out, overwrite: true, ocr: true, ocrMode: "all", pages: "1" }), undefined, seamsWith(async () => { throw Error("tier called"); })), /Another conversion owns/);
+				return { ok: true, json: { status: "ran", written: [], noText: [1], ocrFailed: [2], ocrErrors: { "2": "bomb" }, budgetStopped: [3] } };
+			}), office: fakeOffice({ ok: true, pdfPath: MULTIPAGE, cleanup: () => {} }),
+		});
+		assert.deepEqual(modes, ["pdf-primary", "pdf-fallback", "ocr-pages"]);
+		assert.deepEqual(r.details.ocr, { ...OCR0, status: "ran", mode: "all", textless: [1], noText: [1], ocrFailed: [2], ocrErrors: { 2: "bomb" }, budgetStopped: [3] });
+		assert.match(r.output, /OCR: forced \(eng\) - no text on page 1; failed on page 2 \(bomb\); budget-stopped page 3/);
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("sidecar publish I/O failure aborts the bundle", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-publish-fail-"));
+	try {
+		mkdirSync(join(out, "ocr", "multipage-p002.md"), { recursive: true });
+		await assert.rejects(convertDocument(opts({ outputDir: out, ocr: true, ocrMode: "all", pages: "2" }), undefined, seamsWith(async (mode, co) => {
+			if (mode === "pdf-primary") return { ok: true, json: { markdown: "original", pageStats: [] } };
+			stageSidecar(String(co.stagingDir), String(co.stem), 2, ".done");
+			return { ok: true, json: { status: "ran", written: [2] } };
+		})), /EISDIR|EPERM|EACCES/);
+		for (const file of ["multipage.md", "multipage.md.lock", "multipage.pages.json"]) assert.ok(!existsSync(join(out, file)));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("textless stats are published without changing OCR, unpdf has no stats", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-textless-stats-"));
+	try {
+		const stats = [{ page: 1, chars: 300, images: 0, imageCoverage: 0 }];
+		const r = await convertDocument(opts({ outputDir: out }), undefined, seamsWith(async () => ({ ok: true, json: { markdown: "text\n", pageStats: stats, ocr: OCR0 } })));
+		assert.equal(r.details.ocr, null); assert.equal(r.details.ocrDir, null);
+		assert.equal(parseHandle(r.output)["Page-Stats"], join(out, "multipage.pages.json"));
+		const u = await convertDocument(opts({ outputDir: join(out, "u") }), undefined, seamsWith(async () => okTier("text\n", [1]), { kind: "none", reason: "missing" }));
+		assert.deepEqual([u.details.pageStats, u.details.pageStatsPath], [null, null]); assert.ok(!u.output.includes("Page-Stats:"));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+function stageSidecar(stagingDir: string, stem: string, page: number, marker: ".done" | ".failed" | null, body = "recognized") {
+	const tag = `p${String(page).padStart(3, "0")}`;
+	const dir = join(stagingDir, tag); mkdirSync(dir, { recursive: true });
+	if (marker !== ".failed") writeFileSync(join(dir, `${stem}-${tag}.md`), `<!-- OCR of page ${page} -->\n\n${body}\n\n--- end of page.page_number=${page} ---\n`);
+	if (marker) writeFileSync(join(dir, marker), marker === ".failed" ? "RuntimeError: bomb" : "");
+}
+
+test("ocrMode all guards precede backend work", async () => {
+	const noWork = { backend: async () => { throw Error("backend called"); } };
+	await assert.rejects(convertDocument(opts({ ocrMode: "all", pages: "2" }), undefined, noWork), new core.UsageError("--ocr-mode all requires --ocr"));
+	for (const pages of [undefined, ""]) await assert.rejects(convertDocument(opts({ ocr: true, ocrMode: "all", pages }), undefined, noWork), new core.UsageError('--ocr-mode all requires an explicit --pages selection (e.g. --pages 2,7); omitted pages and --pages "" mean all pages and are refused to keep OCR cost bounded'));
+	for (const path of [DOCX, HTML_PAGE, OCR_PNG]) await assert.rejects(convertDocument(opts({ path, ocr: true, ocrMode: "all", pages: "1" }), undefined, noWork), new core.UsageError("--ocr-mode all applies to PDF, PPTX and DOC inputs only (DOCX pages are page-break segments, not PDF pages; convert the DOCX to PDF first)"));
+	await assert.rejects(convertDocument(opts({ ocr: true, ocrMode: "all", pages: "1-100" }), undefined, seamsWith(async () => { throw Error("tier called"); }, { kind: "none", reason: "missing" })), /no Python backend/);
+});
+
+test("recoverOcrPages rebuilds markers, active checkpoint, empty and missing staging", () => {
+	const root = mkdtempSync(join(tmpdir(), "quiver-recovery-"));
+	try {
+		stageSidecar(root, "s", 1, ".failed"); stageSidecar(root, "s", 2, ".done"); writeFileSync(join(root, "active"), "3");
+		assert.deepEqual(core.recoverOcrPages(root, [1, 2, 3, 4], "timeout"), { written: [2], noText: [], ocrFailed: [1], ocrErrors: { 1: "RuntimeError: bomb" }, budgetStopped: [], killed: 3, notAttempted: [4], childError: null });
+		stageSidecar(root, "s", 2, ".done", "");
+		assert.deepEqual(core.recoverOcrPages(root, [2, 3], "crash").noText, [2]);
+		assert.deepEqual(core.recoverOcrPages(join(root, "missing"), [5], "exit 1"), { written: [], noText: [], ocrFailed: [], ocrErrors: {}, budgetStopped: [], killed: null, notAttempted: [5], childError: "exit 1" });
+		const empty = join(root, "empty"); mkdirSync(empty);
+		assert.equal(core.recoverOcrPages(empty, [1], "stderr").childError, "stderr");
+		writeFileSync(join(empty, "active"), ""); stageSidecar(empty, "s", 1, ".failed");
+		writeFileSync(join(empty, "p001", ".failed"), "");
+		const recovered = core.recoverOcrPages(empty, [1], "stderr");
+		assert.equal(recovered.killed, null);
+		assert.equal(recovered.ocrErrors[1], "unknown error");
+		assert.equal(recovered.childError, null);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("forced OCR second pass publishes stats and sidecars and reports child failures", async () => {
+	const root = mkdtempSync(join(tmpdir(), "quiver-forced-"));
+	const stats = [{ page: 2, chars: 1, images: 1, imageCoverage: 0.94 }];
+	try {
+		for (const failure of ["success", "timeout", "garbage", "early"]) {
+			const out = join(root, failure); const modes: string[] = [];
+			const r = await convertDocument(opts({ outputDir: out, ocr: true, ocrMode: "all", pages: "2,5", primaryTimeoutMs: 4321 }), undefined, seamsWith(async (mode, co, _b, _sig, timeout) => {
+				modes.push(mode);
+				if (mode === "pdf-primary") { assert.equal(co.ocr, false); return { ok: true, json: { markdown: "original\n", pageStats: stats, ocr: { ...OCR0, textless: [2] } } }; }
+				assert.equal(mode, "ocr-pages"); assert.equal(timeout, 4321);
+				assert.deepEqual([co.path, co.pages, co.stem, co.ocrLanguage, co.ocrBudgetMs, co.dpi, co.maxOutputBytes, co.pymupdfVersion], [MULTIPAGE, [2, 5], "multipage", "eng", 4321, 150, TUNABLE_DEFAULTS.maxOutputBytes, TUNABLE_DEFAULTS.pymupdfVersion]);
+				if (failure === "early") return { ok: false, reason: "exit 1", detail: "boom" };
+				stageSidecar(String(co.stagingDir), String(co.stem), 2, ".done");
+				if (failure !== "success") { writeFileSync(join(String(co.stagingDir), "active"), "5"); return failure === "garbage" ? { ok: true, json: {} } : { ok: false, reason: "timeout" }; }
+				stageSidecar(String(co.stagingDir), String(co.stem), 5, ".done", "");
+				return { ok: true, json: { status: "ran", written: [2], noText: [5], ocrFailed: [], ocrErrors: {}, budgetStopped: [] } };
+			}));
+			assert.deepEqual(modes, ["pdf-primary", "ocr-pages"]);
+			assert.equal(readFileSync(r.details.savedTo, "utf8"), "original\n");
+			assert.deepEqual(r.details.pageStats, stats); assert.deepEqual(JSON.parse(readFileSync(r.details.pageStatsPath!, "utf8")), stats);
+			assert.equal(parseHandle(r.output)["Page-Stats"], r.details.pageStatsPath);
+			assert.equal(r.details.ocr!.mode, "all"); assert.deepEqual(r.details.ocr!.textless, [2]);
+			assert.ok(!existsSync(`${r.details.savedTo}.lock`));
+			if (failure === "early") { assert.equal(r.details.ocr!.childError, "exit 1 (boom)"); assert.deepEqual(r.details.ocr!.notAttempted, [2, 5]); assert.equal(r.details.ocrDir, null); }
+			else { assert.ok(existsSync(r.details.ocr!.sidecars[2])); assert.equal(parseHandle(r.output)["OCR-Dir"], join(out, "ocr")); assert.equal(r.details.ocr!.killed, failure === "success" ? null : 5); }
+			if (failure === "success") assert.equal(parseHandle(r.output)["OCR"], "forced (eng) - sidecars for page 2; no text on page 5");
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("forced OCR unavailability and abort remove bundle artifacts", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-forced-abort-"));
+	try {
+		for (const abort of [false, true]) {
+			const ac = new AbortController();
+			await assert.rejects(convertDocument(opts({ outputDir: out, ocr: true, ocrMode: "all", pages: "2" }), ac.signal, seamsWith(async (mode, co) => {
+				if (mode === "pdf-primary") return { ok: true, json: { markdown: "original", pageStats: [] } };
+				if (!abort) return { ok: true, json: { status: "unavailable", reason: "language data for eng not installed" } };
+				stageSidecar(String(co.stagingDir), String(co.stem), 2, ".done"); ac.abort(); return { ok: false, reason: "aborted" };
+			})), abort ? /aborted/ : /OCR unavailable: language data for eng not installed/);
+			for (const file of ["multipage.md", "multipage.md.lock", "multipage.pages.json", "ocr/multipage-p002.md"]) assert.ok(!existsSync(join(out, file)));
+		}
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
 
 
 test("classifyInput: routes by extension, case-insensitive", () => {
@@ -550,7 +674,7 @@ const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind:
 const HTML_PAGE = fileURLToPath(new URL("../test/fixtures/html/page.html", import.meta.url));
 const OCR_PNG = fileURLToPath(new URL("../test/fixtures/ocr.png", import.meta.url));
 const imageOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: OCR_PNG, ...extra } as never, {}, {});
-const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null };
 function stagePage(b: { stagingDir: string }, page: number, file: string) {
  const d = join(b.stagingDir, `p${page}`); mkdirSync(d, { recursive: true }); writeFileSync(join(d, file), "x"); writeFileSync(join(d, ".done"), "");
 }

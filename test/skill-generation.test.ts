@@ -17,7 +17,8 @@ test("skills/doc-to-md/SKILL.md equals the generator output for the current pack
 		assert.strictEqual(normalizeEol(readFileSync(join(ROOT, "skills", "doc-to-md", "SKILL.md"), "utf8")), normalizeEol(generated), "run: node scripts/gen-skill.mjs");
 		const version = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 		assert.ok(generated.includes(`npx -y pi-quiver@${version} doc-to-md`));
-		for (const s of ["--page-images", "--json", ".xlsm", ".msg", ".eml", ".doc", "[^A-Za-z0-9._-]+ -> _"]) assert.ok(generated.includes(s), s);
+		for (const s of ["--page-images", "--json", ".xlsm", ".msg", ".eml", ".doc", "[^A-Za-z0-9._-]+ -> _", "## Usage patterns", "--ocr-mode", "Two-pass OCR (PDF, PPTX, DOC):"]) assert.ok(generated.includes(s), s);
+		assert.ok(generated.includes(`npx -y pi-quiver@${version} doc-to-md report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json`));
 		const marketplace = JSON.parse(readFileSync(join(ROOT, ".claude-plugin", "marketplace.json"), "utf8"));
 		assert.strictEqual(marketplace.plugins.find((p: { name: string }) => p.name === "quiver").version, version);
 	} finally { rmSync(out, { recursive: true, force: true }); }

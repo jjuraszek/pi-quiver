@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import {
 	DOC_TO_MD_OPTIONS, TUNABLE_DEFAULTS, UsageError, classifyInput, coerceDocToMdSettings,
-	parsePages, renderHelp, resolveOptions, sanitizeStem,
+	parsePages, renderHelp, resolveOptions, sanitizeStem, usagePatterns, USAGE_PATTERNS,
 } from "../lib/doc-to-md-options.ts";
 
 test("descriptors: every tunable has a flag, default and help; per-call intents are not settable", () => {
@@ -11,7 +11,7 @@ test("descriptors: every tunable has a flag, default and help; per-call intents 
 		if (d.key !== "path") assert.match(d.flag!, /^--[a-z-]+$/, d.key);
 	}
 	const intents = DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map((d) => d.key).sort();
-	assert.deepStrictEqual(intents, ["info", "outputDir", "overwrite", "pageImages", "pages", "path"]);
+	assert.deepStrictEqual(intents, ["info", "ocrMode", "outputDir", "overwrite", "pageImages", "pages", "path"]);
 	assert.strictEqual(TUNABLE_DEFAULTS.primaryTimeoutMs, 60000);
 	assert.strictEqual(TUNABLE_DEFAULTS.fallbackTimeoutMs, 30000);
 	assert.strictEqual(TUNABLE_DEFAULTS.sofficeTimeoutMs, 120000);
@@ -148,6 +148,31 @@ test("pageImages: per-call bool, default false, not settable", () => {
 test("help text documents the stem rule and empty pages", () => {
 	assert.match(DOC_TO_MD_OPTIONS.find((o) => o.key === "outputDir")!.help, /\[\^A-Za-z0-9\._-\]\+ -> _/);
 	assert.match(DOC_TO_MD_OPTIONS.find((o) => o.key === "pages")!.help, /"" means all pages/);
+});
+
+test("ocrMode: per-call enum, default textless, not settable, all + info rejected", () => {
+	const d = DOC_TO_MD_OPTIONS.find((o) => o.key === "ocrMode")!;
+	assert.deepStrictEqual([d.type, d.default, d.settable, d.flag, d.enumValues], ["enum", "textless", false, "--ocr-mode", ["textless", "all"]]);
+	assert.match(d.help, /ocr\/<stem>-pNNN\.md/);
+	assert.match(d.help, /all requires --ocr and an explicit --pages/);
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, {}, {}).ocrMode, "textless");
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocrMode: "all" }, {}, {}).ocrMode, "all");
+	assert.throws(() => resolveOptions({ path: "a.pdf", ocrMode: "sometimes" as never }, {}, {}), /--ocr-mode must be one of textless, all/);
+	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, ocrMode: "all" }, {}, {}), { constructor: UsageError, message: "--info cannot be combined with --pages, --output-dir, --overwrite, --page-images or --ocr-mode all" });
+	assert.strictEqual(resolveOptions({ path: "a.pdf", info: true, ocrMode: "textless" }, {}, {}).info, true);
+	assert.deepStrictEqual(coerceDocToMdSettings({ ocrMode: "all" }), {});
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { ocrMode: "all" } as never, {}).ocrMode, "textless");
+});
+
+test("USAGE_PATTERNS: template carries <cmd>, usagePatterns substitutes it, renderHelp ends with it", () => {
+	assert.strictEqual(typeof USAGE_PATTERNS, "string");
+	assert.ok(USAGE_PATTERNS.includes("<cmd> report.pdf --output-dir out --json"));
+	assert.ok(USAGE_PATTERNS.includes("--ocr --ocr-mode all --pages 2,7 --json"));
+	const rendered = usagePatterns("pi-quiver doc-to-md");
+	assert.ok(!rendered.includes("<cmd>"));
+	assert.ok(rendered.includes("pi-quiver doc-to-md report.pdf --output-dir out --json"));
+	assert.ok(renderHelp().endsWith(rendered));
+	assert.ok(renderHelp().includes("--ocr-mode"));
 });
 
 test("renderHelp: lists every flag and both tables", () => {

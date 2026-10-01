@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { convertDocument, inspectDocument, resetBackendCacheForTests, resolveOptions } from "../lib/doc-to-md-core.ts";
+import { convertDocument, inspectDocument, resetBackendCacheForTests, resolveOptions, runTierReal, type PipelineSeams } from "../lib/doc-to-md-core.ts";
+import type { PageStat } from "../lib/doc-to-md-handle.ts";
 
 const has = (cmd: string) => spawnSync(cmd, ["--version"], { stdio: "ignore", shell: process.platform === "win32" }).status === 0;
 const HAS_UV = has("uv");
@@ -351,6 +352,79 @@ test("Excel stall (excelTimeoutMs 1) -> remedy error, lock released", T, async (
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		const survivors = [...excelPids()].filter((pid) => !before.has(pid));
 		assert.deepStrictEqual(survivors, [], "Excel child survived timeout");
+	}
+});
+
+const SHORT = () => fx("short-text-ocr.pdf");
+const skipUnavailable = async <T,>(t: { skip: (m: string) => void }, run: () => Promise<T>): Promise<T | null> => {
+	try { return await run(); } catch (e) { if (/OCR unavailable|no Python backend/.test((e as Error).message)) { t.skip((e as Error).message); return null; } throw e; }
+};
+
+test("short-text-ocr.pdf --ocr default: no OCR on either page; pages.json reports the thin page", T, async () => {
+	const r = await convertDocument(opts(SHORT(), { ocr: true, outputDir: tmp }));
+	assert.deepStrictEqual(r.details.ocr?.pages ?? [], []);
+	const md = readFileSync(r.details.savedTo, "utf8");
+	assert.ok(!md.includes("Text recognized"), md);
+	assert.match(md.split("--- end of page.page_number=1 ---")[1], /^3$/m);
+	const h = parseHandle(r.output);
+	assert.strictEqual(h["Page-Stats"], join(tmp, "short-text-ocr.pages.json"));
+	const stats = JSON.parse(readFileSync(h["Page-Stats"], "utf8")) as Extract<PageStat, { chars: number }>[];
+	assert.strictEqual(stats.length, 2);
+	assert.ok(stats[0].chars >= 200 && stats[0].images === 0, JSON.stringify(stats[0]));
+	assert.ok(stats[1].chars === 1 && stats[1].images === 1 && stats[1].imageCoverage >= 0.9, JSON.stringify(stats[1]));
+	assert.deepStrictEqual(r.details.pageStats, stats);
+});
+
+test("short-text-ocr.pdf --ocr --ocr-mode all --pages 2: sidecar with the known words, Markdown byte-identical", T, async (t) => {
+	const plain = await convertDocument(opts(SHORT(), { pages: "2", outputDir: join(tmp, "plain") }));
+	const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "2", outputDir: join(tmp, "forced") })));
+	if (!r) return;
+	const sidecar = join(tmp, "forced", "ocr", "short-text-ocr-p002.md");
+	assert.ok(existsSync(sidecar), r.output);
+	const text = readFileSync(sidecar, "utf8");
+	assert.ok(text.startsWith("<!-- OCR of page 2 (tesseract eng); recognized text, not the text layer -->\n\n"), text);
+	assert.match(text, /Hello OCR world 12345/);
+	assert.ok(text.trimEnd().endsWith("--- end of page.page_number=2 ---"), text);
+	assert.deepStrictEqual([r.details.ocr!.mode, r.details.ocr!.pages, r.details.ocr!.textless, r.details.ocr!.sidecars[2]], ["all", [2], [], sidecar]);
+	assert.ok(readFileSync(r.details.savedTo).equals(readFileSync(plain.details.savedTo)));
+	assert.strictEqual(parseHandle(r.output)["OCR-Dir"], join(tmp, "forced", "ocr"));
+});
+
+test("scan.pdf --ocr --ocr-mode all --pages 1: textless page keeps the picture link only, one sidecar, textless reported", T, async (t) => {
+	const plain = await convertDocument(opts(fx("scan.pdf"), { pages: "1", outputDir: join(tmp, "plain") }));
+	const r = await skipUnavailable(t, () => convertDocument(opts(fx("scan.pdf"), { ocr: true, ocrMode: "all", pages: "1", outputDir: join(tmp, "forced") })));
+	if (!r) return;
+	assert.ok(readFileSync(r.details.savedTo).equals(readFileSync(plain.details.savedTo)));
+	assert.ok(!readFileSync(r.details.savedTo, "utf8").includes("Text recognized"));
+	assert.deepStrictEqual([r.details.ocr!.textless, Object.keys(r.details.ocr!.sidecars)], [[1], ["1"]]);
+	assert.match(readFileSync(r.details.ocr!.sidecars[1], "utf8"), /Hello OCR world 12345/);
+});
+
+test("ocr-mode all after a forced pdf-fallback tier still produces sidecars", T, async (t) => {
+	const seams: Partial<PipelineSeams> = { runTier: (mode, ...rest) => mode === "pdf-primary" ? Promise.resolve({ ok: false, reason: "timeout after 1ms" }) : runTierReal(mode, ...rest) };
+	const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "2", outputDir: tmp }), undefined, seams));
+	if (!r) return;
+	assert.match(r.output, /Tier: fallback/);
+	assert.ok(existsSync(join(tmp, "ocr", "short-text-ocr-p002.md")));
+	assert.deepStrictEqual(r.details.ocr!.pages, [2]);
+});
+
+test("ocr-mode all: a wedged sidecar child is killed at the deadline; page 1 named, page 2 not attempted, Markdown intact", T, async (t) => {
+	const seams: Partial<PipelineSeams> = { runTier: (mode, co, b, signal, timeoutMs, backend) => runTierReal(mode, co, b, signal, mode === "ocr-pages" ? 3000 : timeoutMs, backend) };
+	const plain = await convertDocument(opts(SHORT(), { pages: "1,2", outputDir: join(tmp, "plain") }));
+	const previous = process.env.DOC_TO_MD_OCR_STALL_PAGE;
+	process.env.DOC_TO_MD_OCR_STALL_PAGE = "1";
+	try {
+		const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "1,2", outputDir: tmp }), undefined, seams));
+		if (!r) return;
+		assert.deepStrictEqual([r.details.ocr!.killed, r.details.ocr!.notAttempted, r.details.ocr!.pages, r.details.ocrDir], [1, [2], [], null]);
+		assert.deepStrictEqual(existsSync(join(tmp, "ocr")) ? readdirSync(join(tmp, "ocr")) : [], []);
+		assert.ok(existsSync(r.details.savedTo) && !existsSync(`${r.details.savedTo}.lock`));
+		assert.ok(readFileSync(r.details.savedTo).equals(readFileSync(plain.details.savedTo)));
+		assert.match(r.output, /page 1 killed the OCR child \(timeout or crash - likely a compression bomb\); page 2 not attempted - re-run with --pages 2/);
+	} finally {
+		if (previous === undefined) delete process.env.DOC_TO_MD_OCR_STALL_PAGE;
+		else process.env.DOC_TO_MD_OCR_STALL_PAGE = previous;
 	}
 });
 

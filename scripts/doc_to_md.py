@@ -253,6 +253,19 @@ def primary_page_markdown(doc, n, d, o, kw, write_images):
         return rewrite_image_destinations(md, sources)
 
 
+def page_stats(doc, n):
+    try:
+        page = doc[n - 1]
+        chars = len(page.get_text("text").strip())
+        infos = page.get_image_info()
+        area = page.rect.width * page.rect.height
+        covered = sum(max(0.0, (b[2] - b[0]) * (b[3] - b[1])) for b in (i["bbox"] for i in infos))
+        coverage = round(min(1.0, covered / area), 2) if area > 0 else 0.0
+        return {"page": n, "chars": chars, "images": len(infos), "imageCoverage": coverage}
+    except Exception as exc:  # noqa: BLE001 - stats never cost a page its Markdown
+        return {"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
 def mode_pdf_primary(o):
     import time
     start = time.monotonic()
@@ -260,11 +273,13 @@ def mode_pdf_primary(o):
     pages = check_pages(o.get("pages"), doc.page_count)
     staging, out, empty, failed, notes = o["stagingDir"], [], [], [], []
     page_images = []
+    stats = []
     lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
     info = new_ocr(lang)
     status = ocr_status(True, lang) if o.get("ocr") else None
     ocr_ms, plain_ms = [], []
     for i, n in enumerate(pages):
+        stats.append(page_stats(doc, n))
         d = page_dir(staging, n)
         try:
             page = doc[n - 1]
@@ -325,7 +340,7 @@ def mode_pdf_primary(o):
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images}
+            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images, "pageStats": stats}
 
 
 def mode_pdf_fallback(o):
@@ -335,10 +350,12 @@ def mode_pdf_fallback(o):
     keep = {int(k): v for k, v in (o.get("keepPages") or {}).items()}
     staging, out, empty, failed = o["stagingDir"], [], [], []
     page_images = []
+    stats = []
     lang = o.get("ocrLanguage", "eng")
     ocr_info = new_ocr(lang)
     status = {"status": "unavailable", "reason": "fallback tier", "tesseract": None} if o.get("ocr") else None
     for n in pages:
+        stats.append(page_stats(doc, n))
         links = [f"![](images/{f})" for f in keep.get(n, [])]
         text = ""
         page_pic = None
@@ -389,7 +406,64 @@ def mode_pdf_fallback(o):
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images}
+            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images, "pageStats": stats}
+
+
+def mode_ocr_pages(o):
+    import time
+    start = time.monotonic()
+    lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
+    status = ocr_status(True, lang)
+    if status["status"] != "ready":
+        return {"status": "unavailable", "reason": status["reason"]}
+    doc = open_pdf(o["path"])
+    pages = check_pages(o.get("pages"), doc.page_count)
+    staging, stem, dpi = o["stagingDir"], o["stem"], o.get("dpi", 150)
+    os.makedirs(staging, exist_ok=True)
+    active = os.path.join(staging, "active")
+    out = {"status": "ran", "written": [], "noText": [], "ocrFailed": [], "ocrErrors": {}, "budgetStopped": []}
+    ocr_ms = []
+    for i, n in enumerate(pages):
+        with open(active, "w") as fh:
+            fh.write(str(n))
+        if os.environ.get("DOC_TO_MD_OCR_STALL_PAGE") == str(n):  # tests only: simulate a wedged page
+            time.sleep(3600)
+        elapsed = (time.monotonic() - start) * 1000
+        est = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
+        if not ocr_admit(elapsed, est, 0, 0, budget):
+            out["budgetStopped"].extend(pages[i:])
+            os.remove(active)
+            break
+        tag = f"p{n:03d}"
+        d = os.path.join(staging, tag)
+        os.makedirs(d, exist_ok=True)
+        sidecar = os.path.join(d, f"{stem}-{tag}.md")
+        t0 = time.monotonic()
+        try:
+            page = doc[n - 1]
+            eff = clamped_dpi(page.rect.width, page.rect.height, dpi)
+            if eff is None:
+                raise RuntimeError(f"page cannot be rendered at a usable DPI ({page.rect.width:.0f} x {page.rect.height:.0f} pt)")
+            tp = page.get_textpage_ocr(full=True, language=lang, dpi=eff)
+            text = page.get_text("text", textpage=tp).strip()
+            header = f"<!-- OCR of page {n} (tesseract {lang}); recognized text, not the text layer -->"
+            with open(sidecar, "w", encoding="utf-8") as fh:
+                fh.write(header + "\n\n" + (text + "\n\n" if text else "") + SEP.format(n=n).strip("\n") + "\n")
+            mark_done(d)
+            (out["written"] if text else out["noText"]).append(n)
+        except Exception as exc:  # noqa: BLE001 - one page never stops the pass
+            msg = f"{type(exc).__name__}: {exc}"
+            with open(os.path.join(d, ".failed"), "w", encoding="utf-8") as fh:
+                fh.write(msg)
+            try:
+                os.remove(sidecar)
+            except OSError:
+                pass
+            out["ocrFailed"].append(n)
+            out["ocrErrors"][str(n)] = msg
+        ocr_ms.append((time.monotonic() - t0) * 1000)
+        os.remove(active)
+    return out
 
 
 def esc(v):
@@ -1249,12 +1323,12 @@ def mode_render_pages(o):
     return {"ok": True, "rendered": rendered, "failed": failed}
 
 
-MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx, "html": mode_html, "image": mode_image, "email": mode_email}
+MODES = {"info": None, "pdf-primary": mode_pdf_primary, "pdf-fallback": mode_pdf_fallback, "xlsx": mode_xlsx, "render-pages": mode_render_pages, "docx": mode_docx, "html": mode_html, "image": mode_image, "email": mode_email, "ocr-pages": mode_ocr_pages}
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in MODES:
-        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx|html|image|email>  (options JSON on stdin)", file=sys.stderr)
+        print("usage: doc_to_md.py <info|pdf-primary|pdf-fallback|xlsx|render-pages|docx|html|image|email|ocr-pages>  (options JSON on stdin)", file=sys.stderr)
         return 1
     mode = sys.argv[1]
     o = json.loads(sys.stdin.read() or "{}")

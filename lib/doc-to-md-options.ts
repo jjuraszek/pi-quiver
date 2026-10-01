@@ -6,6 +6,7 @@ import { extname } from "node:path";
 
 export type InputType = "pdf" | "docx" | "doc" | "pptx" | "xlsx" | "xlsm" | "xls" | "html" | "image" | "email";
 export type ImageFormat = "png" | "jpg";
+export type OcrMode = "textless" | "all";
 
 export interface Tunables {
 	primaryTimeoutMs: number;
@@ -29,6 +30,7 @@ export interface DocToMdOptions extends Tunables {
 	outputDir: string | null;
 	overwrite: boolean;
 	pageImages: boolean;
+	ocrMode: OcrMode;
 }
 
 /** What adapters pass in: intents as raw strings/booleans, tunables optional. */
@@ -39,6 +41,7 @@ export interface PerCallInput extends Partial<Tunables> {
 	outputDir?: string | null;
 	overwrite?: boolean;
 	pageImages?: boolean;
+	ocrMode?: OcrMode;
 }
 
 export type DescriptorType = "string" | "int" | "bool" | "pages" | "enum" | "version" | "lang";
@@ -68,6 +71,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir. <stem> = basename without extension with [^A-Za-z0-9._-]+ -> _ (empty -> document); a second call on the same stem writes <stem>-2.md" },
 	{ key: "overwrite", flag: "--overwrite", type: "bool", default: false, settable: false, help: "Replace an existing completed <stem>.md bundle" },
 	{ key: "pageImages", flag: "--page-images", type: "bool", default: false, settable: false, help: "Also render every selected page to pages/<stem>-pNNN.<imageFormat> at imageDpi (PDF, PPTX, .doc, DOCX via LibreOffice); off by default" },
+	{ key: "ocrMode", flag: "--ocr-mode", type: "enum", default: "textless", settable: false, enumValues: ["textless", "all"], help: "OCR policy: textless (default) OCRs only pages with an empty text layer, inline; all OCRs every selected page and writes the recognized text to ocr/<stem>-pNNN.md sidecars, leaving the Markdown untouched. all requires --ocr and an explicit --pages selection (PDF, PPTX, DOC)." },
 	{ key: "primaryTimeoutMs", flag: "--primary-timeout", type: "int", default: 60000, settable: true, env: "PI_DOC_TO_MD_CONVERT_TIMEOUT_MS", help: "pymupdf4llm tier and DOCX child (docx mode); also the unpdf tier" },
 	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier (including DOCX LibreOffice fallback); also PDF and DOCX info and Excel rendered views" },
 	{ key: "sofficeTimeoutMs", flag: "--soffice-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS", help: "DOCX/PPTX -> PDF via LibreOffice; also Excel rendered views" },
@@ -177,11 +181,31 @@ export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables
 		out[d.key] = value;
 	}
 	const o = out as unknown as DocToMdOptions;
-	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages)) {
-		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite or --page-images");
+	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages || o.ocrMode === "all")) {
+		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite, --page-images or --ocr-mode all");
 	}
 	return o;
 }
+
+/** Two-pass OCR recipe, rendered into --help and the generated skill; `<cmd>` is the command prefix. */
+export const USAGE_PATTERNS = [
+	"Two-pass OCR (PDF, PPTX, DOC):",
+	"  1. <cmd> report.pdf --output-dir out --json",
+	'       -> "pageStatsPath" points at out/report.pages.json; pages with few',
+	'          chars and high imageCoverage are scans. "savedTo" is the Markdown.',
+	"  2. <cmd> report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json",
+	'       -> "ocr"."sidecars" maps 2 and 7 to out/ocr/report-2-p002.md and',
+	"          ...-p007.md (a second run in the same dir gets stem report-2);",
+	"          the Markdown of this run holds pages 2 and 7 only and equals what",
+	"          --pages 2,7 without --ocr would produce. Read sidecars and Markdown",
+	"          by the returned paths, never by guessing names.",
+	"  3. --ocr-mode all refuses to run without --ocr and an explicit --pages.",
+	'     The "ocr" object (OCR: line) names failed, budget-stopped, killed and',
+	"     not-attempted pages and the exact --pages to re-run.",
+	"  Details: doc/doc-to-md.md (bundle contract, failure buckets).",
+].join("\n");
+
+export const usagePatterns = (cmd: string): string => USAGE_PATTERNS.replaceAll("<cmd>", cmd);
 
 export function renderHelp(): string {
 	const row = (d: OptionDescriptor) => `  ${(d.flag ?? "<path>").padEnd(26)} ${d.help}${d.default !== null && d.key !== "info" && d.key !== "overwrite" ? ` (default ${d.default})` : ""}`;
@@ -190,7 +214,8 @@ export function renderHelp(): string {
 		"", "Per-call:", ...DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map(row),
 		"", "Tunables (also settable under quiver.docToMd in settings.json; per-call > settings > default):",
 		...DOC_TO_MD_OPTIONS.filter((d) => d.settable).map(row),
-		"", "Result: a handle (Saved-To, Images-Dir, Page-Count, Outline ...). Read the Saved-To file for the Markdown.",
+		"", "Result: a handle (Saved-To, Images-Dir, Page-Stats, Page-Count, Outline ...). Read the Saved-To file for the Markdown.",
 		"Exit codes: 0 success, 1 runtime error, 2 usage error.",
+		"", usagePatterns("pi-quiver doc-to-md"),
 	].join("\n");
 }

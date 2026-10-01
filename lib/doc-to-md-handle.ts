@@ -1,4 +1,4 @@
-import type { InputType } from "./doc-to-md-options.ts";
+import type { InputType, OcrMode } from "./doc-to-md-options.ts";
 
 export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image" | "email";
 export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy" | "extract-msg" | "email";
@@ -18,6 +18,8 @@ export interface SheetInfo {
 	csv: string | null;
 }
 
+export type PageStat = { page: number; chars: number; images: number; imageCoverage: number } | { page: number; error: string };
+
 export interface OcrInfo {
 	status: "off" | "unavailable" | "skipped" | "ran";
 	lang: string;
@@ -28,6 +30,12 @@ export interface OcrInfo {
 	budgetStopped: number[];
 	reason: string | null;
 	tesseract: boolean | null;
+	mode: OcrMode;
+	sidecars: Record<number, string>;
+	ocrErrors: Record<number, string>;
+	killed: number | null;
+	notAttempted: number[];
+	childError: string | null;
 }
 
 export interface HandleData {
@@ -35,6 +43,7 @@ export interface HandleData {
 	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; pageImageCount: number; pageImagesReason: string | null; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number; ocr: OcrInfo | null;
+	pageStats: PageStat[] | null; pageStatsPath: string | null; ocrDir: string | null;
 }
 
 export interface InfoData {
@@ -72,7 +81,23 @@ export function compactRanges(nums: number[], maxEntries = 20): string {
 const INSTALL_HINT = "install Tesseract (see doc/doc-to-md.md), then rerun with ocr=true";
 const BARE_REASONS = ["fallback tier", "no Python backend"];
 
+const pageList = (pages: number[]) => `page${pages.length === 1 ? "" : "s"} ${pages.join(", ")}`;
+
+function forcedOcrLine(ocr: OcrInfo): string {
+	const clauses: string[] = [];
+	if (ocr.pages.length) clauses.push(`sidecars for ${pageList(ocr.pages)}`);
+	if (ocr.noText.length) clauses.push(`no text on ${pageList(ocr.noText)}`);
+	for (const page of ocr.ocrFailed) clauses.push(`failed on page ${page} (${ocr.ocrErrors[page] ?? "unknown error"})`);
+	if (ocr.budgetStopped.length) clauses.push(`budget-stopped ${pageList(ocr.budgetStopped)}`);
+	if (ocr.killed !== null) clauses.push(`page ${ocr.killed} killed the OCR child (timeout or crash - likely a compression bomb)`);
+	if (ocr.childError !== null) clauses.push(`OCR child failed before processing pages: ${ocr.childError}`);
+	if (ocr.notAttempted.length) clauses.push(`${pageList(ocr.notAttempted)} not attempted`);
+	const rerun = [...ocr.budgetStopped, ...ocr.notAttempted].sort((a, b) => a - b);
+	return `OCR: forced (${ocr.lang}) - ${clauses.join("; ")}${rerun.length ? ` - re-run with --pages ${rerun.join(",")}` : ""}`;
+}
+
 export function ocrLine(ocr: OcrInfo, type: InputType): string {
+	if (ocr.mode === "all") return forcedOcrLine(ocr);
 	const image = type === "image";
 	const rerun = ocr.tesseract ? "rerun with ocr=true" : INSTALL_HINT;
 	switch (ocr.status) {
@@ -143,6 +168,8 @@ export function formatHandle(h: HandleData): string {
 	if (h.sheetsDir) lines.push(`Sheets-Dir: ${h.sheetsDir}`);
 	if (h.pagesDir && h.pageImageCount > 0) lines.push(`Pages-Dir: ${h.pagesDir} (${h.pageImageCount} pages)`);
 	else if (h.pageImagesReason) lines.push(`Pages-Dir: none - ${h.pageImagesReason}`);
+	if (h.pageStatsPath) lines.push(`Page-Stats: ${h.pageStatsPath}`);
+	if (h.ocrDir) lines.push(`OCR-Dir: ${h.ocrDir}`);
 	lines.push(`Type: ${h.type}   Engine: ${h.engine}   Tier: ${h.tier}`);
 	lines.push(`Page-Count: ${pageCountLabel(h)}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);
 	if (h.degraded) lines.push(`Degraded: ${h.degraded}`);

@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { abortBundle, commitBundle, openBundle, ownedCsvPattern, ownedPattern, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
+import { abortBundle, commitBundle, openBundle, ownedOcrPattern, publishSidecars, writePageStats, ownedCsvPattern, ownedPattern, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "quiver-bundle-"));
 
@@ -297,5 +297,74 @@ test("abortBundle removes staged + published CSVs; overwrite cleans only this st
 		assert.ok(existsSync(join(b2.sheetsDir, "other-s0-data.csv")) && existsSync(join(b2.sheetsDir, "other-s1-x.csv")));
 		assert.ok(existsSync(join(root, "images", "book-custom.png")) && !existsSync(join(root, "images", "book-s0.png")) && existsSync(join(root, "images", "other-s0.png")));
 		abortBundle(b2);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function stageSidecar(b: { ocrStagingDir: string; stem: string }, page: number, done: boolean, body = "text") {
+	const tag = `p${String(page).padStart(3, "0")}`;
+	const d = join(b.ocrStagingDir, tag); mkdirSync(d, { recursive: true });
+	writeFileSync(join(d, `${b.stem}-${tag}.md`), `<!-- OCR of page ${page} (tesseract eng); recognized text, not the text layer -->\n\n${body}\n\n--- end of page.page_number=${page} ---\n`);
+	if (done) writeFileSync(join(d, ".done"), "");
+}
+
+test("ownedOcrPattern: exact stem, p + digits + .md only", () => {
+	const re = ownedOcrPattern("x");
+	assert.ok(re.test("x-p002.md") && re.test("x-p1234.md"));
+	assert.ok(!re.test("x-2-p002.md") && !re.test("xx-p002.md") && !re.test("x-p002.txt") && !re.test("x-p2-1.png"));
+});
+
+test("writePageStats + publishSidecars: stats beside the Markdown, only .done sidecars move, manifest + map, staging removed", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "manual", false);
+		assert.strictEqual(b.pageStatsPath, join(root, "manual.pages.json"));
+		assert.strictEqual(b.ocrDir, join(root, "ocr"));
+		assert.ok(b.ocrStagingDir.startsWith(join(root, "ocr", ".stage-")));
+		writePageStats(b, [{ page: 1, chars: 12, images: 0, imageCoverage: 0 }, { page: 2, error: "RuntimeError: x" }]);
+		assert.deepStrictEqual(JSON.parse(readFileSync(b.pageStatsPath, "utf8")), [{ page: 1, chars: 12, images: 0, imageCoverage: 0 }, { page: 2, error: "RuntimeError: x" }]);
+		stageSidecar(b, 2, true); stageSidecar(b, 7, true); stageSidecar(b, 9, false);
+		writeFileSync(join(b.ocrStagingDir, "active"), "9");
+		const map = publishSidecars(b);
+		assert.deepStrictEqual([...map.entries()], [[2, join(root, "ocr", "manual-p002.md")], [7, join(root, "ocr", "manual-p007.md")]]);
+		assert.deepStrictEqual([...b.ocrManifest].sort(), ["manual-p002.md", "manual-p007.md"]);
+		assert.deepStrictEqual(readdirSync(join(root, "ocr")).sort(), ["manual-p002.md", "manual-p007.md"]);
+		assert.ok(!existsSync(b.ocrStagingDir));
+		stageSidecar(b, 10, false);
+		commitBundle(b, "x\n");
+		assert.ok(!existsSync(b.ocrStagingDir));
+		assert.ok(existsSync(b.pageStatsPath) && existsSync(join(root, "ocr", "manual-p002.md")) && !existsSync(b.lockPath));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("publishSidecars: no staging dir is a no-op; abortBundle removes published sidecars, staging and the stats file", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "manual", false);
+		assert.deepStrictEqual([...publishSidecars(b).entries()], []);
+		writePageStats(b, []);
+		stageSidecar(b, 1, true); publishSidecars(b);
+		stageSidecar(b, 2, false);
+		mkdirSync(join(root, "ocr"), { recursive: true }); writeFileSync(join(root, "ocr", "other-p001.md"), "foreign");
+		abortBundle(b);
+		assert.ok(!existsSync(b.pageStatsPath) && !existsSync(join(root, "ocr", "manual-p001.md")) && !existsSync(b.lockPath));
+		assert.ok(existsSync(join(root, "ocr", "other-p001.md")));
+		assert.ok(!existsSync(b.ocrStagingDir));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("openBundle: two stems keep separate stats files; overwrite removes only this stem's pages.json and ocr/ files; held lock refuses overwrite", () => {
+	const root = tmp();
+	try {
+		const a = openBundle(root, "report", false); writePageStats(a, [{ page: 1, chars: 1, images: 0, imageCoverage: 0 }]); stageSidecar(a, 1, true); publishSidecars(a); commitBundle(a, "a\n");
+		const b2 = openBundle(root, "report", false);
+		assert.strictEqual(b2.stem, "report-2");
+		assert.strictEqual(b2.pageStatsPath, join(root, "report-2.pages.json"));
+		writePageStats(b2, []); stageSidecar(b2, 1, true); publishSidecars(b2); commitBundle(b2, "b\n");
+		assert.deepStrictEqual(readdirSync(join(root, "ocr")).sort(), ["report-2-p001.md", "report-p001.md"]);
+		const again = openBundle(root, "report", true);
+		assert.ok(!existsSync(join(root, "report.pages.json")) && !existsSync(join(root, "ocr", "report-p001.md")));
+		assert.ok(existsSync(join(root, "report-2.pages.json")) && existsSync(join(root, "ocr", "report-2-p001.md")));
+		assert.throws(() => openBundle(root, "report", true), /Another conversion owns .*report\.md/);
+		abortBundle(again);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
