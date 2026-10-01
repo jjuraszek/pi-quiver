@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.9.0 - 2026-10-01
 
 - `doc_to_md`: every conversion that goes through the Python PDF tiers (PDF, PPTX, `.doc`, DOCX via LibreOffice) writes `<stem>.pages.json` (per-page `chars`, `images`, `imageCoverage`) and the handle prints `Page-Stats:`; CLI `--json` gains `pageStats`, `pageStatsPath`, `ocrDir`. The unpdf tier writes no stats (#26).
 - `doc_to_md`: new per-call `ocrMode` (`--ocr-mode textless|all`). `all` forces OCR on an explicit `pages` selection in a second, kill-capped Python child and writes `ocr/<stem>-pNNN.md` sidecars; the Markdown stays byte-identical to the same selected-page call without OCR. Refused without `--ocr`, without explicit pages, or on non-PDF/PPTX/DOC inputs (exit 2); missing Tesseract data is a hard error. The `OCR:` line names written, no-text, failed, budget-stopped, killed and not-attempted pages, with the exact `--pages` to re-run for budget-stopped and not-attempted pages (#26).
