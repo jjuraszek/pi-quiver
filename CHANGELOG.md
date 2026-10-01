@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.7.1 - 2026-10-01
 
 - `slack_post`/`slack_update` explain native Slack representations for skill-required formatting, with complete readable fallback; otherwise plain content stays plain.
 - `slack_post` announcements carry native blocks in the detail reply without upload fallback and preserve structured detail in JSON for existing-thread recovery.
