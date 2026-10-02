@@ -1,5 +1,7 @@
 # doc_to_md caller-driven OCR: per-page stats, forced OCR on selected pages, sidecars
 
+> **Superseded by:** [doc/specs/2026-10-01-gh-28-doc-to-md-word-positions.md](./2026-10-01-gh-28-doc-to-md-word-positions.md) - the "Positional word sidecars" out-of-scope line only
+
 **Goal:** Let a caller run `doc_to_md` once, read per-page facts (text size, image count, image coverage) from the bundle, and then force OCR on the pages it names - with the recognized text written to `ocr/` sidecars that never touch the trusted Markdown - while making a whole-document forced OCR impossible by accident and a wedged OCR process impossible to hang the caller.
 
 Ticket: [jjuraszek/pi-quiver#26](https://github.com/jjuraszek/pi-quiver/issues/26).

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { convertDocument, inspectDocument, resetBackendCacheForTests, resolveOptions, runTierReal, type PipelineSeams } from "../lib/doc-to-md-core.ts";
 import type { PageStat } from "../lib/doc-to-md-handle.ts";
+import { TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
 
 const has = (cmd: string) => spawnSync(cmd, ["--version"], { stdio: "ignore", shell: process.platform === "win32" }).status === 0;
 const HAS_UV = has("uv");
@@ -415,8 +416,11 @@ test("ocr-mode all: a wedged sidecar child is killed at the deadline; page 1 nam
 	const previous = process.env.DOC_TO_MD_OCR_STALL_PAGE;
 	process.env.DOC_TO_MD_OCR_STALL_PAGE = "1";
 	try {
-		const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "1,2", outputDir: tmp }), undefined, seams));
+		const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "1,2", outputDir: tmp, words: true }), undefined, seams));
 		if (!r) return;
+		assert.ok(!existsSync(join(tmp, "ocr", "short-text-ocr-p001.md")));
+		assert.ok(!existsSync(join(tmp, "ocr", "short-text-ocr-p001.words.json")));
+		assert.ok(!Object.hasOwn(r.details.ocr!.wordSidecars, 1));
 		assert.deepStrictEqual([r.details.ocr!.killed, r.details.ocr!.notAttempted, r.details.ocr!.pages, r.details.ocrDir], [1, [2], [], null]);
 		assert.deepStrictEqual(existsSync(join(tmp, "ocr")) ? readdirSync(join(tmp, "ocr")) : [], []);
 		assert.ok(existsSync(r.details.savedTo) && !existsSync(`${r.details.savedTo}.lock`));
@@ -426,6 +430,204 @@ test("ocr-mode all: a wedged sidecar child is killed at the deadline; page 1 nam
 		if (previous === undefined) delete process.env.DOC_TO_MD_OCR_STALL_PAGE;
 		else process.env.DOC_TO_MD_OCR_STALL_PAGE = previous;
 	}
+});
+
+const words = (r: { details: { wordsPath: string | null } }) => {
+	assert.ok(r.details.wordsPath, "words document published");
+	return JSON.parse(readFileSync(r.details.wordsPath, "utf8"));
+};
+
+test("CLI subprocess: --json --words publishes the geometry words path", T, () => {
+	const bin = fileURLToPath(new URL("../bin/pi-quiver.ts", import.meta.url));
+	const result = spawnSync(process.execPath, [bin, "doc-to-md", "--json", "--words", "--pages", "1", fx("multipage.pdf"), "--output-dir", tmp], { encoding: "utf8", timeout: T.timeout });
+	assert.strictEqual(result.status, 0, result.error?.message ?? result.stderr);
+	const h = JSON.parse(result.stdout);
+	assert.strictEqual(typeof h.wordsPath, "string");
+	assert.strictEqual(h.wordsPath, join(tmp, "multipage.words.json"));
+	assert.ok(existsSync(h.wordsPath));
+	assert.strictEqual(h.wordsReason, null);
+});
+
+test("words: multipage p1 has 13 text words, unchanged Markdown, fallback parity, no file without --words", T, async () => {
+	const plain = await convertDocument(opts(fx("multipage.pdf"), { pages: "1", outputDir: join(tmp, "plain") }));
+	assert.equal(plain.details.wordsPath, null);
+	assert.ok(!existsSync(join(tmp, "plain", "multipage.words.json")));
+	const r = await convertDocument(opts(fx("multipage.pdf"), { pages: "1", outputDir: join(tmp, "w"), words: true }));
+	assert.equal(parseHandle(r.output)["Words"], join(tmp, "w", "multipage.words.json"));
+	assert.ok(readFileSync(r.details.savedTo).equals(readFileSync(plain.details.savedTo)));
+	const w = words(r);
+	assert.equal(w.unit, "pt");
+	assert.equal(w.pages.length, 1);
+	assert.deepEqual([w.pages[0].page, w.pages[0].width, w.pages[0].height, w.pages[0].rotation, w.pages[0].words.length], [1, 595, 842, 0, 13]);
+	const probe = spawnSync("uv", ["run", "--with", `pymupdf==${TUNABLE_DEFAULTS.pymupdfVersion}`, "--python", "3.14", "python", "-c", "import pymupdf,json,sys; print(json.dumps(pymupdf.open(sys.argv[1])[0].get_text('text').split()))", fx("multipage.pdf")], { encoding: "utf8" });
+	assert.equal(probe.status, 0, probe.stderr);
+	assert.deepEqual(w.pages[0].words.map((x: any) => x.text), JSON.parse(probe.stdout));
+	for (const x of w.pages[0].words) {
+		assert.equal(x.source, "text");
+		assert.ok(x.bbox[0] >= 0 && x.bbox[1] >= 0 && x.bbox[2] <= 595 && x.bbox[3] <= 842, JSON.stringify(x));
+	}
+	const fb = await convertDocument(opts(fx("multipage.pdf"), { pages: "1", primaryTimeoutMs: 1, outputDir: join(tmp, "fb"), words: true }));
+	assert.match(fb.output, /Tier: fallback/);
+	assert.deepEqual(words(fb).pages[0].words.map((x: any) => x.text), w.pages[0].words.map((x: any) => x.text));
+});
+
+test("words: rotated display space on both tiers; blank empty and omitted when OCR unavailable", T, async () => {
+	for (const [dir, extra] of [["p", {}], ["f", { primaryTimeoutMs: 1 }]] as const) {
+		const r = await convertDocument(opts(fx("rotated.pdf"), { outputDir: join(tmp, dir), words: true, ...extra }));
+		assert.match(r.output, dir === "p" ? /Tier: primary/ : /Tier: fallback/);
+		const p = words(r).pages[0];
+		assert.deepEqual([p.width, p.height, p.rotation, p.words[0].text], [792, 612, 90, "NORTH"]);
+		assert.ok(Math.abs(p.words[0].bbox[0] - 720) <= 10 && Math.abs(p.words[0].bbox[1] - 72) <= 10, `rotated.pdf: ${p.words[0].bbox}`);
+	}
+	const b = await convertDocument(opts(fx("blank.pdf"), { outputDir: join(tmp, "b"), words: true }));
+	assert.deepEqual(words(b).pages, [{ page: 1, width: 595, height: 842, rotation: 0, words: [] }]);
+	const prev = process.env.TESSDATA_PREFIX;
+	process.env.TESSDATA_PREFIX = join(tmp, "none");
+	try {
+		const o = await convertDocument(opts(fx("blank.pdf"), { outputDir: join(tmp, "bo"), ocr: true, words: true }));
+		assert.equal(o.details.ocr?.status, "unavailable");
+		assert.deepEqual(words(o).pages, []);
+	} finally {
+		if (prev === undefined) delete process.env.TESSDATA_PREFIX;
+		else process.env.TESSDATA_PREFIX = prev;
+	}
+});
+
+test("words + ocr: scan picture coordinates, image pixels, and empty words without OCR", T, async (t) => {
+	const off = await convertDocument(opts(fx("scan.pdf"), { pages: "1", outputDir: join(tmp, "off"), words: true }));
+	assert.deepEqual(words(off).pages[0].words, []);
+	const imgOff = await convertDocument(opts(fx("ocr.png"), { outputDir: join(tmp, "imgoff"), words: true }));
+	assert.equal(words(imgOff).pages.length, 1);
+	assert.deepEqual(words(imgOff).pages[0].words, []);
+	assert.equal(words(imgOff).unit, "px");
+	const r = await convertDocument(opts(fx("scan.pdf"), { pages: "1", outputDir: join(tmp, "scan"), ocr: true, words: true }));
+	if (r.details.ocr?.status === "unavailable") { t.skip(`OCR unavailable: ${r.details.ocr.reason}`); return; }
+	assert.equal(r.details.ocr?.status, "ran");
+	const p = words(r).pages[0];
+	assert.deepEqual(p.words.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]);
+	assert.ok(p.words.every((x: any) => x.source === "ocr" && x.bbox[0] >= 36 && x.bbox[1] >= 72 && x.bbox[2] <= 576 && x.bbox[3] <= 175), JSON.stringify(p.words));
+	assert.ok(Math.abs(p.words[0].bbox[0] - 51) <= 10, `scan.pdf: ${p.words[0].bbox}`);
+	const img = await convertDocument(opts(fx("ocr.png"), { outputDir: join(tmp, "img"), ocr: true, words: true }));
+	if (img.details.ocr?.status === "unavailable") { t.skip(`OCR unavailable: ${img.details.ocr.reason}`); return; }
+	assert.equal(img.details.ocr?.status, "ran");
+	const iw = words(img);
+	assert.equal(iw.unit, "px");
+	const png = readFileSync(fx("ocr.png"));
+	assert.equal(iw.pages[0].width, png.readUInt32BE(16));
+	assert.equal(iw.pages[0].height, png.readUInt32BE(20));
+	assert.deepEqual(iw.pages[0].words.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]);
+	assert.ok(iw.pages[0].words.every((x: any) => x.source === "ocr" && x.bbox[0] >= 0 && x.bbox[1] >= 0 && x.bbox[2] <= iw.pages[0].width && x.bbox[3] <= iw.pages[0].height), JSON.stringify(iw.pages[0].words));
+	assert.ok(Math.abs(iw.pages[0].words[0].bbox[0] - 33) <= 15, `ocr.png: ${iw.pages[0].words[0].bbox}`);
+});
+
+test("words + ocr-mode all: native main words, OCR word sidecars, pre-OCRed text layer", T, async (t) => {
+	const r = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "2", outputDir: join(tmp, "short"), words: true })));
+	if (!r) return;
+	assert.deepEqual(words(r).pages[0].words.map((x: any) => [x.text, x.source]), [["3", "text"]]);
+	assert.equal(r.details.ocr!.wordSidecars[2], join(tmp, "short", "ocr", "short-text-ocr-p002.words.json"));
+	const side = JSON.parse(readFileSync(r.details.ocr!.wordSidecars[2], "utf8"));
+	assert.equal(side.page, 2);
+	assert.deepEqual(side.words.map((x: any) => x.text), ["3", "Hello", "OCR", "world", "12345"]);
+	assert.ok(side.words.every((x: any) => x.source === "ocr"));
+	const native = await convertDocument(opts(fx("pre-ocr.pdf"), { pages: "1", outputDir: join(tmp, "native"), words: true }));
+	assert.equal(words(native).pages[0].words.length, 4);
+	assert.ok(words(native).pages[0].words.every((x: any) => x.source === "text"));
+	const pre = await skipUnavailable(t, () => convertDocument(opts(fx("pre-ocr.pdf"), { ocr: true, ocrMode: "all", pages: "1", outputDir: join(tmp, "pre"), words: true })));
+	if (!pre) return;
+	assert.deepEqual(words(pre).pages[0].words, words(native).pages[0].words);
+	const preSide = JSON.parse(readFileSync(pre.details.ocr!.wordSidecars[1], "utf8"));
+	assert.equal(preSide.words.length, 4);
+	assert.ok(preSide.words.every((x: any) => x.source === "ocr"));
+});
+
+test("words: mixed pages resolve every word; injected failure preserves Markdown, stats, notes and OCR", T, async (t) => {
+	const r = await convertDocument(opts(SHORT(), { pages: "2", outputDir: join(tmp, "mix"), words: true }));
+	assert.deepEqual(words(r).pages[0].words.map((x: any) => [x.text, x.source]), [["3", "text"]]);
+	const s2 = await convertDocument(opts(fx("scan.pdf"), { pages: "2", outputDir: join(tmp, "s2"), ocr: true, words: true }));
+	assert.equal(words(s2).pages[0].words.length, 5);
+	assert.ok(words(s2).pages[0].words.every((x: any) => x.source === "text"));
+	for (const [fixture, result] of [[SHORT(), r], [fx("scan.pdf"), s2]] as const) {
+		const probe = spawnSync("uv", ["run", "--with", `pymupdf==${TUNABLE_DEFAULTS.pymupdfVersion}`, "--python", "3.14", "python", "-c", "import pymupdf,json,sys; print(json.dumps([w[4] for w in pymupdf.open(sys.argv[1])[1].get_text('words')]))", fixture], { encoding: "utf8" });
+		assert.equal(probe.status, 0, probe.stderr);
+		assert.deepEqual(words(result).pages[0].words.map((x: any) => x.text), JSON.parse(probe.stdout));
+	}
+	const clean = await convertDocument(opts(fx("scan.pdf"), { pages: "1", outputDir: join(tmp, "clean"), ocr: true, words: true }));
+	if (clean.details.ocr?.status === "unavailable") { t.skip(`OCR unavailable: ${clean.details.ocr.reason}`); return; }
+	assert.equal(clean.details.ocr?.status, "ran");
+	const previous = process.env.DOC_TO_MD_WORDS_FAIL;
+	process.env.DOC_TO_MD_WORDS_FAIL = "1";
+	try {
+		const bad = await convertDocument(opts(fx("scan.pdf"), { pages: "1", outputDir: join(tmp, "bad"), ocr: true, words: true }));
+		if (bad.details.ocr?.status === "unavailable") { t.skip(`OCR unavailable: ${bad.details.ocr.reason}`); return; }
+		assert.equal(bad.details.ocr?.status, "ran");
+		assert.ok(readFileSync(bad.details.savedTo).equals(readFileSync(clean.details.savedTo)));
+		assert.deepEqual(bad.details.pageStats, clean.details.pageStats);
+		assert.deepEqual(bad.details.ocr, clean.details.ocr);
+		assert.deepEqual(bad.details.notes, clean.details.notes);
+		assert.match(bad.details.wordsErrors[1], /words injected failure/);
+		assert.deepEqual(words(bad).pages, []);
+		assert.match(bad.output, /^Words: .*scan\.words\.json \(extraction failed for pages 1: RuntimeError: words injected failure\)$/m);
+	} finally {
+		if (previous === undefined) delete process.env.DOC_TO_MD_WORDS_FAIL;
+		else process.env.DOC_TO_MD_WORDS_FAIL = previous;
+	}
+});
+
+test("words + ocr-mode all: injected word failure preserves the Markdown sidecar and OCR outcome", T, async (t) => {
+	const clean = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "2", outputDir: join(tmp, "clean"), words: true })));
+	if (!clean) return;
+	const previous = process.env.DOC_TO_MD_WORDS_FAIL;
+	process.env.DOC_TO_MD_WORDS_FAIL = "2";
+	try {
+		const bad = await skipUnavailable(t, () => convertDocument(opts(SHORT(), { ocr: true, ocrMode: "all", pages: "2", outputDir: join(tmp, "bad"), words: true })));
+		if (!bad) return;
+		const sidecar = join(tmp, "bad", "ocr", "short-text-ocr-p002.md");
+		assert.equal(bad.details.ocr!.sidecars[2], sidecar);
+		assert.ok(existsSync(sidecar));
+		assert.ok(readFileSync(sidecar).equals(readFileSync(clean.details.ocr!.sidecars[2])));
+		assert.ok(!Object.hasOwn(bad.details.ocr!.wordSidecars, 2));
+		assert.ok(!existsSync(join(tmp, "bad", "ocr", "short-text-ocr-p002.words.json")));
+		assert.match(bad.details.wordsErrors[2], /words injected failure/);
+		assert.deepEqual(words(clean).pages.map((p: any) => p.page), [2]);
+		assert.deepEqual(words(bad).pages, []);
+		assert.ok(readFileSync(bad.details.savedTo).equals(readFileSync(clean.details.savedTo)));
+		assert.deepEqual(bad.details.pageStats, clean.details.pageStats);
+		assert.deepEqual(bad.details.notes, clean.details.notes);
+		const { sidecars: cleanSidecars, wordSidecars: cleanWordSidecars, ...cleanOutcome } = clean.details.ocr!;
+		const { sidecars: badSidecars, wordSidecars: badWordSidecars, ...badOutcome } = bad.details.ocr!;
+		assert.deepEqual(badOutcome, cleanOutcome);
+	} finally {
+		if (previous === undefined) delete process.env.DOC_TO_MD_WORDS_FAIL;
+		else process.env.DOC_TO_MD_WORDS_FAIL = previous;
+	}
+});
+
+test("words: payload never crosses the capped child stdout", T, async (t) => {
+	const r = await convertDocument(opts(fx("multipage.pdf"), { outputDir: join(tmp, "cap0"), words: true }));
+	const wordsBytes = statSync(r.details.wordsPath!).size;
+	const maxOutputBytes = wordsBytes - 1;
+	t.diagnostic(`wordsBytes=${wordsBytes}; markdownBytes=${r.details.bytes}; maxOutputBytes=${maxOutputBytes}; markdownPlusOverhead=${r.details.bytes + 4096}`);
+	assert.ok(maxOutputBytes > r.details.bytes + 4096);
+	const capped = await convertDocument(opts(fx("multipage.pdf"), { outputDir: join(tmp, "cap1"), words: true, maxOutputBytes }));
+	assert.ok(capped.details.wordsPath);
+	assert.equal(capped.details.wordsPath, join(tmp, "cap1", "multipage.words.json"));
+	assert.match(capped.output, /Tier: primary/);
+	assert.equal(statSync(capped.details.wordsPath!).size, wordsBytes);
+});
+
+test("words: unsupported type and image copy route report reasons without a file", T, async () => {
+	const d = await convertDocument(opts(fx("sample.docx"), { outputDir: join(tmp, "docx"), words: true }));
+	assert.equal(parseHandle(d.output)["Words"], "none - word positions apply to PDF and image inputs only (docx)");
+	assert.equal(d.details.wordsPath, null);
+	assert.ok(!existsSync(join(tmp, "docx", "sample.words.json")));
+	const seams: Partial<PipelineSeams> = { runTier: (mode, ...rest) => mode === "image" ? Promise.resolve({ ok: false, reason: "boom" }) : runTierReal(mode, ...rest) };
+	const plain = await convertDocument(opts(fx("ocr.png"), { outputDir: join(tmp, "plain-copy") }), undefined, seams);
+	const c = await convertDocument(opts(fx("ocr.png"), { outputDir: join(tmp, "copy"), words: true }), undefined, seams);
+	assert.equal(c.details.engine, "copy");
+	assert.equal(c.details.wordsPath, null);
+	assert.ok(!existsSync(join(tmp, "copy", "ocr.words.json")));
+	assert.match(parseHandle(c.output)["Words"], /^none - image copied without conversion \(/);
+	assert.ok(readFileSync(c.details.savedTo).equals(readFileSync(plain.details.savedTo)));
 });
 
 function readdirSyncSafe(dir: string): string[] { try { return readdirSync(dir); } catch { return []; } }

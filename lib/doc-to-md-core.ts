@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
 import { type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, UsageError, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
@@ -467,7 +467,7 @@ const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdi
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
 export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email" | "ocr-pages";
-export interface TierJson { pageStats?: PageStat[]; status?: string; written?: number[]; noText?: number[]; ocrFailed?: number[]; ocrErrors?: Record<string, string>; budgetStopped?: number[]; pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
+export interface TierJson { words?: boolean; wordsErrors?: Record<string, string>; pageStats?: PageStat[]; status?: string; written?: number[]; noText?: number[]; ocrFailed?: number[]; ocrErrors?: Record<string, string>; budgetStopped?: number[]; pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
@@ -536,7 +536,7 @@ export function reconcileRenderMarkers(md: string, renderPages: number[], fmt: s
 	return md;
 }
 
-export const emptyOcr = (lang: string): OcrInfo => ({ status: "off", lang, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null });
+export const emptyOcr = (lang: string): OcrInfo => ({ status: "off", lang, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null });
 
 export interface OcrPagesOutcome { written: number[]; noText: number[]; ocrFailed: number[]; ocrErrors: Record<number, string>; budgetStopped: number[]; killed: number | null; notAttempted: number[]; childError: string | null; }
 const emptyOutcome = (): OcrPagesOutcome => ({ written: [], noText: [], ocrFailed: [], ocrErrors: {}, budgetStopped: [], killed: null, notAttempted: [], childError: null });
@@ -612,11 +612,12 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		const base = { path: inputPath, pages: o.pages, stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
+		const base = { path: inputPath, pages: o.pages, ...(o.words && (type === "pdf" || type === "image") ? { words: true } : {}), stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
 		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
 		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
 		let officeRoute: string | null = null;
+		let copyReason: string | null = null;
 		if (type === "html") {
 			const prepared = await prepareHtml(inputPath, b.stagingDir);
 			if (signal?.aborted) throw new Error("aborted");
@@ -642,6 +643,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 			}
 			if (signal?.aborted) throw new Error("aborted");
 			if (json === undefined) {
+				copyReason = reason;
 				clearStaging(b);
 				const file = `original${extname(inputPath).toLowerCase()}`;
 				const dir = join(b.stagingDir, "p1");
@@ -745,15 +747,32 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		if (tier === undefined || engine === undefined || json === undefined) throw new Error("internal: no tier produced output");
 		const pageStats = json.pageStats ?? null;
 		if (pageStats) writePageStats(b, pageStats);
+		let wordsPath: string | null = null, wordsReason: string | null = null;
+		const wordsErrors: Record<number, string> = {};
+		const takeWordsErrors = (j: TierJson | undefined) => {
+			for (const [k, v] of Object.entries(j?.wordsErrors ?? {})) {
+				const page = Number(k);
+				if (Number.isFinite(page)) wordsErrors[page] = v;
+			}
+		};
+		if (o.words) {
+			if (type !== "pdf" && type !== "image") wordsReason = `none - word positions apply to PDF and image inputs only (${type})`;
+			else if (tier === "unpdf") wordsReason = "none - unpdf tier has no page geometry";
+			else if (engine === "copy") wordsReason = `none - image copied without conversion (${copyReason})`;
+			else if (json?.words === true) { wordsReason = publishWords(b); if (wordsReason === null) wordsPath = b.wordsPath; }
+			else wordsReason = `write failed - ${json?.wordsErrors?.file ?? "child reported no words document"}`;
+			takeWordsErrors(json);
+		}
 		let ocr = handleOcr(tier, type, o, json);
 		if (forced) {
-			const r = await s.runTier("ocr-pages", { path: pdfPath, pages: o.pages, stem: b.stem, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, stagingDir: b.ocrStagingDir, dpi: o.imageDpi, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.primaryTimeoutMs, backend);
+			const r = await s.runTier("ocr-pages", { path: pdfPath, pages: o.pages, ...(o.words && type === "pdf" ? { words: true } : {}), stem: b.stem, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, stagingDir: b.ocrStagingDir, dpi: o.imageDpi, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion }, b, signal, o.primaryTimeoutMs, backend);
 			if (signal?.aborted || (!r.ok && "reason" in r && r.reason === "aborted")) throw new Error("aborted");
 			if (r.ok && r.json.status === "unavailable") throw new Error(`OCR unavailable: ${r.json.reason} (install Tesseract; see doc/doc-to-md.md)`);
 			const outcome = r.ok && r.json.status === "ran" ? outcomeFromChild(r.json)
 				: recoverOcrPages(b.ocrStagingDir, o.pages!, !r.ok ? ("userError" in r ? r.userError : `${r.reason}${detailSuffix(r)}`) : "malformed child output");
-			const sidecars = publishSidecars(b);
-			ocr = { ...emptyOcr(o.ocrLanguage), ...json.ocr, status: "ran", reason: null, mode: "all", pages: outcome.written, noText: outcome.noText, ocrFailed: outcome.ocrFailed, ocrErrors: outcome.ocrErrors, budgetStopped: outcome.budgetStopped, killed: outcome.killed, notAttempted: outcome.notAttempted, childError: outcome.childError, sidecars: Object.fromEntries(sidecars) };
+			const { sidecars, wordSidecars } = publishSidecars(b);
+			ocr = { ...emptyOcr(o.ocrLanguage), ...json.ocr, status: "ran", reason: null, mode: "all", pages: outcome.written, noText: outcome.noText, ocrFailed: outcome.ocrFailed, ocrErrors: outcome.ocrErrors, budgetStopped: outcome.budgetStopped, killed: outcome.killed, notAttempted: outcome.notAttempted, childError: outcome.childError, sidecars: Object.fromEntries(sidecars), wordSidecars: Object.fromEntries(wordSidecars) };
+			if (o.words && r.ok) takeWordsErrors(r.json);
 		}
 		if (!isExcel) notes = [...notes, ...(json.notes ?? [])];
 		if (b.renamedFrom) notes.splice(notes[0]?.startsWith("preview truncated:") ? 1 : 0, 0, `renamed to ${b.stem} (${b.renameReason})`);
@@ -770,7 +789,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr, pageStats, pageStatsPath: pageStats ? b.pageStatsPath : null, ocrDir: b.ocrManifest.size ? b.ocrDir : null };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr, pageStats, pageStatsPath: pageStats ? b.pageStatsPath : null, ocrDir: b.ocrManifest.size ? b.ocrDir : null, wordsPath, wordsReason, wordsErrors };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }

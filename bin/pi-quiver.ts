@@ -19,7 +19,7 @@ import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunable
 
 const USAGE =
 	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]\n" +
-	"       pi-quiver doc-to-md [--json] [--info] [--page-images] [--pages <spec>] [--output-dir <dir>] [--overwrite] [--ocr] [--ocr-mode textless|all] [tunable flags] <path>   (--help for all flags)";
+	"       pi-quiver doc-to-md [--json] [--info] [--page-images] [--words] [--pages <spec>] [--output-dir <dir>] [--overwrite] [--ocr] [--ocr-mode textless|all] [tunable flags] <path>   (--help for all flags)";
 
 export type ParsedArgs =
 	| { ok: true; cmd: "fetch"; opts: FetchOptions }

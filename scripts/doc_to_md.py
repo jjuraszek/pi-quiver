@@ -205,11 +205,22 @@ def mode_image(o):
     info = new_ocr(lang)
     status = ocr_status(bool(o.get("ocr")), lang)
     apply_status(info, status)
-    if status["status"] == "ready":
+    words_on = bool(o.get("words"))
+    word_pages, words_errors = [], {}
+    w_px = h_px = None
+    if words_on or status["status"] == "ready":
         try:
             pix = pymupdf.Pixmap(path)
             w_px, h_px = pix.width, pix.height
             del pix
+        except Exception as exc:  # noqa: BLE001
+            if words_on:
+                words_errors["1"] = words_error(exc)
+            if status["status"] == "ready":
+                info["ocrFailed"].append(1)
+                status = {**status, "status": "failed"}
+    if status["status"] == "ready":
+        try:
             if min(w_px, h_px) < MIN_OCR_SIDE_PX:
                 info["status"], info["reason"] = "skipped", "image too small"
             else:
@@ -218,6 +229,19 @@ def mode_image(o):
                     text = pymupdf4llm.to_markdown(pdf, pages=[0], write_images=False, use_ocr=True, force_ocr=True,
                                                    ocr_language=lang, ocr_dpi=image_ocr_dpi(w_px, r.width, r.height),
                                                    page_separators=False).strip()
+                    if words_on:
+                        try:
+                            pg = pdf[0]
+                            entry = words_page(pg, 1, 0, page_words(pg, True))
+                            sx, sy = w_px / r.width, h_px / r.height
+                            for word in entry["words"]:
+                                b = word["bbox"]
+                                word["bbox"] = [round(b[0] * sx, 1), round(b[1] * sy, 1),
+                                                round(b[2] * sx, 1), round(b[3] * sy, 1)]
+                            entry["width"], entry["height"] = w_px, h_px
+                            word_pages.append(entry)
+                        except Exception as exc:  # noqa: BLE001
+                            words_errors["1"] = words_error(exc)
                 if text:
                     info["pages"].append(1)
                     md += "\n\n" + ocr_block(f"p1/{name}", text)
@@ -225,7 +249,17 @@ def mode_image(o):
                     info["noText"].append(1)
         except Exception:  # noqa: BLE001 - OCR never fails the conversion
             info["ocrFailed"].append(1)
-    return {"markdown": md + "\n", "pageCount": 1, "emptyPages": [], "failedPages": [], "notes": [], "ocr": info}
+    if words_on and not o.get("ocr") and w_px is not None and "1" not in words_errors:
+        try:
+            if os.environ.get("DOC_TO_MD_WORDS_FAIL") == "1":  # tests only
+                raise RuntimeError("words injected failure")
+            word_pages.append({"page": 1, "width": w_px, "height": h_px, "rotation": 0, "words": []})
+        except Exception as exc:  # noqa: BLE001
+            words_errors["1"] = words_error(exc)
+    result = {"markdown": md + "\n", "pageCount": 1, "emptyPages": [], "failedPages": [], "notes": [], "ocr": info}
+    if words_on:
+        result.update(write_words(o["stagingDir"], "px", word_pages, words_errors))
+    return result
 
 
 def mode_info(o):
@@ -266,6 +300,58 @@ def page_stats(doc, n):
         return {"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+GLYPHLESS_FONT = "GlyphLessFont"
+
+
+def word_entries(page, words, ocr_lines):
+    import pymupdf
+    matrix = page.rotation_matrix
+    out = []
+    for x0, y0, x1, y1, text, bno, lno, _ in words:
+        r = pymupdf.Rect(x0, y0, x1, y1) * matrix
+        out.append({"text": text, "bbox": [round(r.x0, 1), round(r.y0, 1), round(r.x1, 1), round(r.y1, 1)],
+                    "source": "ocr" if ocr_lines is None or (bno, lno) in ocr_lines else "text"})
+    return out
+
+
+def page_words(page, inline_ocr_ran):
+    if not inline_ocr_ran:
+        return word_entries(page, page.get_text("words"), set())
+    # Shared textpage keeps block/line indexes aligned despite differing default image flags.
+    tp = page.get_textpage()
+    ocr_lines = {(bi, li) for bi, b in enumerate(page.get_text("dict", textpage=tp)["blocks"])
+                 for li, line in enumerate(b.get("lines", []))
+                 if line["spans"] and all(s["font"] == GLYPHLESS_FONT for s in line["spans"])}
+    return word_entries(page, page.get_text("words", textpage=tp), ocr_lines)
+
+
+def ocr_words(page, tp):
+    return word_entries(page, page.get_text("words", textpage=tp), None)
+
+
+def words_page(page, n, rotation, words):
+    if os.environ.get("DOC_TO_MD_WORDS_FAIL") == str(n):  # tests only
+        raise RuntimeError("words injected failure")
+    return {"page": n, "width": round(page.rect.width, 1), "height": round(page.rect.height, 1),
+            "rotation": rotation, "words": words}
+
+
+def words_error(exc):
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def write_words(staging, unit, pages, errors):
+    try:
+        os.makedirs(staging, exist_ok=True)
+        with open(os.path.join(staging, "words.json"), "w", encoding="utf-8") as fh:
+            json.dump({"unit": unit, "pages": pages}, fh, indent=2)
+            fh.write("\n")
+        return {"words": True, "wordsErrors": errors}
+    except Exception as exc:  # noqa: BLE001 - geometry never fails the conversion
+        errors["file"] = words_error(exc)
+        return {"words": False, "wordsErrors": errors}
+
+
 def mode_pdf_primary(o):
     import time
     start = time.monotonic()
@@ -278,11 +364,13 @@ def mode_pdf_primary(o):
     info = new_ocr(lang)
     status = ocr_status(True, lang) if o.get("ocr") else None
     ocr_ms, plain_ms = [], []
+    word_pages, words_errors = [], {}
     for i, n in enumerate(pages):
         stats.append(page_stats(doc, n))
         d = page_dir(staging, n)
         try:
             page = doc[n - 1]
+            rotation = page.rotation
             textless = not page.get_text("text").strip()
             if textless:
                 info["textless"].append(n)
@@ -326,6 +414,11 @@ def mode_pdf_primary(o):
             if page_pic:
                 md = "\n\n".join(x for x in [md.rstrip(), f"![page {n}](pages/{page_pic})"] if x)
             out.append(md.rstrip())
+            if o.get("words") and not (textless and o.get("ocr") and not kw["use_ocr"]):
+                try:
+                    word_pages.append(words_page(page, n, rotation, page_words(page, kw["use_ocr"])))
+                except Exception as exc:  # noqa: BLE001
+                    words_errors[str(n)] = words_error(exc)
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(d, ignore_errors=True)
             failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
@@ -339,8 +432,11 @@ def mode_pdf_primary(o):
     missing = len(pages) - len(page_images) if o.get("pageImages") else 0
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
-    return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images, "pageStats": stats}
+    result = {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
+              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images, "pageStats": stats}
+    if o.get("words"):
+        result.update(write_words(staging, "pt", word_pages, words_errors))
+    return result
 
 
 def mode_pdf_fallback(o):
@@ -353,14 +449,17 @@ def mode_pdf_fallback(o):
     stats = []
     lang = o.get("ocrLanguage", "eng")
     ocr_info = new_ocr(lang)
+    word_pages, words_errors = [], {}
     status = {"status": "unavailable", "reason": "fallback tier", "tesseract": None} if o.get("ocr") else None
     for n in pages:
         stats.append(page_stats(doc, n))
         links = [f"![](images/{f})" for f in keep.get(n, [])]
         text = ""
         page_pic = None
+        page_ok = False
         try:
             page = doc[n - 1]
+            rotation = page.rotation
             text = page.get_text("text").strip()
             if not text:
                 ocr_info["textless"].append(n)
@@ -388,11 +487,17 @@ def mode_pdf_fallback(o):
                         links.append(f"![](p{n}/{name})")
                 mark_done(d)
             page_pic = render_page_image(page, n, o, page_images) if o.get("pageImages") else None
+            page_ok = True
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
             text = ""
             links = [f"![](images/{f})" for f in keep.get(n, [])]
             failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
+        if o.get("words") and page_ok and not (not text and o.get("ocr")):
+            try:
+                word_pages.append(words_page(page, n, rotation, page_words(page, False)))
+            except Exception as exc:  # noqa: BLE001
+                words_errors[str(n)] = words_error(exc)
         if not text:
             empty.append(n)
         out.append("\n\n".join(x for x in [text, "\n".join(links), f"![page {n}](pages/{page_pic})" if page_pic else ""] if x))
@@ -405,8 +510,11 @@ def mode_pdf_fallback(o):
     missing = len(pages) - len(page_images) if o.get("pageImages") else 0
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
-    return {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-            "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images, "pageStats": stats}
+    result = {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
+              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images, "pageStats": stats}
+    if o.get("words"):
+        result.update(write_words(staging, "pt", word_pages, words_errors))
+    return result
 
 
 def mode_ocr_pages(o):
@@ -422,6 +530,8 @@ def mode_ocr_pages(o):
     os.makedirs(staging, exist_ok=True)
     active = os.path.join(staging, "active")
     out = {"status": "ran", "written": [], "noText": [], "ocrFailed": [], "ocrErrors": {}, "budgetStopped": []}
+    if o.get("words"):
+        out["wordsErrors"] = {}
     ocr_ms = []
     for i, n in enumerate(pages):
         with open(active, "w") as fh:
@@ -449,6 +559,20 @@ def mode_ocr_pages(o):
             header = f"<!-- OCR of page {n} (tesseract {lang}); recognized text, not the text layer -->"
             with open(sidecar, "w", encoding="utf-8") as fh:
                 fh.write(header + "\n\n" + (text + "\n\n" if text else "") + SEP.format(n=n).strip("\n") + "\n")
+            if o.get("words"):
+                wpath = os.path.join(d, f"{stem}-{tag}.words.json")
+                try:
+                    entry = words_page(page, n, page.rotation, ocr_words(page, tp))
+                    entry["unit"] = "pt"
+                    with open(wpath, "w", encoding="utf-8") as fh:
+                        json.dump(entry, fh, indent=2)
+                        fh.write("\n")
+                except Exception as exc:  # noqa: BLE001 - geometry never changes the OCR outcome
+                    try:
+                        os.remove(wpath)
+                    except OSError:
+                        pass
+                    out["wordsErrors"][str(n)] = words_error(exc)
             mark_done(d)
             (out["written"] if text else out["noText"]).append(n)
         except Exception as exc:  # noqa: BLE001 - one page never stops the pass
@@ -457,6 +581,10 @@ def mode_ocr_pages(o):
                 fh.write(msg)
             try:
                 os.remove(sidecar)
+            except OSError:
+                pass
+            try:
+                os.remove(os.path.join(d, f"{stem}-{tag}.words.json"))
             except OSError:
                 pass
             out["ocrFailed"].append(n)

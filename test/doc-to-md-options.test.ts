@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import {
-	DOC_TO_MD_OPTIONS, TUNABLE_DEFAULTS, UsageError, classifyInput, coerceDocToMdSettings,
+	BUNDLE_LAYOUT, DOC_TO_MD_OPTIONS, TUNABLE_DEFAULTS, UsageError, classifyInput, coerceDocToMdSettings,
 	parsePages, renderHelp, resolveOptions, sanitizeStem, usagePatterns, USAGE_PATTERNS,
 } from "../lib/doc-to-md-options.ts";
 
@@ -11,7 +11,7 @@ test("descriptors: every tunable has a flag, default and help; per-call intents 
 		if (d.key !== "path") assert.match(d.flag!, /^--[a-z-]+$/, d.key);
 	}
 	const intents = DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map((d) => d.key).sort();
-	assert.deepStrictEqual(intents, ["info", "ocrMode", "outputDir", "overwrite", "pageImages", "pages", "path"]);
+	assert.deepStrictEqual(intents, ["info", "ocrMode", "outputDir", "overwrite", "pageImages", "pages", "path", "words"]);
 	assert.strictEqual(TUNABLE_DEFAULTS.primaryTimeoutMs, 60000);
 	assert.strictEqual(TUNABLE_DEFAULTS.fallbackTimeoutMs, 30000);
 	assert.strictEqual(TUNABLE_DEFAULTS.sofficeTimeoutMs, 120000);
@@ -158,7 +158,7 @@ test("ocrMode: per-call enum, default textless, not settable, all + info rejecte
 	assert.strictEqual(resolveOptions({ path: "a.pdf" }, {}, {}).ocrMode, "textless");
 	assert.strictEqual(resolveOptions({ path: "a.pdf", ocrMode: "all" }, {}, {}).ocrMode, "all");
 	assert.throws(() => resolveOptions({ path: "a.pdf", ocrMode: "sometimes" as never }, {}, {}), /--ocr-mode must be one of textless, all/);
-	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, ocrMode: "all" }, {}, {}), { constructor: UsageError, message: "--info cannot be combined with --pages, --output-dir, --overwrite, --page-images or --ocr-mode all" });
+	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, ocrMode: "all" }, {}, {}), { constructor: UsageError, message: "--info cannot be combined with --pages, --output-dir, --overwrite, --page-images, --words or --ocr-mode all" });
 	assert.strictEqual(resolveOptions({ path: "a.pdf", info: true, ocrMode: "textless" }, {}, {}).info, true);
 	assert.deepStrictEqual(coerceDocToMdSettings({ ocrMode: "all" }), {});
 	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { ocrMode: "all" } as never, {}).ocrMode, "textless");
@@ -173,6 +173,24 @@ test("USAGE_PATTERNS: template carries <cmd>, usagePatterns substitutes it, rend
 	assert.ok(rendered.includes("pi-quiver doc-to-md report.pdf --output-dir out --json"));
 	assert.ok(renderHelp().endsWith(rendered));
 	assert.ok(renderHelp().includes("--ocr-mode"));
+});
+
+test("words: per-call bool, default false, not settable, never a tunable", () => {
+	const d = DOC_TO_MD_OPTIONS.find((o) => o.key === "words")!;
+	assert.deepStrictEqual([d.type, d.default, d.settable, d.flag], ["bool", false, false, "--words"]);
+	assert.strictEqual(d.help, "Write word positions: <stem>.words.json beside the Markdown lists every text-layer word of each selected page with its bbox (PDF points, top-left origin, display orientation; image inputs in source pixels) and the words inline OCR recognized, tagged source \"text\" or \"ocr\"; under --ocr-mode all the OCR words go to ocr/<stem>-pNNN.words.json beside each sidecar. Never triggers OCR. PDF and image inputs only.");
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, {}, {}).words, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", words: true }, {}, {}).words, true);
+	assert.ok(!("words" in TUNABLE_DEFAULTS));
+	assert.throws(() => resolveOptions({ path: "a.pdf", info: true, words: true }, {}, {}), (e: Error) => e instanceof UsageError && e.message === "--info cannot be combined with --pages, --output-dir, --overwrite, --page-images, --words or --ocr-mode all");
+});
+
+test("BUNDLE_LAYOUT: help names every artifact and its handle field", () => {
+	assert.strictEqual(BUNDLE_LAYOUT.length, 9);
+	for (const row of BUNDLE_LAYOUT) {
+		assert.ok(renderHelp().includes(row.artifact), row.artifact);
+		assert.ok(renderHelp().includes(`named by ${row.namedBy}`), row.namedBy);
+	}
 });
 
 test("renderHelp: lists every flag and both tables", () => {

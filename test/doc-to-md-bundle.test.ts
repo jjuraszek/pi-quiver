@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { abortBundle, commitBundle, openBundle, ownedOcrPattern, publishSidecars, writePageStats, ownedCsvPattern, ownedPattern, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
+import { abortBundle, commitBundle, openBundle, ownedOcrPattern, publishWords, publishSidecars, writePageStats, ownedCsvPattern, ownedPattern, publishAttachments, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, validateImageLinks } from "../lib/doc-to-md-bundle.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "quiver-bundle-"));
 
@@ -307,7 +307,9 @@ function stageSidecar(b: { ocrStagingDir: string; stem: string }, page: number, 
 	if (done) writeFileSync(join(d, ".done"), "");
 }
 
-test("ownedOcrPattern: exact stem, p + digits + .md only", () => {
+test("ownedOcrPattern: exact stem, p + digits + .md or .words.json", () => {
+	assert.ok(ownedOcrPattern("manual").test("manual-p002.words.json"));
+	assert.ok(!ownedOcrPattern("manual").test("manual-2-p002.words.json"));
 	const re = ownedOcrPattern("x");
 	assert.ok(re.test("x-p002.md") && re.test("x-p1234.md"));
 	assert.ok(!re.test("x-2-p002.md") && !re.test("xx-p002.md") && !re.test("x-p002.txt") && !re.test("x-p2-1.png"));
@@ -324,8 +326,9 @@ test("writePageStats + publishSidecars: stats beside the Markdown, only .done si
 		assert.deepStrictEqual(JSON.parse(readFileSync(b.pageStatsPath, "utf8")), [{ page: 1, chars: 12, images: 0, imageCoverage: 0 }, { page: 2, error: "RuntimeError: x" }]);
 		stageSidecar(b, 2, true); stageSidecar(b, 7, true); stageSidecar(b, 9, false);
 		writeFileSync(join(b.ocrStagingDir, "active"), "9");
-		const map = publishSidecars(b);
-		assert.deepStrictEqual([...map.entries()], [[2, join(root, "ocr", "manual-p002.md")], [7, join(root, "ocr", "manual-p007.md")]]);
+		const { sidecars, wordSidecars } = publishSidecars(b);
+		assert.deepStrictEqual([...wordSidecars], []);
+		assert.deepStrictEqual([...sidecars.entries()], [[2, join(root, "ocr", "manual-p002.md")], [7, join(root, "ocr", "manual-p007.md")]]);
 		assert.deepStrictEqual([...b.ocrManifest].sort(), ["manual-p002.md", "manual-p007.md"]);
 		assert.deepStrictEqual(readdirSync(join(root, "ocr")).sort(), ["manual-p002.md", "manual-p007.md"]);
 		assert.ok(!existsSync(b.ocrStagingDir));
@@ -340,15 +343,20 @@ test("publishSidecars: no staging dir is a no-op; abortBundle removes published 
 	const root = tmp();
 	try {
 		const b = openBundle(root, "manual", false);
-		assert.deepStrictEqual([...publishSidecars(b).entries()], []);
+		const { sidecars, wordSidecars } = publishSidecars(b);
+		assert.deepStrictEqual([...sidecars], []);
+		assert.deepStrictEqual([...wordSidecars], []);
 		writePageStats(b, []);
-		stageSidecar(b, 1, true); publishSidecars(b);
+		stageSidecar(b, 1, true);
+		writeFileSync(join(b.ocrStagingDir, "p001", "manual-p001.words.json"), "{}");
+		publishSidecars(b);
 		stageSidecar(b, 2, false);
 		mkdirSync(join(root, "ocr"), { recursive: true }); writeFileSync(join(root, "ocr", "other-p001.md"), "foreign");
 		abortBundle(b);
 		assert.ok(!existsSync(b.pageStatsPath) && !existsSync(join(root, "ocr", "manual-p001.md")) && !existsSync(b.lockPath));
 		assert.ok(existsSync(join(root, "ocr", "other-p001.md")));
 		assert.ok(!existsSync(b.ocrStagingDir));
+		assert.ok(!existsSync(join(root, "ocr", "manual-p001.words.json")));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -356,15 +364,71 @@ test("openBundle: two stems keep separate stats files; overwrite removes only th
 	const root = tmp();
 	try {
 		const a = openBundle(root, "report", false); writePageStats(a, [{ page: 1, chars: 1, images: 0, imageCoverage: 0 }]); stageSidecar(a, 1, true); publishSidecars(a); commitBundle(a, "a\n");
+		writeFileSync(join(root, "report.words.json"), "original words");
 		const b2 = openBundle(root, "report", false);
 		assert.strictEqual(b2.stem, "report-2");
 		assert.strictEqual(b2.pageStatsPath, join(root, "report-2.pages.json"));
+		assert.strictEqual(b2.wordsPath, join(root, "report-2.words.json"));
+		writeFileSync(join(b2.stagingDir, "words.json"), '{"unit":"pt","pages":[]}\n');
+		assert.strictEqual(publishWords(b2), null);
+		assert.strictEqual(readFileSync(join(root, "report-2.words.json"), "utf8"), '{"unit":"pt","pages":[]}\n');
+		assert.strictEqual(readFileSync(join(root, "report.words.json"), "utf8"), "original words");
 		writePageStats(b2, []); stageSidecar(b2, 1, true); publishSidecars(b2); commitBundle(b2, "b\n");
 		assert.deepStrictEqual(readdirSync(join(root, "ocr")).sort(), ["report-2-p001.md", "report-p001.md"]);
+		writeFileSync(join(root, "report.words.json"), "{}");
 		const again = openBundle(root, "report", true);
+		assert.ok(!existsSync(join(root, "report.words.json")));
 		assert.ok(!existsSync(join(root, "report.pages.json")) && !existsSync(join(root, "ocr", "report-p001.md")));
 		assert.ok(existsSync(join(root, "report-2.pages.json")) && existsSync(join(root, "ocr", "report-2-p001.md")));
 		assert.throws(() => openBundle(root, "report", true), /Another conversion owns .*report\.md/);
 		abortBundle(again);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("publishWords: renames staged words.json beside pages.json; missing stage -> write failed reason; abort removes it", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "manual", false);
+		assert.strictEqual(b.wordsPath, join(root, "manual.words.json"));
+		writeFileSync(b.wordsPath, "partial target");
+		assert.strictEqual(publishWords(b), "write failed - child staged no words.json");
+		assert.ok(!existsSync(b.wordsPath));
+		writeFileSync(join(b.stagingDir, "words.json"), '{"unit":"pt","pages":[]}\n');
+		assert.strictEqual(publishWords(b), null);
+		assert.deepStrictEqual(JSON.parse(readFileSync(b.wordsPath, "utf8")), { unit: "pt", pages: [] });
+		assert.ok(!existsSync(join(b.stagingDir, "words.json")));
+		abortBundle(b);
+		assert.ok(!existsSync(b.wordsPath));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("publishSidecars: completed pages publish both sidecars, killed and .failed pages publish neither; overwrite removes stale sidecars", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "manual", false);
+		for (const [n, done] of [[1, true], [2, false]] as const) {
+			stageSidecar(b, n, done);
+			writeFileSync(join(b.ocrStagingDir, `p00${n}`, `manual-p00${n}.words.json`), "{}");
+		}
+		const failedDir = join(b.ocrStagingDir, "p003");
+		mkdirSync(failedDir);
+		writeFileSync(join(failedDir, ".failed"), "RuntimeError: tesseract exploded");
+		writeFileSync(join(failedDir, "manual-p003.words.json"), "{}");
+		writeFileSync(join(b.ocrStagingDir, "active"), "2");
+		const { sidecars, wordSidecars } = publishSidecars(b);
+		assert.ok(existsSync(join(b.ocrDir, "manual-p001.md")));
+		assert.strictEqual(readFileSync(join(b.ocrDir, "manual-p001.words.json"), "utf8"), "{}");
+		assert.deepStrictEqual([...sidecars], [[1, join(b.ocrDir, "manual-p001.md")]]);
+		assert.deepStrictEqual([...wordSidecars], [[1, join(b.ocrDir, "manual-p001.words.json")]]);
+		assert.deepStrictEqual([...b.ocrManifest].sort(), ["manual-p001.md", "manual-p001.words.json"]);
+		assert.ok(!existsSync(join(b.ocrDir, "manual-p002.md")));
+		assert.ok(!existsSync(join(b.ocrDir, "manual-p002.words.json")));
+		assert.ok(!existsSync(join(b.ocrDir, "manual-p003.md")));
+		assert.ok(!existsSync(join(b.ocrDir, "manual-p003.words.json")));
+		assert.ok(!existsSync(b.ocrStagingDir));
+		commitBundle(b, "md\n");
+		const b2 = openBundle(root, "manual", true);
+		assert.ok(!existsSync(join(root, "ocr", "manual-p001.words.json")) && !existsSync(join(root, "ocr", "manual-p001.md")));
+		abortBundle(b2);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

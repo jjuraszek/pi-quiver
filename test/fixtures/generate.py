@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate the doc_to_md fixtures. Run from the repo root:
-uv run --with pymupdf==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py [generator ...]
+uv run --with pymupdf==1.27.2.3 --with pymupdf4llm==1.27.2.3 --with openpyxl==3.1.5 --with xlwt --with python-docx --with python-pptx --with pillow --python 3.14 python test/fixtures/generate.py [generator ...]
 Pass generator names to regenerate a subset (e.g. charts charts_zero_extent).
+pre_ocr_pdf runs only when explicitly named; the default run skips it.
 Requires soffice on PATH (workbook.xlsx round-trip populates cached formula values).
 sample.msg is a committed copy (see README.md in this directory)."""
 import base64, io, os, random, shutil, subprocess, tempfile, zipfile, re
@@ -370,6 +371,30 @@ def short_text_ocr_pdf():
     scan.insert_text((72, 60), "3", fontsize=12)
     doc.save(os.path.join(HERE, "short-text-ocr.pdf"), deflate=True, garbage=4)
 
+def rotated_pdf():
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "NORTH", fontsize=12)  # unrotated coordinates: rotation is set afterwards
+    page.set_rotation(90)
+    doc.save(os.path.join(HERE, "rotated.pdf"))
+
+def blank_pdf():
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(os.path.join(HERE, "blank.pdf"))
+
+def pre_ocr_pdf():
+    """scan.pdf page 1 with a Tesseract text layer baked in (GlyphLessFont spans).
+    Needs Tesseract; the committed file is reused otherwise."""
+    if not shutil.which("tesseract"):
+        print("tesseract not on PATH; pre-ocr.pdf not regenerated")
+        return
+    import pymupdf4llm
+    doc = pymupdf.open()
+    doc.insert_pdf(pymupdf.open(os.path.join(HERE, "scan.pdf")), from_page=0, to_page=0)
+    pymupdf4llm.to_markdown(doc, pages=[0], write_images=False, use_ocr=True, force_ocr=True, ocr_language="eng", page_separators=False)
+    doc.save(os.path.join(HERE, "pre-ocr.pdf"))
+
 def legacy_doc():
     if not shutil.which("soffice"):
         print("soffice not on PATH; sample.doc not regenerated"); return
@@ -377,10 +402,12 @@ def legacy_doc():
         subprocess.run(["soffice", "--headless", "--convert-to", "doc", "--outdir", out, os.path.join(HERE, "headings.docx")], check=True, stdout=subprocess.DEVNULL)
         shutil.copyfile(os.path.join(out, "headings.doc"), os.path.join(HERE, "sample.doc"))
 
-GENERATORS = {"short_text_ocr_pdf": short_text_ocr_pdf, "scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
+GENERATORS = {"rotated_pdf": rotated_pdf, "blank_pdf": blank_pdf, "pre_ocr_pdf": pre_ocr_pdf, "short_text_ocr_pdf": short_text_ocr_pdf, "scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
+
+OPT_IN = {"pre_ocr_pdf"}
 
 if __name__ == "__main__":
     import sys
-    for name in sys.argv[1:] or GENERATORS:
+    for name in sys.argv[1:] or [name for name in GENERATORS if name not in OPT_IN]:
         GENERATORS[name]()
     print("fixtures written to", HERE)

@@ -111,7 +111,7 @@ test("forced OCR second pass publishes stats and sidecars and reports child fail
 			const r = await convertDocument(opts({ outputDir: out, ocr: true, ocrMode: "all", pages: "2,5", primaryTimeoutMs: 4321 }), undefined, seamsWith(async (mode, co, _b, _sig, timeout) => {
 				modes.push(mode);
 				if (mode === "pdf-primary") { assert.equal(co.ocr, false); return { ok: true, json: { markdown: "original\n", pageStats: stats, ocr: { ...OCR0, textless: [2] } } }; }
-				assert.equal(mode, "ocr-pages"); assert.equal(timeout, 4321);
+				assert.equal(mode, "ocr-pages"); assert.equal(timeout, 4321); assert.ok(!("words" in co));
 				assert.deepEqual([co.path, co.pages, co.stem, co.ocrLanguage, co.ocrBudgetMs, co.dpi, co.maxOutputBytes, co.pymupdfVersion], [MULTIPAGE, [2, 5], "multipage", "eng", 4321, 150, TUNABLE_DEFAULTS.maxOutputBytes, TUNABLE_DEFAULTS.pymupdfVersion]);
 				if (failure === "early") return { ok: false, reason: "exit 1", detail: "boom" };
 				stageSidecar(String(co.stagingDir), String(co.stem), 2, ".done");
@@ -674,7 +674,68 @@ const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind:
 const HTML_PAGE = fileURLToPath(new URL("../test/fixtures/html/page.html", import.meta.url));
 const OCR_PNG = fileURLToPath(new URL("../test/fixtures/ocr.png", import.meta.url));
 const imageOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: OCR_PNG, ...extra } as never, {}, {});
-const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null };
+const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null };
+
+test("words publication, child options, errors and nonfatal reasons", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-words-"));
+	try {
+		const r = await convertDocument(opts({ outputDir: out, words: true }), undefined, seamsWith(async (_m, co) => {
+			assert.equal(co.words, true);
+			writeFileSync(join(String(co.stagingDir), "words.json"), '{"unit":"pt","pages":[]}');
+			return { ok: true, json: { markdown: "text\n", words: true, wordsErrors: { "3": "RuntimeError: x", file: "write error" } } };
+		}));
+		assert.equal(r.details.wordsPath, join(out, "multipage.words.json"));
+		assert.equal(r.details.wordsReason, null);
+		assert.deepEqual(r.details.wordsErrors, { 3: "RuntimeError: x" });
+		assert.deepEqual(JSON.parse(readFileSync(r.details.wordsPath!, "utf8")), { unit: "pt", pages: [] });
+		assert.equal(parseHandle(r.output)["Words"], `${r.details.wordsPath} (extraction failed for pages 3: RuntimeError: x)`);
+		const plain = await convertDocument(opts({ outputDir: join(out, "plain") }), undefined, seamsWith(async (_m, co) => { assert.ok(!("words" in co)); return okTier("text\n", [1]); }));
+		assert.deepEqual([plain.details.wordsPath, plain.details.wordsReason], [null, null]);
+		assert.ok(!plain.output.includes("Words:"));
+		const wf = await convertDocument(opts({ outputDir: join(out, "wf"), words: true }), undefined, seamsWith(async () => ({ ok: true, json: { markdown: "text\n", words: true } })));
+		assert.deepEqual([wf.details.wordsPath, wf.details.wordsReason], [null, "write failed - child staged no words.json"]);
+		assert.ok(existsSync(wf.details.savedTo));
+		const childWriteFailure = await convertDocument(opts({ outputDir: join(out, "child-write-failure"), words: true }), undefined, seamsWith(async () => ({ ok: true, json: { markdown: "text\n", words: false, wordsErrors: { file: "OSError: disk full" } } })));
+		assert.equal(childWriteFailure.details.wordsReason, "write failed - OSError: disk full");
+		assert.equal(childWriteFailure.details.wordsPath, null);
+		assert.equal(readFileSync(childWriteFailure.details.savedTo, "utf8"), "text\n");
+		assert.ok(!existsSync(join(out, "child-write-failure", "multipage.words.json")));
+		assert.deepEqual(childWriteFailure.details.wordsErrors, {});
+		const u = await convertDocument(opts({ outputDir: join(out, "u"), words: true }), undefined, seamsWith(async () => okTier("text\n", [1]), { kind: "none", reason: "missing" }));
+		assert.equal(u.details.wordsReason, "none - unpdf tier has no page geometry");
+		const d = await convertDocument(docxOpts({ outputDir: join(out, "d"), words: true }), undefined, seamsWith(async (_m, co) => { assert.ok(!("words" in co)); return { ok: true, json: { markdown: "x\n", pageCount: 1, engine: "mammoth" } }; }));
+		assert.equal(d.details.wordsReason, "none - word positions apply to PDF and image inputs only (docx)");
+		const c = await convertDocument(imageOpts({ outputDir: join(out, "c"), words: true }), undefined, seamsWith(async (_m, co) => { assert.equal(co.words, true); return { ok: false, reason: "boom" }; }));
+		assert.equal(c.details.engine, "copy");
+		assert.equal(c.details.wordsReason, "none - image copied without conversion (OCR child failed: boom)");
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("words forced OCR publishes word sidecars, merges errors and abort cleans publication", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-words-all-"));
+	try {
+		const r = await convertDocument(opts({ outputDir: out, ocr: true, ocrMode: "all", pages: "2,3", words: true }), undefined, seamsWith(async (mode, co): Promise<TierResult> => {
+			if (mode === "pdf-primary") {
+				writeFileSync(join(String(co.stagingDir), "words.json"), '{"unit":"pt","pages":[]}');
+				return { ok: true, json: { markdown: "text\n", words: true, wordsErrors: { "1": "RuntimeError: x" } } };
+			}
+			assert.equal(co.words, true);
+			assert.ok(existsSync(join(out, "multipage.words.json")));
+			stageSidecar(String(co.stagingDir), String(co.stem), 2, ".done");
+			writeFileSync(join(String(co.stagingDir), "p002", "multipage-p002.words.json"), '{}');
+			stageSidecar(String(co.stagingDir), String(co.stem), 3, ".done");
+			return { ok: true, json: { status: "ran", written: [2, 3], wordsErrors: { "3": "RuntimeError: y" } } };
+		}));
+		assert.deepEqual(r.details.ocr!.wordSidecars, { 2: join(out, "ocr", "multipage-p002.words.json") });
+		assert.deepEqual(r.details.wordsErrors, { 1: "RuntimeError: x", 3: "RuntimeError: y" });
+		assert.ok(existsSync(join(out, "ocr", "multipage-p002.words.json")));
+		await assert.rejects(convertDocument(opts({ outputDir: join(out, "abort"), words: true }), undefined, seamsWith(async (_m, co) => {
+			writeFileSync(join(String(co.stagingDir), "words.json"), "{}");
+			return { ok: true, json: { markdown: "![x](p1/missing.png)\n", words: true } };
+		})));
+		assert.ok(!existsSync(join(out, "abort", "multipage.words.json")));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
 function stagePage(b: { stagingDir: string }, page: number, file: string) {
  const d = join(b.stagingDir, `p${page}`); mkdirSync(d, { recursive: true }); writeFileSync(join(d, file), "x"); writeFileSync(join(d, ".done"), "");
 }

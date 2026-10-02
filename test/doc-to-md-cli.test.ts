@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { cliAgentDir, parseCliArgs, readCliSettings } from "../bin/pi-quiver.ts";
 import { DOC_TO_MD_OPTIONS, resolveOptions } from "../lib/doc-to-md-core.ts";
+import { BUNDLE_LAYOUT } from "../lib/doc-to-md-options.ts";
 
 const execFileAsync = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/pi-quiver.ts", import.meta.url));
@@ -145,7 +146,7 @@ test("CLI subprocess: docx without soffice -> exit 1 naming LibreOffice", async 
 });
 
 test('parseCliArgs: --json is a CLI flag, --page-images a descriptor flag, --pages "" is accepted', () => {
-	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--json", "--page-images", "--pages", "", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pageImages: true, pages: "" }, json: true });
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--json", "--page-images", "--words", "--pages", "", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", pageImages: true, words: true, pages: "" }, json: true });
 	assert.ok(!DOC_TO_MD_OPTIONS.some((d) => d.flag === "--json"));
 });
 
@@ -154,17 +155,35 @@ test("CLI subprocess: --json prints one HandleData object and nothing else; --js
 	try {
 		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--pages", "", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
 		const h = JSON.parse(stdout);
-		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "ocrDir", "pageStats", "pageStatsPath", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type"].sort());
+		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "ocrDir", "pageStats", "pageStatsPath", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type", "wordsPath", "wordsReason", "wordsErrors"].sort());
 		assert.strictEqual(h.tier, "unpdf"); assert.strictEqual(h.pages, null);
+		assert.strictEqual(h.wordsPath, null);
+		assert.strictEqual(h.wordsReason, null);
+		assert.deepStrictEqual(h.wordsErrors, {});
 		assert.ok(!stdout.includes("Saved-To:"));
 		const info = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--info", MULTIPAGE], { env: scrubbedEnv(tmp) });
 		assert.deepStrictEqual(Object.keys(JSON.parse(info.stdout)).sort(), ["backend", "metadata", "pageCount", "sheets", "sheetsTotal", "toc", "tocTotal", "type"]);
 	} finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 
+test("CLI subprocess: --json --words reports no geometry on the unpdf tier", async () => {
+	const tmp = mkdtempSync(join(tmpdir(), "quiver-doc-json-words-"));
+	try {
+		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--words", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
+		const h = JSON.parse(stdout);
+		assert.strictEqual(h.tier, "unpdf");
+		assert.strictEqual(h.wordsPath, null);
+		assert.strictEqual(h.wordsReason, "none - unpdf tier has no page geometry");
+		assert.deepStrictEqual(h.wordsErrors, {});
+	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
 test("CLI subprocess: --help lists --page-images and the empty file error is exit 1", async () => {
 	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
 	assert.ok(stdout.includes("--page-images"));
+	assert.match(stdout, /^  --words\s+Write word positions/m);
+	assert.ok(stdout.includes("Bundle layout:"));
+	for (const r of BUNDLE_LAYOUT) assert.ok(stdout.includes(r.artifact), r.artifact);
 	const tmp = mkdtempSync(join(tmpdir(), "quiver-doc-zero-"));
 	try {
 		writeFileSync(join(tmp, "zero.pdf"), "");

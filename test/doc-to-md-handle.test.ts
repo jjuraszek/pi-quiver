@@ -6,6 +6,7 @@ const base: HandleData = {
 	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
 	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, pageImageCount: 0, pageImagesReason: null, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
 	pageStats: null, pageStatsPath: null, ocrDir: null,
+	wordsPath: null, wordsReason: null, wordsErrors: {},
 	failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
 };
 
@@ -108,7 +109,7 @@ test("formatInfoHandle: pdf and xlsx shapes", () => {
 });
 
 test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
-	const base = { pageStats: null, pageStatsPath: null, ocrDir: null, savedTo: "/out/book.md", imagesDir: "/out/images", pagesDir: null, type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
+	const base = { pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/out/book.md", imagesDir: "/out/images", pagesDir: null, type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
 	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
 	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
 	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));
@@ -123,7 +124,7 @@ test("formatHandle: Pages-Dir printed after Sheets-Dir when page images exist; n
 });
 
 test("ocrLine: ran with no-text pages lists the page ranges", () => {
-	const ocr: OcrInfo = { mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "ran", lang: "eng", textless: [1, 2, 3, 7], pages: [1, 2, 3, 7], noText: [2, 3, 7], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+	const ocr: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "ran", lang: "eng", textless: [1, 2, 3, 7], pages: [1, 2, 3, 7], noText: [2, 3, 7], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
 	assert.strictEqual(ocrLine(ocr, "pdf"), "OCR: 4 page(s) (eng); no text on pages 2-3, 7");
 });
 
@@ -138,7 +139,7 @@ test("formatSize", () => {
 	assert.strictEqual(formatSize(3 * 1024 * 1024), "3.0MB");
 });
 
-const OCR0: OcrInfo = { mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+const OCR0: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
 const FORCED: OcrInfo = { ...OCR0, status: "ran", mode: "all" };
 
 test("ocrLine: forced mode lists only non-empty buckets and ends with the re-run hint", () => {
@@ -152,14 +153,19 @@ test("ocrLine: forced mode lists only non-empty buckets and ends with the re-run
 });
 
 test("ocr JSON shapes: textless defaults and forced sidecar outcomes survive serialization", () => {
+	const handle: HandleData = { ...base, wordsPath: "/out/manual.words.json", wordsErrors: { 2: "ValueError: x", 5: "RuntimeError: boom" } };
+	const parsed = JSON.parse(JSON.stringify(handle));
+	assert.strictEqual(parsed.wordsPath, "/out/manual.words.json");
+	assert.strictEqual(parsed.wordsReason, null);
+	assert.deepStrictEqual(parsed.wordsErrors, { "2": "ValueError: x", "5": "RuntimeError: boom" });
 	assert.deepStrictEqual(JSON.parse(JSON.stringify(OCR0)), {
 		status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null,
-		mode: "textless", sidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null,
+		mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null,
 	});
-	const forced: OcrInfo = { ...FORCED, pages: [2], sidecars: { 2: "/out/ocr/s-p002.md" }, ocrFailed: [4], ocrErrors: { 4: "boom" }, killed: 13, notAttempted: [20], childError: null };
+	const forced: OcrInfo = { ...FORCED, pages: [2], sidecars: { 2: "/out/ocr/s-p002.md" }, wordSidecars: { 2: "/out/ocr/s-p002.words.json" }, ocrFailed: [4], ocrErrors: { 4: "boom" }, killed: 13, notAttempted: [20], childError: null };
 	assert.deepStrictEqual(JSON.parse(JSON.stringify(forced)), {
 		status: "ran", lang: "eng", textless: [], pages: [2], noText: [], ocrFailed: [4], budgetStopped: [], reason: null, tesseract: null,
-		mode: "all", sidecars: { "2": "/out/ocr/s-p002.md" }, ocrErrors: { "4": "boom" }, killed: 13, notAttempted: [20], childError: null,
+		mode: "all", sidecars: { "2": "/out/ocr/s-p002.md" }, wordSidecars: { "2": "/out/ocr/s-p002.words.json" }, ocrErrors: { "4": "boom" }, killed: 13, notAttempted: [20], childError: null,
 	});
 });
 
@@ -194,9 +200,22 @@ test("ocrLine: every row and clause, first match wins", () => {
 });
 
 test("formatHandle: OCR line after Failed/Empty-Pages, omitted when ocr is null; OCR blockquote headings not in the Outline", () => {
-	const h: HandleData = { pageStats: null, pageStatsPath: null, ocrDir: null, savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
+	const h: HandleData = { pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
 	const lines = formatHandle(h).split("\n");
 	assert.strictEqual(lines[lines.indexOf("Empty-Pages: 1") + 1], "OCR: off - 1 page(s) without a text layer; rerun with ocr=true");
 	assert.ok(!formatHandle({ ...h, ocr: null }).includes("OCR:"));
 	assert.deepStrictEqual(scanOutline("> # Scanned heading\n>\n# Real\n", 10).entries.map((e) => e.title), ["Real"]);
+});
+
+test("Words: line - path, extraction-failed clause, reasons, absent without --words", () => {
+	const at = (h: Partial<HandleData>) => formatHandle({ ...base, ...h }).split("\n");
+	assert.ok(!formatHandle(base).includes("Words:"));
+	assert.strictEqual(at({ wordsPath: "/out/manual.words.json" })[2], "Words: /out/manual.words.json");
+	assert.strictEqual(at({ wordsPath: "/out/manual.words.json", wordsErrors: { 5: "RuntimeError: boom", 2: "ValueError: x" } })[2], "Words: /out/manual.words.json (extraction failed for pages 2, 5: ValueError: x)");
+	assert.strictEqual(at({ wordsReason: "none - word positions apply to PDF and image inputs only (docx)" })[2], "Words: none - word positions apply to PDF and image inputs only (docx)");
+	assert.strictEqual(at({ wordsReason: "none - unpdf tier has no page geometry" })[2], "Words: none - unpdf tier has no page geometry");
+	assert.strictEqual(at({ wordsReason: "none - image copied without conversion (no Python backend)" })[2], "Words: none - image copied without conversion (no Python backend)");
+	assert.strictEqual(at({ wordsReason: "write failed - EACCES" })[2], "Words: write failed - EACCES");
+	const withStats = at({ pageStatsPath: "/out/manual.pages.json", wordsPath: "/out/manual.words.json", ocrDir: "/out/ocr" });
+	assert.deepStrictEqual(withStats.slice(2, 5), ["Page-Stats: /out/manual.pages.json", "Words: /out/manual.words.json", "OCR-Dir: /out/ocr"]);
 });

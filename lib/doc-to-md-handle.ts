@@ -32,6 +32,7 @@ export interface OcrInfo {
 	tesseract: boolean | null;
 	mode: OcrMode;
 	sidecars: Record<number, string>;
+	wordSidecars: Record<number, string>;
 	ocrErrors: Record<number, string>;
 	killed: number | null;
 	notAttempted: number[];
@@ -44,6 +45,7 @@ export interface HandleData {
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number; ocr: OcrInfo | null;
 	pageStats: PageStat[] | null; pageStatsPath: string | null; ocrDir: string | null;
+	wordsPath: string | null; wordsReason: string | null; wordsErrors: Record<number, string>;
 }
 
 export interface InfoData {
@@ -169,6 +171,10 @@ export function formatHandle(h: HandleData): string {
 	if (h.pagesDir && h.pageImageCount > 0) lines.push(`Pages-Dir: ${h.pagesDir} (${h.pageImageCount} pages)`);
 	else if (h.pageImagesReason) lines.push(`Pages-Dir: none - ${h.pageImagesReason}`);
 	if (h.pageStatsPath) lines.push(`Page-Stats: ${h.pageStatsPath}`);
+	if (h.wordsPath) {
+		const bad = Object.keys(h.wordsErrors).map(Number).sort((a, b) => a - b);
+		lines.push(`Words: ${h.wordsPath}${bad.length ? ` (extraction failed for pages ${compactRanges(bad)}: ${h.wordsErrors[bad[0]]})` : ""}`);
+	} else if (h.wordsReason) lines.push(`Words: ${h.wordsReason}`);
 	if (h.ocrDir) lines.push(`OCR-Dir: ${h.ocrDir}`);
 	lines.push(`Type: ${h.type}   Engine: ${h.engine}   Tier: ${h.tier}`);
 	lines.push(`Page-Count: ${pageCountLabel(h)}   Pages: ${h.pages ? compactRanges(h.pages) : "all"}   Images: ${h.imageCount}   Size: ${formatSize(h.bytes)} / ${h.lines} lines`);

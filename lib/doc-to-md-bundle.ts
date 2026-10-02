@@ -15,7 +15,7 @@ export interface Bundle {
 	sheetsDir: string; sheetsStagingDir: string;
 	pagesDir: string; pagesStagingDir: string;
 	attachmentsDir: string; attachmentsStagingDir: string;
-	ocrDir: string; ocrStagingDir: string; pageStatsPath: string;
+	ocrDir: string; ocrStagingDir: string; pageStatsPath: string; wordsPath: string;
 	manifest: Set<string>;
 	csvManifest: Set<string>;
 	pageManifest: Set<string>;
@@ -36,7 +36,7 @@ export function ownedCsvPattern(stem: string): RegExp {
 
 export function ownedPagePattern(stem: string): RegExp { return new RegExp(`^${escRe(stem)}-p\\d+\\.[a-z0-9]+$`); }
 
-export function ownedOcrPattern(stem: string): RegExp { return new RegExp(`^${escRe(stem)}-p\\d+\\.md$`); }
+export function ownedOcrPattern(stem: string): RegExp { return new RegExp(`^${escRe(stem)}-p\\d+(?:\\.words\\.json|\\.md)$`); }
 
 const FILE_LINK_RE = /\[[^\]]*\]\(\s*((?:sheets|attachments)\/[^)\s]+)\s*\)/g;
 const IMG_LINK_RE = /!\[[^\]]*\]\(\s*(?:<([^>]*)>|([^)]*?))\s*\)|<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))/gi;
@@ -94,6 +94,7 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 			if (existsSync(pagesDir)) for (const f of readdirSync(pagesDir)) if (ownedPage.test(f)) rmSync(join(pagesDir, f), { force: true });
 			if (existsSync(attachmentsDir)) for (const f of readdirSync(attachmentsDir)) if (attachments.has(f)) rmSync(join(attachmentsDir, f), { force: true });
 			rmSync(join(root, `${stem}.pages.json`), { force: true });
+			rmSync(join(root, `${stem}.words.json`), { force: true });
 			const ownedOcr = ownedOcrPattern(stem);
 			if (existsSync(ocrDir)) for (const f of readdirSync(ocrDir)) if (ownedOcr.test(f)) rmSync(join(ocrDir, f), { force: true });
 		}
@@ -104,7 +105,7 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 		const pagesStagingDir = join(pagesDir, `.stage-${lockId}`);
 		const attachmentsStagingDir = join(attachmentsDir, `.stage-${lockId}`);
 		const ocrStagingDir = join(ocrDir, `.stage-${lockId}`);
-		return { root, stem, renamedFrom, renameReason, mdPath, lockPath, imagesDir, stagingDir, lockId, sheetsDir, sheetsStagingDir, pagesDir, pagesStagingDir, attachmentsDir, attachmentsStagingDir, ocrDir, ocrStagingDir, pageStatsPath: join(root, `${stem}.pages.json`), ocrManifest: new Set(), manifest: new Set(), csvManifest: new Set(), pageManifest: new Set(), attachmentManifest: new Set(), sourceMap: new Map() };
+		return { root, stem, renamedFrom, renameReason, mdPath, lockPath, imagesDir, stagingDir, lockId, sheetsDir, sheetsStagingDir, pagesDir, pagesStagingDir, attachmentsDir, attachmentsStagingDir, ocrDir, ocrStagingDir, pageStatsPath: join(root, `${stem}.pages.json`), wordsPath: join(root, `${stem}.words.json`), ocrManifest: new Set(), manifest: new Set(), csvManifest: new Set(), pageManifest: new Set(), attachmentManifest: new Set(), sourceMap: new Map() };
 	} catch (e) { rmSync(lockPath, { force: true }); throw e; }
 }
 
@@ -174,10 +175,23 @@ export function writePageStats(b: Bundle, stats: PageStat[]): void {
 	writeFileSync(b.pageStatsPath, `${JSON.stringify(stats, null, 2)}\n`, "utf8");
 }
 
-/** Move every `.done`-gated `pNNN/<stem>-pNNN.md` into `ocr/`; partial page dirs and the checkpoint are dropped with the staging dir. Returns page -> absolute sidecar path. */
-export function publishSidecars(b: Bundle): Map<number, string> {
-	const out = new Map<number, string>();
-	if (!existsSync(b.ocrStagingDir)) return out;
+/** Rename within the bundle root keeps the complete words document atomic. */
+export function publishWords(b: Bundle): string | null {
+	const staged = join(b.stagingDir, "words.json");
+	try {
+		if (!existsSync(staged)) throw new Error("child staged no words.json");
+		renameSync(staged, b.wordsPath);
+		return null;
+	} catch (e) {
+		rmSync(b.wordsPath, { force: true });
+		return `write failed - ${(e as Error).message}`;
+	}
+}
+
+/** Move `.done`-gated Markdown and words sidecars into `ocr/`; drop partial dirs and the checkpoint. Returns page -> absolute paths for each kind. */
+export function publishSidecars(b: Bundle): { sidecars: Map<number, string>; wordSidecars: Map<number, string> } {
+	const sidecars = new Map<number, string>(), wordSidecars = new Map<number, string>();
+	if (!existsSync(b.ocrStagingDir)) return { sidecars, wordSidecars };
 	for (const dir of readdirSync(b.ocrStagingDir).sort()) {
 		const m = dir.match(/^p(\d+)$/);
 		if (!m) continue;
@@ -188,10 +202,16 @@ export function publishSidecars(b: Bundle): Map<number, string> {
 		mkdirSync(b.ocrDir, { recursive: true });
 		renameSync(join(pageDir, file), join(b.ocrDir, file));
 		b.ocrManifest.add(file);
-		out.set(Number(m[1]), join(b.ocrDir, file));
+		sidecars.set(Number(m[1]), join(b.ocrDir, file));
+		const wfile = `${b.stem}-${dir}.words.json`;
+		if (existsSync(join(pageDir, wfile))) {
+			renameSync(join(pageDir, wfile), join(b.ocrDir, wfile));
+			b.ocrManifest.add(wfile);
+			wordSidecars.set(Number(m[1]), join(b.ocrDir, wfile));
+		}
 	}
 	rmSync(b.ocrStagingDir, { recursive: true, force: true });
-	return out;
+	return { sidecars, wordSidecars };
 }
 
 export function publishAttachments(b: Bundle): void {
@@ -254,6 +274,7 @@ export function abortBundle(b: Bundle): void {
 	for (const f of b.ocrManifest) rmSync(join(b.ocrDir, f), { force: true });
 	rmSync(b.ocrStagingDir, { recursive: true, force: true });
 	rmSync(b.pageStatsPath, { force: true });
+	rmSync(b.wordsPath, { force: true });
 	rmSync(`${b.mdPath}.tmp`, { force: true });
 	rmSync(b.stagingDir, { recursive: true, force: true });
 	rmSync(b.sheetsStagingDir, { recursive: true, force: true });

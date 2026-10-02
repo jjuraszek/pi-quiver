@@ -837,12 +837,12 @@ const FAKE_OCR = [
 	"pymupdf.Page.get_textpage_ocr = fake",
 ].join("\n");
 
-test("ocr-pages child: per-page failure writes .failed, success writes the sidecar and .done, active is cleared", T, async () => {
+test("ocr-pages child: recognition failure with words writes only .failed, success writes both sidecars and .done, active is cleared", T, async () => {
 	const d = dirs();
 	try {
 		const staging = join(d.root, "ocr", ".stage-x");
 		const out = await py([READY, FAKE_OCR,
-			`r = m.mode_ocr_pages(${ocrPagesOpts(staging, [1, 2])})`,
+			`r = m.mode_ocr_pages(${ocrPagesOpts(staging, [1, 2]).replace(/\}$/, ', "words": True}')})`,
 			`p1 = sorted(os.listdir(os.path.join(${JSON.stringify(staging)}, 'p001')))`,
 			`p2 = sorted(os.listdir(os.path.join(${JSON.stringify(staging)}, 'p002')))`,
 			`failed = open(os.path.join(${JSON.stringify(staging)}, 'p001', '.failed')).read()`,
@@ -853,8 +853,8 @@ test("ocr-pages child: per-page failure writes .failed, success writes the sidec
 			`b = m.mode_ocr_pages(${ocrPagesOpts(join(d.root, "budget"), [1, 2], 12000)})`,
 			`long_failed = open(os.path.join(${JSON.stringify(join(d.root, "budget"))}, f"p{b['ocrFailed'][0]:03d}", '.failed')).read()`,
 			`OUT = [r, p1, p2, failed, side, os.path.exists(os.path.join(${JSON.stringify(staging)}, 'active')), b, long_failed]`].join("\n"));
-		assert.deepEqual(out[0], { status: "ran", written: [2], noText: [], ocrFailed: [1], ocrErrors: { "1": "RuntimeError: tesseract exploded" }, budgetStopped: [] });
-		assert.deepEqual(out[1], [".failed"]); assert.deepEqual(out[2], [".done", "scan-p002.md"]);
+		assert.deepEqual(out[0], { status: "ran", written: [2], noText: [], ocrFailed: [1], ocrErrors: { "1": "RuntimeError: tesseract exploded" }, budgetStopped: [], wordsErrors: {} });
+		assert.deepEqual(out[1], [".failed"]); assert.deepEqual(out[2], [".done", "scan-p002.md", "scan-p002.words.json"]);
 		assert.equal(out[3], "RuntimeError: tesseract exploded");
 		assert.ok(out[4].startsWith("<!-- OCR of page 2 (tesseract eng); recognized text, not the text layer -->\n\nPAGE-2 has a text layer"), out[4]);
 		assert.ok(out[4].endsWith("\n\n--- end of page.page_number=2 ---\n"), out[4]);
@@ -896,6 +896,111 @@ test("ocr-pages child: budget stop lists the current and remaining pages with a 
 		assert.deepEqual([out[0].noText, out[0].budgetStopped], [[1], [2]]);
 		assert.deepEqual([out[1].written, out[1].noText, out[1].budgetStopped], [[], [], [1, 2]]);
 		assert.equal(out[2], false);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+const readWords = (staging: string) => JSON.parse(readFileSync(join(staging, "words.json"), "utf8"));
+
+test("words: native tokens, rotation and empty pages on both PDF tiers", T, async () => {
+	const d = dirs();
+	try {
+		for (const mode of ["pdf-primary", "pdf-fallback"]) {
+			const opts = { path: fx("multipage.pdf"), pages: [1], stagingDir: join(d.root, mode), imageFormat: "png", imageDpi: 72, ocr: false };
+			const off = await child(mode, opts);
+			assert.ok(!("words" in off)); assert.ok(!existsSync(join(opts.stagingDir, "words.json")));
+			const on = await child(mode, { ...opts, words: true });
+			assert.equal(on.words, true); assert.deepEqual(on.wordsErrors, {});
+			for (const key of ["markdown", "notes", "pageStats", "ocr"]) assert.deepEqual(on[key], off[key]);
+			const p = readWords(opts.stagingDir).pages[0];
+			const expected = await py(`import pymupdf\nOUT = pymupdf.open(${JSON.stringify(fx("multipage.pdf"))})[0].get_text("text").split()`);
+			assert.equal(readWords(opts.stagingDir).unit, "pt");
+			assert.deepEqual([p.page, p.width, p.height, p.rotation], [1, 595, 842, 0]);
+			assert.deepEqual(p.words.map((w: any) => w.text), expected); assert.equal(expected.length, 13);
+			for (const w of p.words) { assert.equal(w.source, "text"); assert.ok(w.bbox[0] >= 0 && w.bbox[1] >= 0 && w.bbox[2] <= p.width && w.bbox[3] <= p.height); }
+			await child(mode, { ...opts, path: fx("rotated.pdf"), words: true });
+			const r = readWords(opts.stagingDir).pages[0];
+			assert.deepEqual([r.width, r.height, r.rotation, r.words.length], [792, 612, 90, 1]);
+			assert.equal(r.words[0].text, "NORTH");
+			assert.ok(Math.abs(r.words[0].bbox[0] - 720) <= 10 && Math.abs(r.words[0].bbox[1] - 72) <= 10, `${mode} ${r.words[0].bbox}`);
+			await child(mode, { ...opts, path: fx("blank.pdf"), words: true });
+			assert.deepEqual(readWords(opts.stagingDir).pages, [{ page: 1, width: 595, height: 842, rotation: 0, words: [] }]);
+		}
+		const failedStaging = join(d.root, "render-failed");
+		const failed = await py([
+			"def render(page, n, o, images):",
+			"    if n == 1: raise RuntimeError('render failed')",
+			"m.render_page_image = render",
+			`OUT = m.mode_pdf_primary(${JSON.stringify({ path: fx("multipage.pdf"), pages: [1, 2], stagingDir: failedStaging, imageFormat: "png", imageDpi: 72 }).replace(/}$/, ', "words": True, "pageImages": True}')})`,
+		].join("\n"));
+		assert.deepEqual(failed.failedPages, [{ page: 1, error: "RuntimeError: render failed" }]);
+		assert.deepEqual(readWords(failedStaging).pages.map((p: any) => p.page), [2]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("words: requested unavailable OCR omits scans; pre-existing OCR stays text", T, async () => {
+	const d = dirs();
+	try {
+		for (const mode of ["pdf-primary", "pdf-fallback"]) {
+			const opts = { path: fx("scan.pdf"), stagingDir: join(d.root, mode), imageFormat: "png", imageDpi: 72, ocr: true, words: true };
+			const raw = await childRaw(mode, opts, { ...process.env, TESSDATA_PREFIX: join(d.root, "missing") });
+			assert.equal(raw.code, 0, raw.stderr); assert.equal(JSON.parse(raw.stdout).ocr.status, "unavailable");
+			const p = readWords(opts.stagingDir).pages;
+			assert.deepEqual(p.map((x: any) => x.page), [2]); assert.equal(p[0].words.length, 5); assert.ok(p[0].words.every((w: any) => w.source === "text"));
+			await child(mode, { ...opts, ocr: false, pages: [1] });
+			assert.deepEqual(readWords(opts.stagingDir).pages[0].words, []);
+		}
+		await child("pdf-primary", { path: fx("pre-ocr.pdf"), stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: false, words: true });
+		const w = readWords(d.stagingDir).pages[0].words;
+		assert.deepEqual(w.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]); assert.ok(w.every((x: any) => x.source === "text"));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("words: inline OCR provenance and image pixel geometry", T, async (t) => {
+	if ((await py(`OUT = m.ocr_status(True, "eng")["status"]`)) !== "ready") { t.skip("no Tesseract language data"); return; }
+	const d = dirs();
+	try {
+		await child("pdf-primary", { path: fx("scan.pdf"), pages: [1], stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: true, words: true });
+		const w = readWords(d.stagingDir).pages[0].words;
+		assert.deepEqual(w.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]);
+		assert.ok(w.every((x: any) => x.source === "ocr" && x.bbox[0] >= 36 && x.bbox[1] >= 72 && x.bbox[2] <= 576 && x.bbox[3] <= 175), JSON.stringify(w));
+		assert.ok(Math.abs(w[0].bbox[0] - 51) <= 10, JSON.stringify(w));
+		await child("image", { ...imgOpts(fx("ocr.png"), join(d.root, "image"), true), words: true });
+		const i = readWords(join(d.root, "image")); assert.equal(i.unit, "px");
+		assert.deepEqual(i.pages[0].words.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]);
+		assert.ok(i.pages[0].words.every((x: any) => x.source === "ocr"));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("words: image without OCR and isolated words failure", T, async () => {
+	const d = dirs();
+	try {
+		const opts = { ...imgOpts(fx("ocr.png"), d.stagingDir, false), words: true };
+		const r = await child("image", opts); assert.equal(r.words, true);
+		const w = readWords(d.stagingDir); assert.equal(w.unit, "px"); assert.deepEqual(w.pages[0].words, []);
+		assert.ok(w.pages[0].width > 1000 && w.pages[0].height > 200);
+		const raw = await childRaw("image", { ...opts, stagingDir: join(d.root, "bad") }, { ...process.env, DOC_TO_MD_WORDS_FAIL: "1" });
+		assert.equal(raw.code, 0, raw.stderr); const bad = JSON.parse(raw.stdout);
+		assert.equal(bad.markdown, r.markdown); assert.deepEqual(bad.ocr, r.ocr);
+		assert.match(bad.wordsErrors["1"], /RuntimeError: words injected failure/); assert.deepEqual(readWords(join(d.root, "bad")).pages, []);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("words: forced OCR sidecars survive a words-only failure", T, async () => {
+	const d = dirs();
+	try {
+		const opts = (s: string) => ocrPagesOpts(s, [2]).replace(/\}$/, ', "words": True}');
+		const out = await py([READY, FAKE_OCR,
+			`os.environ["DOC_TO_MD_WORDS_FAIL"] = "2"`,
+			`r = m.mode_ocr_pages(${opts(d.stagingDir)})`,
+			`files = sorted(os.listdir(os.path.join(${JSON.stringify(d.stagingDir)}, "p002")))`,
+			`os.environ.pop("DOC_TO_MD_WORDS_FAIL")`,
+			`r2 = m.mode_ocr_pages(${opts(join(d.root, "ok"))})`,
+			`w = json.load(open(os.path.join(${JSON.stringify(join(d.root, "ok"))}, "p002", "scan-p002.words.json")))`,
+			"OUT = [r, files, r2, w]"].join("\n"));
+		assert.deepEqual(out[0].written, [2]); assert.deepEqual(out[1], [".done", "scan-p002.md"]);
+		assert.match(out[0].wordsErrors["2"], /words injected failure/); assert.deepEqual(out[2].wordsErrors, {});
+		assert.deepEqual([out[3].page, out[3].unit, out[3].rotation], [2, "pt", 0]);
+		assert.equal(out[3].words.length, 5); assert.ok(out[3].words.every((x: any) => x.source === "ocr"));
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 

@@ -96,6 +96,16 @@ test("docToMd: ocrMode in settings is linted as unknown (per-call only)", () => 
 	});
 });
 
+test("docToMd: words in settings is linted as unknown (per-call only)", () => {
+	withSettings({}, { quiver: { docToMd: { words: true } } }, (cwd, files) => {
+		const warnings: string[] = [];
+		resolveConfig(cwd, "docToMd", docToMdDefaults, (raw) => (raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined), (m) => warnings.push(m));
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0].startsWith(`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}`));
+		assert.match(warnings[0], /"quiver\.docToMd\.words" - unknown/);
+	});
+});
+
 test("nested-only non-legacy key resolves from quiver", () => {
 	withSettings({}, { quiver: { slack: { enabled: true, label: "s" } } }, (cwd) => {
 		assert.deepEqual(resolveConfig(cwd, "slack", DEFAULTS, coerceCfg), { enabled: true, label: "s" });

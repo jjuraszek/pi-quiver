@@ -30,6 +30,7 @@ export interface DocToMdOptions extends Tunables {
 	outputDir: string | null;
 	overwrite: boolean;
 	pageImages: boolean;
+	words: boolean;
 	ocrMode: OcrMode;
 }
 
@@ -41,6 +42,7 @@ export interface PerCallInput extends Partial<Tunables> {
 	outputDir?: string | null;
 	overwrite?: boolean;
 	pageImages?: boolean;
+	words?: boolean;
 	ocrMode?: OcrMode;
 }
 
@@ -71,6 +73,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "outputDir", flag: "--output-dir", type: "string", default: null, settable: false, help: "Bundle root for <stem>.md + images/; default a per-call temp dir. <stem> = basename without extension with [^A-Za-z0-9._-]+ -> _ (empty -> document); a second call on the same stem writes <stem>-2.md" },
 	{ key: "overwrite", flag: "--overwrite", type: "bool", default: false, settable: false, help: "Replace an existing completed <stem>.md bundle" },
 	{ key: "pageImages", flag: "--page-images", type: "bool", default: false, settable: false, help: "Also render every selected page to pages/<stem>-pNNN.<imageFormat> at imageDpi (PDF, PPTX, .doc, DOCX via LibreOffice); off by default" },
+	{ key: "words", flag: "--words", type: "bool", default: false, settable: false, help: "Write word positions: <stem>.words.json beside the Markdown lists every text-layer word of each selected page with its bbox (PDF points, top-left origin, display orientation; image inputs in source pixels) and the words inline OCR recognized, tagged source \"text\" or \"ocr\"; under --ocr-mode all the OCR words go to ocr/<stem>-pNNN.words.json beside each sidecar. Never triggers OCR. PDF and image inputs only." },
 	{ key: "ocrMode", flag: "--ocr-mode", type: "enum", default: "textless", settable: false, enumValues: ["textless", "all"], help: "OCR policy: textless (default) OCRs only pages with an empty text layer, inline; all OCRs every selected page and writes the recognized text to ocr/<stem>-pNNN.md sidecars, leaving the Markdown untouched. all requires --ocr and an explicit --pages selection (PDF, PPTX, DOC)." },
 	{ key: "primaryTimeoutMs", flag: "--primary-timeout", type: "int", default: 60000, settable: true, env: "PI_DOC_TO_MD_CONVERT_TIMEOUT_MS", help: "pymupdf4llm tier and DOCX child (docx mode); also the unpdf tier" },
 	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier (including DOCX LibreOffice fallback); also PDF and DOCX info and Excel rendered views" },
@@ -181,8 +184,8 @@ export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables
 		out[d.key] = value;
 	}
 	const o = out as unknown as DocToMdOptions;
-	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages || o.ocrMode === "all")) {
-		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite, --page-images or --ocr-mode all");
+	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages || o.words || o.ocrMode === "all")) {
+		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite, --page-images, --words or --ocr-mode all");
 	}
 	return o;
 }
@@ -207,6 +210,21 @@ export const USAGE_PATTERNS = [
 
 export const usagePatterns = (cmd: string): string => USAGE_PATTERNS.replaceAll("<cmd>", cmd);
 
+/** Every artifact a bundle can contain; shared by --help and the generated skill. */
+export const BUNDLE_LAYOUT: readonly { artifact: string; trigger: string; content: string; namedBy: string }[] = [
+	{ artifact: "<stem>.md", trigger: "always", content: "the Markdown", namedBy: "Saved-To: / savedTo" },
+	{ artifact: "images/", trigger: "embedded or extracted figures", content: "image files linked from the Markdown", namedBy: "Images-Dir: / imagesDir" },
+	{ artifact: "pages/<stem>-pNNN.<fmt>", trigger: "--page-images", content: "page renders at --image-dpi", namedBy: "Pages-Dir: / pagesDir" },
+	{ artifact: "sheets/", trigger: "Excel input", content: "one CSV per non-empty worksheet", namedBy: "Sheets-Dir: / sheetsDir" },
+	{ artifact: "attachments/", trigger: "email input", content: "saved attachments", namedBy: "Markdown attachment list" },
+	{ artifact: "<stem>.pages.json", trigger: "Python PDF tiers (PDF, PPTX, DOC, DOCX via LibreOffice; not unpdf)", content: "per-page chars, image count, image coverage", namedBy: "Page-Stats: / pageStatsPath" },
+	{ artifact: "<stem>.words.json", trigger: "--words", content: "per-page word boxes, source text/ocr", namedBy: "Words: / wordsPath" },
+	{ artifact: "ocr/<stem>-pNNN.md", trigger: "--ocr --ocr-mode all", content: "recognized text of a forced page", namedBy: "OCR-Dir: / ocr.sidecars" },
+	{ artifact: "ocr/<stem>-pNNN.words.json", trigger: "--ocr --ocr-mode all --words", content: "word boxes of that OCR", namedBy: "ocr.wordSidecars" },
+];
+
+const bundleLayoutText = (): string => BUNDLE_LAYOUT.map((r) => `  ${r.artifact.padEnd(28)} ${r.trigger}; ${r.content}; named by ${r.namedBy}`).join("\n");
+
 export function renderHelp(): string {
 	const row = (d: OptionDescriptor) => `  ${(d.flag ?? "<path>").padEnd(26)} ${d.help}${d.default !== null && d.key !== "info" && d.key !== "overwrite" ? ` (default ${d.default})` : ""}`;
 	return [
@@ -216,6 +234,6 @@ export function renderHelp(): string {
 		...DOC_TO_MD_OPTIONS.filter((d) => d.settable).map(row),
 		"", "Result: a handle (Saved-To, Images-Dir, Page-Stats, Page-Count, Outline ...). Read the Saved-To file for the Markdown.",
 		"Exit codes: 0 success, 1 runtime error, 2 usage error.",
-		"", usagePatterns("pi-quiver doc-to-md"),
+		"", "Bundle layout:", bundleLayoutText(), "", usagePatterns("pi-quiver doc-to-md"),
 	].join("\n");
 }

@@ -43,6 +43,7 @@ Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` us
 | `--output-dir` | Bundle root for <stem>.md + images/; default a per-call temp dir. <stem> = basename without extension with [^A-Za-z0-9._-]+ -> _ (empty -> document); a second call on the same stem writes <stem>-2.md |
 | `--overwrite` | Replace an existing completed <stem>.md bundle |
 | `--page-images` | Also render every selected page to pages/<stem>-pNNN.<imageFormat> at imageDpi (PDF, PPTX, .doc, DOCX via LibreOffice); off by default |
+| `--words` | Write word positions: <stem>.words.json beside the Markdown lists every text-layer word of each selected page with its bbox (PDF points, top-left origin, display orientation; image inputs in source pixels) and the words inline OCR recognized, tagged source "text" or "ocr"; under --ocr-mode all the OCR words go to ocr/<stem>-pNNN.words.json beside each sidecar. Never triggers OCR. PDF and image inputs only. |
 | `--ocr-mode` | OCR policy: textless (default) OCRs only pages with an empty text layer, inline; all OCRs every selected page and writes the recognized text to ocr/<stem>-pNNN.md sidecars, leaving the Markdown untouched. all requires --ocr and an explicit --pages selection (PDF, PPTX, DOC). (default `textless`) |
 | `--primary-timeout` | pymupdf4llm tier and DOCX child (docx mode); also the unpdf tier (default `60000`) |
 | `--fallback-timeout` | PyMuPDF get_text tier (including DOCX LibreOffice fallback); also PDF and DOCX info and Excel rendered views (default `30000`) |
@@ -56,6 +57,20 @@ Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` us
 | `--outline-max-entries` | Heading outline / TOC / sheet inventory cap in the handle (default `40`) |
 | `--ocr` | Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off) |
 | `--ocr-language` | Tesseract language code(s), +-joined, e.g. deu+eng (default `eng`) |
+
+## Bundle layout
+
+| Artifact | Trigger | Content | Named by |
+|---|---|---|---|
+| `<stem>.md` | always | the Markdown | Saved-To: / savedTo |
+| `images/` | embedded or extracted figures | image files linked from the Markdown | Images-Dir: / imagesDir |
+| `pages/<stem>-pNNN.<fmt>` | --page-images | page renders at --image-dpi | Pages-Dir: / pagesDir |
+| `sheets/` | Excel input | one CSV per non-empty worksheet | Sheets-Dir: / sheetsDir |
+| `attachments/` | email input | saved attachments | Markdown attachment list |
+| `<stem>.pages.json` | Python PDF tiers (PDF, PPTX, DOC, DOCX via LibreOffice; not unpdf) | per-page chars, image count, image coverage | Page-Stats: / pageStatsPath |
+| `<stem>.words.json` | --words | per-page word boxes, source text/ocr | Words: / wordsPath |
+| `ocr/<stem>-pNNN.md` | --ocr --ocr-mode all | recognized text of a forced page | OCR-Dir: / ocr.sidecars |
+| `ocr/<stem>-pNNN.words.json` | --ocr --ocr-mode all --words | word boxes of that OCR | ocr.wordSidecars |
 
 ## Usage patterns
 

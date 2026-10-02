@@ -8,6 +8,11 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `doc_to_md`: new per-call `words` option (`--words`; not settable) writes `<stem>.words.json` - per selected PDF/image page, every text-layer word and every word inline OCR recognized in the same run, with display-space bbox (points; source pixels for images) and `source` `text`/`ocr`. Under `--ocr-mode all` each sidecar gets `ocr/<stem>-pNNN.words.json`. Never triggers OCR; Markdown, page stats and OCR outcome are unchanged. Handle gains `Words:`, `--json` gains `wordsPath`, `wordsReason`, `wordsErrors`, `ocr.wordSidecars`; `--info --words` is a usage error (#28).
+- `doc_to_md`: `--help` and the generated skill list every bundle artifact under `Bundle layout` (#28).
+
 ## v6.9.0 - 2026-10-01
 
 - `doc_to_md`: every conversion that goes through the Python PDF tiers (PDF, PPTX, `.doc`, DOCX via LibreOffice) writes `<stem>.pages.json` (per-page `chars`, `images`, `imageCoverage`) and the handle prints `Page-Stats:`; CLI `--json` gains `pageStats`, `pageStatsPath`, `ocrDir`. The unpdf tier writes no stats (#26).

@@ -49,7 +49,7 @@ Excel does not go through LibreOffice for its data. `.xlsx` and `.xlsm` use `ope
 
 ## Bundle and handle
 
-A bundle root contains `<stem>.md`, `<stem>.pages.json` on Python PDF tiers, `images/`, and, when needed, `sheets/`, `pages/`, `attachments/`, and `ocr/`. The stem is the basename without extension with `[^A-Za-z0-9._-]+` replaced by `_`; an empty stem becomes `document`. Without `--overwrite`, a same-stem collision takes the first available `-2`, `-3`, ... suffix and reports `Notes: renamed to <stem>-2 (<stem>.md exists)` or, for a lock-only collision, `Notes: renamed to <stem>-2 (<stem>.md.lock held; delete it if no conversion is running)`. `--output-dir` selects the root; otherwise a per-call temporary root is created. The caller owns a temporary bundle: the tool never deletes a bundle it produced.
+A bundle root contains `<stem>.md`, `<stem>.pages.json` on Python PDF tiers, `<stem>.words.json` with `--words`, `images/`, and, when needed, `sheets/`, `pages/`, `attachments/`, and `ocr/`. The stem is the basename without extension with `[^A-Za-z0-9._-]+` replaced by `_`; an empty stem becomes `document`. Without `--overwrite`, a same-stem collision takes the first available `-2`, `-3`, ... suffix and reports `Notes: renamed to <stem>-2 (<stem>.md exists)` or, for a lock-only collision, `Notes: renamed to <stem>-2 (<stem>.md.lock held; delete it if no conversion is running)`. `--output-dir` selects the root; otherwise a per-call temporary root is created. The caller owns a temporary bundle: the tool never deletes a bundle it produced.
 
 A call owns `<stem>.md.lock` for its duration. Child page images stage in `images/.stage-<lockId>/p<N>/`; a child writes `.done` only after that page is complete. Node publishes completed page files as `images/<stem>-p<N>-<n>.<ext>`, discards incomplete page staging directories, and atomically publishes `<stem>.md` by writing a temporary Markdown file then renaming it. Excel images stage as `s<idx>-<n>.<ext>` and publish as `<stem>-s<idx>-<n>.<ext>`. On overwrite, the old `<stem>.md` and this stem's owned files are removed: `images/<stem>-p<N>-<n>.*`, `images/<stem>-s<idx>[-<n>].*`, `sheets/<stem>-s<idx>-<slug>.csv`, `pages/<stem>-p<N>.<ext>`, and `attachments/<stem>-...` files linked from the old `<stem>.md`. Other bundle files are left alone. Excel CSVs stage under `sheets/.stage-<lockId>/s<idx>-<slug>.csv` and publish as `sheets/<stem>-s<idx>-<slug>.csv`; rendered views stage as `s<idx>.<fmt>` and publish as `images/<stem>-s<idx>.<fmt>`. The handle prints `Sheets-Dir` when any CSV was written.
 
@@ -57,7 +57,21 @@ A textless PDF page keeps `images/<stem>-p<N>-1.<fmt>`, linked as `![page N](ima
 
 Every conversion that goes through the Python PDF tiers (PDF, PPTX, `.doc`, DOCX via LibreOffice) writes `<stem>.pages.json` beside the Markdown: one `{ "page", "chars", "images", "imageCoverage" }` object per selected page (`chars` = stripped text-layer length, `images` = image count from `get_image_info()`, `imageCoverage` = summed image bbox area over page area, clamped to `1.0` and rounded to two decimals), or `{ "page", "error" }` when the stats raised. The handle prints `Page-Stats: <path>`; the unpdf tier writes no stats. No threshold lives in the converter - the consumer decides what "thin" means.
 
-`--ocr-mode all` forces OCR on an explicit `--pages` selection and writes one sidecar per completed page to `ocr/<stem>-pNNN.md` (`NNN` zero-padded to at least three digits): a `<!-- OCR of page N (tesseract <lang>); recognized text, not the text layer -->` header, the plain recognized text (empty for a no-text page), and the page separator. The main Markdown is byte-identical to the same call without `--ocr`, with the same selected pages and stem. The handle prints `OCR-Dir: <path>` when a sidecar exists. On overwrite, `<stem>.pages.json` and `ocr/<stem>-pNNN.md` join the owned set that is removed.
+`--ocr-mode all` forces OCR on an explicit `--pages` selection and writes one sidecar per completed page to `ocr/<stem>-pNNN.md` (`NNN` zero-padded to at least three digits): a `<!-- OCR of page N (tesseract <lang>); recognized text, not the text layer -->` header, the plain recognized text (empty for a no-text page), and the page separator. The main Markdown is byte-identical to the same call without `--ocr`, with the same selected pages and stem. The handle prints `OCR-Dir: <path>` when a sidecar exists. On overwrite, `<stem>.pages.json`, `<stem>.words.json`, `ocr/<stem>-pNNN.md`, and `ocr/<stem>-pNNN.words.json` join the owned set that is removed, even when the new call omits `--words`.
+
+Every artifact a bundle can contain, as printed by `--help` under `Bundle layout`:
+
+| Artifact | Trigger | Content | Named by |
+|---|---|---|---|
+| `<stem>.md` | always | the Markdown | `Saved-To:` / `savedTo` |
+| `images/` | embedded or extracted figures | image files linked from the Markdown | `Images-Dir:` / `imagesDir` |
+| `pages/<stem>-pNNN.<fmt>` | `--page-images` | page renders at `--image-dpi` | `Pages-Dir:` / `pagesDir` |
+| `sheets/` | Excel input | one CSV per non-empty worksheet | `Sheets-Dir:` / `sheetsDir` |
+| `attachments/` | email input | saved attachments | Markdown attachment list |
+| `<stem>.pages.json` | Python PDF tiers (PDF, PPTX, DOC, DOCX via LibreOffice; not unpdf) | per-page chars, image count, image coverage | `Page-Stats:` / `pageStatsPath` |
+| `<stem>.words.json` | `--words` | per-page word boxes, source text/ocr | `Words:` / `wordsPath` |
+| `ocr/<stem>-pNNN.md` | `--ocr --ocr-mode all` | recognized text of a forced page | `OCR-Dir:` / `ocr.sidecars` |
+| `ocr/<stem>-pNNN.words.json` | `--ocr --ocr-mode all --words` | word boxes of that OCR | `ocr.wordSidecars` |
 
 Every selected PDF or PPTX page, and every DOCX segment when the file has more than one segment (`pageCount > 1`), ends with `--- end of page.page_number=N ---`.
 
@@ -67,6 +81,7 @@ A conversion handle has this portable shape:
 Saved-To: /abs/out/manual.md
 Images-Dir: /abs/out/images
 Page-Stats: /abs/out/manual.pages.json (Python PDF tiers)
+Words: /abs/out/manual.words.json (with --words)
 OCR-Dir: /abs/out/ocr (when sidecars exist)
 Type: pdf   Engine: pymupdf4llm   Tier: primary
 Page-Count: 42   Pages: 3-5   Images: 4   Size: 18.2KB / 412 lines
@@ -117,6 +132,48 @@ Type: xlsx   Sheets: 3
   Trends  chartsheet rows=- cols=- charts=1 images=0
 ```
 
+## Word positions
+
+Set `words: true` in a tool call or pass `--words` to write `<stem>.words.json` beside the Markdown. The option is per-call only, defaults to false, and has no settings key. It applies only to PDF and image inputs, never triggers OCR, and leaves Markdown, page stats, and OCR outcome unchanged. DOC, PPTX, and DOCX via LibreOffice remain unsupported even though they use the PDF pipeline.
+
+The main file has this shape:
+
+```json
+{
+  "unit": "pt",
+  "pages": [
+    { "page": 1, "width": 612.0, "height": 792.0, "rotation": 0,
+      "words": [ { "text": "T2", "bbox": [412.3, 118.0, 428.9, 129.5], "source": "text" } ] }
+  ]
+}
+```
+
+`pages[]` uses selected 1-based document page numbers in document order. `width` and `height` are display-oriented; `rotation` records the PDF page's original `/Rotate` value. Each `bbox` is `[x0, y0, x1, y1]`, rounded to one decimal, in display space with a top-left origin and PDF points (`unit: "pt"`). pymupdf4llm removes page rotation during conversion; fallback and OCR paths map boxes through `page.rotation_matrix` to the same display orientation. Image inputs use `unit: "px"`, source pixel width and height, pixel boxes, and `rotation: 0`.
+
+Words are PyMuPDF's whitespace-delimited tokens in returned order, without normalization or line/block grouping. In the main file, `source: "ocr"` means this run's inline OCR added the word; every other word is `source: "text"`, including a pre-existing OCR layer. Text-bearing pages under the default `textless` policy contain native words only, even with `--ocr`.
+
+Requested inline OCR that did not run (unavailable, failed, budget-stopped, or an image skipped as too small) produces no `pages[]` entry for that page; consult the `OCR:` summary rather than treating it as empty. Textless pages without `--ocr`, and `noText` pages where OCR ran but recognized nothing, have `"words": []`. Conversion or word-extraction failures also omit the affected page; extraction failures appear in `wordsErrors`. The file still exists when every page is omitted (`"pages": []`).
+
+Under `--ocr-mode all`, the main pass runs with OCR off and the main words file holds native words only. Each completed PDF OCR sidecar gets `ocr/<stem>-pNNN.words.json`, a single page object rather than a `pages[]` wrapper:
+
+```json
+{ "page": 2, "unit": "pt", "width": 612.0, "height": 792.0, "rotation": 0,
+  "words": [ { "text": "3", "bbox": [72.0, 61.0, 78.5, 72.1], "source": "ocr" } ] }
+```
+
+Every sidecar word is `source: "ocr"`; full-page OCR may duplicate native words, and the converter does not dedupe. Consumers overlay the main and sidecar words by page number and prefer `text` where boxes overlap. A `noText` sidecar has `"words": []`. `ocr.wordSidecars` maps page numbers to absolute words-sidecar paths; `Words:` always names the main artifact, never the sidecars.
+
+Word extraction and main-file write/publication failures do not fail conversion or change Markdown, stats, or OCR outcome. Main words are staged on disk, not sent over capped child stdout, and atomically renamed into place. A per-page extraction failure is recorded in `wordsErrors`; a main-file write or publication failure leaves `wordsPath` null. A forced-OCR words-only failure keeps the Markdown sidecar and its OCR outcome, removes the words file, and records the page in `wordsErrors` when the child result is available.
+
+The handle prints `Words: <absolute path>` after `Page-Stats`, or `Words: <reason>` for these reasons:
+
+- `none - word positions apply to PDF and image inputs only (<type>)`
+- `none - unpdf tier has no page geometry`
+- `none - image copied without conversion (<reason>)`
+- `write failed - <reason>`
+
+When the main file exists and `wordsErrors` is non-empty, its line ends with ` (extraction failed for pages <list>: <first message>)`, including forced-OCR word failures. Without `--words` there is no `Words:` line and `wordsPath` is null. `--info --words` is a usage error.
+
 ## Child contract
 
 The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-fallback`, `xlsx`, `render-pages`, `docx`, `html`, `image`, `email`, or `ocr-pages`). The JS child is `unpdf-worker <mode>` (`info` or `pdf-text`). Both receive options JSON on stdin and return one result JSON object on stdout. Exit `0` is success, `1` is a conversion failure, and `3` is a user error, with `error` and optional `pageCount` in its result JSON.
@@ -125,9 +182,9 @@ The Python child is `scripts/doc_to_md.py <mode>` (`info`, `pdf-primary`, `pdf-f
 
 `html` receives preprocessed `html` and returns `markdown` and `engine`. `image` receives `stem`, `ocr`, and `ocrLanguage`, copies the input to `p1/original.<ext>`, and returns Markdown linking the image. PDF and image modes return `ocr` (`status`, `lang`, `textless`, `pages`, `noText`, `ocrFailed`, `budgetStopped`, `reason`, `tesseract`). The child receives `ocr`, `ocrLanguage`, and `ocrBudgetMs` (= `primaryTimeoutMs`); it admits OCR only when elapsed time + slowest OCR call + remaining pages x mean page time + 5000 ms fits the budget. The small-image gate avoids OCR for text-bearing pages with only small images; images shorter than 16 px on either side skip OCR. OCR block labels use `\x00OCR <staged file>\x00` sentinels, resolved to published image names by the parent.
 
-Both Python PDF tiers return `pageStats` for the selected pages.
+Both Python PDF tiers return `pageStats` for the selected pages. For PDF and image inputs, the main `pdf-primary`, `pdf-fallback`, and `image` modes receive `words`; when true they stage the complete words document as `words.json` in `stagingDir` and return `words: true|false` plus `wordsErrors` (page-number keys for extraction failures, `file` for a document write failure). The payload stays off stdout. `DOC_TO_MD_WORDS_FAIL=<n>` injects a words extraction failure on page `n` (tests only).
 
-`ocr-pages` receives `path`, `pages`, `stem`, `ocrLanguage`, `ocrBudgetMs`, `stagingDir`, `dpi`, `maxOutputBytes`, and `pymupdfVersion`. It checks Tesseract first (`{ "status": "unavailable", "reason" }`), then OCRs each page in order with `get_textpage_ocr(full=True)` at a `MAX_RENDER_PX`-clamped DPI, writing `active` (page in flight), `pNNN/.done` or `pNNN/.failed` before moving on, and returns `{ "status": "ran", "written", "noText", "ocrFailed", "ocrErrors", "budgetStopped" }`. The parent rebuilds the outcome from those markers when the child is killed or returns malformed output (the `active` page is `killed`, unmarked pages are `notAttempted`) and never retries. `DOC_TO_MD_OCR_STALL_PAGE=<n>` makes the child sleep on page `n` (tests only).
+`ocr-pages` receives `path`, `pages`, `stem`, `ocrLanguage`, `ocrBudgetMs`, `stagingDir`, `dpi`, `maxOutputBytes`, `pymupdfVersion`, and `words`. It checks Tesseract first (`{ "status": "unavailable", "reason" }`), then OCRs each page in order with `get_textpage_ocr(full=True)` at a `MAX_RENDER_PX`-clamped DPI, writing `active` (page in flight), `pNNN/.done` or `pNNN/.failed` before moving on, and returns `{ "status": "ran", "written", "noText", "ocrFailed", "ocrErrors", "budgetStopped" }`. The parent rebuilds the outcome from those markers when the child is killed or returns malformed output (the `active` page is `killed`, unmarked pages are `notAttempted`) and never retries. When `words` is true, `ocr-pages` writes `pNNN/<stem>-pNNN.words.json` beside the staged Markdown sidecar before `.done` and returns `wordsErrors`; a words-only failure still writes `.done` and preserves the sidecar. The parent enables this only for PDF input. `DOC_TO_MD_OCR_STALL_PAGE=<n>` makes the child sleep on page `n` (tests only).
 
 `pdf-fallback` receives `keepPages`: an object mapping page numbers to primary-tier image filenames already published. It preserves those images while extracting fallback text rather than duplicating them.
 
@@ -197,7 +254,8 @@ Two-pass OCR (PDF, PPTX, DOC):
 | `--output-dir <dir>` | Bundle root for `<stem>.md` and `images/`; default a per-call temp directory. |
 | `--overwrite` | Replace an existing completed bundle. |
 | `--page-images` | Render selected pages under `pages/` where page geometry and a Python backend are available. |
-| `--json` | CLI only: print one JSON object instead of the text handle. Conversion returns `HandleData` keys `savedTo`, `imagesDir`, `sheetsDir`, `pagesDir`, `type`, `engine`, `tier`, `pageCount`, `pages`, `explicitBreaks`, `imageCount`, `pageImageCount`, `pageImagesReason`, `bytes`, `lines`, `degraded`, `fallbackReason`, `failedPages`, `emptyPages`, `notes`, `outline`, `outlineTotal`, `ocr`, `pageStats`, `pageStatsPath`, `ocrDir`. The `ocr` object also carries `mode`, `sidecars`, `ocrErrors`, `killed`, `notAttempted`, and `childError`. `--info` returns `InfoData` keys `type`, `backend`, `pageCount`, `metadata`, `toc`, `tocTotal`, `sheets`, `sheetsTotal`. |
+| `--words` | Write `<stem>.words.json` (and `ocr/<stem>-pNNN.words.json` under `--ocr-mode all`); PDF and image inputs only; never triggers OCR. |
+| `--json` | CLI only: print one JSON object instead of the text handle. Conversion returns `HandleData` keys `savedTo`, `imagesDir`, `sheetsDir`, `pagesDir`, `type`, `engine`, `tier`, `pageCount`, `pages`, `explicitBreaks`, `imageCount`, `pageImageCount`, `pageImagesReason`, `bytes`, `lines`, `degraded`, `fallbackReason`, `failedPages`, `emptyPages`, `notes`, `outline`, `outlineTotal`, `ocr`, `pageStats`, `pageStatsPath`, `ocrDir`, `wordsPath`, `wordsReason`, `wordsErrors`. The `ocr` object also carries `mode`, `sidecars`, `wordSidecars`, `ocrErrors`, `killed`, `notAttempted`, and `childError`. `--info` returns `InfoData` keys `type`, `backend`, `pageCount`, `metadata`, `toc`, `tocTotal`, `sheets`, `sheetsTotal`. |
 | `--primary-timeout <n>` | pymupdf4llm and unpdf deadline. |
 | `--fallback-timeout <n>` | PyMuPDF text and PDF-info deadline. |
 | `--soffice-timeout <n>` | LibreOffice deadline. |
@@ -216,7 +274,7 @@ Two-pass OCR (PDF, PPTX, DOC):
 |---|---|
 | `0` | Converted or inspected, including degraded fallback. |
 | `1` | Runtime error, including `empty file: <path>` for zero-byte inputs. |
-| `2` | Usage error, including `--ocr-mode all` guard failures raised by conversion: missing `--ocr`, omitted or empty `--pages`, or inputs other than PDF/PPTX/DOC. |
+| `2` | Usage error, including `--info --words` and `--ocr-mode all` guard failures raised by conversion: missing `--ocr`, omitted or empty `--pages`, or inputs other than PDF/PPTX/DOC. |
 
 ## Install channels
 
