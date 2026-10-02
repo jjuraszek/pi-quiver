@@ -57,6 +57,7 @@ Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` us
 | `--outline-max-entries` | Heading outline / TOC / sheet inventory cap in the handle (default `40`) |
 | `--ocr` | Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off) |
 | `--ocr-language` | Tesseract language code(s), +-joined, e.g. deu+eng (default `eng`) |
+| `--hide-annotations` | Render PDF pages without annotations (sticky notes, highlights, stamps - and form-field widgets, so filled form values disappear); default paints them, as PyMuPDF does. Applies to pages/ renders and textless-page renders, not to OCR text or embedded images; also lets an annotated scan be delivered as its embedded image. |
 
 ## Bundle layout
 

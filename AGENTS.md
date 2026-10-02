@@ -102,7 +102,7 @@ lib/doc-to-md-*.ts          # doc_to_md core, options, bundle protocol, handle s
 lib/slack-core.ts           # slack config/token resolution, transport, mutations, announce protocol
 lib/slack-cache.ts          # workspace-keyed channel/user name->ID cache
 bin/pi-quiver.ts            # CLI (fetch + doc-to-md); published as esbuild-built dist/, not committed
-scripts/doc_to_md.py, docx_numbering.py # doc_to_md Python child and DOCX numbering labels
+scripts/doc_to_md.py, docx_numbering.py # doc_to_md Python child and its spawned raster worker, and DOCX numbering labels
 scripts/gen-skill.mjs       # renders skills/doc-to-md/SKILL.md from the option schema
 skills/, .claude-plugin/    # Claude Code plugin surface; skills/doc-to-md/SKILL.head.md is hand-written; invisible to pi, excluded from the npm tarball
 test/                       # node --test suites, one per extension, + layout.test.ts; fixtures/ generated

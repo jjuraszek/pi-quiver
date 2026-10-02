@@ -115,6 +115,23 @@ test("ocr tunables: defaults, precedence, per-call false beats settings true", (
 	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { ocrLanguage: "chi_sim" }, {}).ocrLanguage, "chi_sim");
 });
 
+test("hideAnnotations: settable bool, default false and per-call precedence", () => {
+	const d = DOC_TO_MD_OPTIONS.find((o) => o.key === "hideAnnotations")!;
+	assert.ok(d, "hideAnnotations descriptor exists");
+	assert.deepStrictEqual([d.type, d.default, d.settable, d.flag], ["bool", false, true, "--hide-annotations"]);
+	assert.strictEqual(d.help, "Render PDF pages without annotations (sticky notes, highlights, stamps - and form-field widgets, so filled form values disappear); default paints them, as PyMuPDF does. Applies to pages/ renders and textless-page renders, not to OCR text or embedded images; also lets an annotated scan be delivered as its embedded image.");
+	assert.strictEqual(TUNABLE_DEFAULTS.hideAnnotations, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, {}, {}).hideAnnotations, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf" }, { hideAnnotations: true }, {}).hideAnnotations, true);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", hideAnnotations: true }, { hideAnnotations: false }, {}).hideAnnotations, true);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", hideAnnotations: false }, { hideAnnotations: true }, {}).hideAnnotations, false);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", info: true, hideAnnotations: true }, {}, {}).info, true);
+	assert.deepStrictEqual(coerceDocToMdSettings({ hideAnnotations: true }), { hideAnnotations: true });
+	const warnings: string[] = [];
+	assert.deepStrictEqual(coerceDocToMdSettings({ hideAnnotations: "yes" }, (m) => warnings.push(m)), {});
+	assert.deepStrictEqual(warnings, ["pi-quiver: quiver.docToMd.hideAnnotations must be true or false; ignored."]);
+});
+
 test("ocrLanguage validation: plain Tesseract codes only", () => {
 	for (const bad of ["Deu", "eng+", "+eng", "../eng", "script/Latin", "eng deu", ""]) assert.throws(() => resolveOptions({ path: "a.pdf", ocrLanguage: bad }, {}, {}), UsageError, bad);
 	const warnings: string[] = [];

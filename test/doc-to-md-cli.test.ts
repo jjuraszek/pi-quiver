@@ -37,6 +37,15 @@ test("parseCliArgs: --no-ocr sets false and overrides a settings-level ocr: true
 	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr", "a.pdf"]), { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", ocr: true }, json: false });
 });
 
+test("parseCliArgs: --hide-annotations and --no-hide-annotations override settings", () => {
+	for (const [flag, value] of [["--hide-annotations", true], ["--no-hide-annotations", false]] as const) {
+		const r = parseCliArgs(["doc-to-md", flag, "a.pdf"]);
+		assert.deepStrictEqual(r, { ok: true, cmd: "doc-to-md", perCall: { path: "a.pdf", hideAnnotations: value }, json: false });
+		if (!r.ok || r.cmd !== "doc-to-md") return;
+		assert.strictEqual(resolveOptions(r.perCall, { hideAnnotations: !value }, {}).hideAnnotations, value);
+	}
+});
+
 test("parseCliArgs: every doc-to-md descriptor flag round-trips", () => {
 	for (const d of DOC_TO_MD_OPTIONS) {
 		if (!d.flag) continue;
@@ -102,7 +111,7 @@ test("CLI subprocess: --info prints the info handle", async () => {
 
 test("CLI subprocess: --help exit 0 lists every flag", async () => {
 	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
-	for (const f of ["--info", "--pages", "--output-dir", "--overwrite", "--primary-timeout", "--fallback-timeout", "--soffice-timeout", "--excel-timeout", "--warm-timeout", "--pymupdf-version", "--image-dpi", "--image-format", "--max-output-bytes", "--outline-max-entries"]) assert.ok(stdout.includes(f), f);
+	for (const f of ["--info", "--pages", "--output-dir", "--overwrite", "--primary-timeout", "--fallback-timeout", "--soffice-timeout", "--excel-timeout", "--warm-timeout", "--pymupdf-version", "--image-dpi", "--image-format", "--max-output-bytes", "--outline-max-entries", "--ocr", "--ocr-language", "--hide-annotations"]) assert.ok(stdout.includes(f), f);
 	assert.ok(!stdout.includes("--max-cells-per-sheet"));
 });
 
@@ -155,7 +164,7 @@ test("CLI subprocess: --json prints one HandleData object and nothing else; --js
 	try {
 		const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--json", "--pages", "", "--output-dir", tmp, MULTIPAGE], { env: scrubbedEnv(tmp) });
 		const h = JSON.parse(stdout);
-		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "notes", "ocr", "ocrDir", "pageStats", "pageStatsPath", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type", "wordsPath", "wordsReason", "wordsErrors"].sort());
+		assert.deepStrictEqual(Object.keys(h).sort(), ["bytes", "degraded", "emptyPages", "engine", "explicitBreaks", "failedPages", "fallbackReason", "imageCount", "imagesDir", "lines", "nativeImages", "notes", "ocr", "ocrDir", "pageStats", "pageStatsPath", "outline", "outlineTotal", "pageCount", "pageImageCount", "pageImagesReason", "pages", "pagesDir", "savedTo", "sheetsDir", "tier", "type", "wordsPath", "wordsReason", "wordsErrors"].sort());
 		assert.strictEqual(h.tier, "unpdf"); assert.strictEqual(h.pages, null);
 		assert.strictEqual(h.wordsPath, null);
 		assert.strictEqual(h.wordsReason, null);

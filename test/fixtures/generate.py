@@ -283,6 +283,37 @@ def mixed_images_pdf():
     page.insert_image(pymupdf.Rect(300, 120, 500, 270), stream=png_bytes("blue"))
     doc.save(os.path.join(HERE, "mixed-images.pdf"))
 
+def jpeg_bytes(size):
+    im = Image.radial_gradient("L").resize(size).convert("RGB")
+    buf = io.BytesIO(); im.save(buf, "JPEG", quality=85); return buf.getvalue()
+
+def page_image_pdfs():
+    full = jpeg_bytes((2000, 2800))
+    def full_page(path, pages=1, after=None, **kw):
+        doc = pymupdf.open()
+        for _ in range(pages):
+            page = doc.new_page(width=500, height=700)
+            xref = page.insert_image(page.rect, stream=full, **kw)
+            doc.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
+            if after: after(page)
+        doc.save(os.path.join(HERE, path))
+    full_page("single-image-page.pdf")
+    full_page("annotated-scan.pdf", after=lambda page: page.add_text_annot((60, 50), "Check this"))
+    full_page("textless-3.pdf", pages=3)
+    full_page("overlay-page.pdf", after=lambda page: page.draw_line((0, 0), (500, 700), color=(1, 0, 0), width=4))
+    full_page("rotated-page.pdf", rotate=180)
+    doc = pymupdf.open(); doc.new_page().insert_image(pymupdf.Rect(72, 72, 172, 172), stream=jpeg_bytes((200, 200)))
+    doc.save(os.path.join(HERE, "logo-page.pdf"))
+    doc = pymupdf.open(); page = doc.new_page(width=1398, height=6874)
+    page.insert_image(pymupdf.Rect(100, 100, 1298, 3300), stream=png_bytes("red")); page.insert_image(pymupdf.Rect(100, 3500, 1298, 6774), stream=png_bytes("blue"))
+    doc.save(os.path.join(HERE, "tall-page.pdf"))
+    for name, annotate in (("annotated.pdf", True), ("annotated-clean.pdf", False)):
+        doc = pymupdf.open(); page = doc.new_page()
+        page.insert_text((72, 72), "Disable the breaker before servicing the panel.", fontsize=14)
+        if annotate:
+            page.add_text_annot((72, 60), "Check this step")
+        doc.save(os.path.join(HERE, name))
+
 def _lvl(i, fmt, text, start=1, restart=None, pstyle=None):
     extra = (f'<w:lvlRestart w:val="{restart}"/>' if restart is not None else "") + (f'<w:pStyle w:val="{pstyle}"/>' if pstyle else "")
     return f'<w:lvl w:ilvl="{i}"><w:start w:val="{start}"/><w:numFmt w:val="{fmt}"/>{extra}<w:lvlText w:val="{text}"/></w:lvl>'
@@ -402,7 +433,7 @@ def legacy_doc():
         subprocess.run(["soffice", "--headless", "--convert-to", "doc", "--outdir", out, os.path.join(HERE, "headings.docx")], check=True, stdout=subprocess.DEVNULL)
         shutil.copyfile(os.path.join(out, "headings.doc"), os.path.join(HERE, "sample.doc"))
 
-GENERATORS = {"rotated_pdf": rotated_pdf, "blank_pdf": blank_pdf, "pre_ocr_pdf": pre_ocr_pdf, "short_text_ocr_pdf": short_text_ocr_pdf, "scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
+GENERATORS = {"rotated_pdf": rotated_pdf, "blank_pdf": blank_pdf, "pre_ocr_pdf": pre_ocr_pdf, "short_text_ocr_pdf": short_text_ocr_pdf, "scan_pdf": scan_pdf, "ocr_images": ocr_images, "html_fixtures": html_fixtures, "multipage_pdf": multipage_pdf, "shared_resources_pdf": shared_resources_pdf, "office": office, "headings_docx": headings_docx, "bold_headings_docx": bold_headings_docx, "workbook": workbook, "legacy_xls": legacy_xls, "charts": charts, "charts_zero_extent": charts_zero_extent, "mixed_images_pdf": mixed_images_pdf, "page_image_pdfs": page_image_pdfs, "numbered_docx": numbered_docx, "macros_xlsm": macros_xlsm, "tall_xlsx": tall_xlsx, "tall_xls": tall_xls, "sample_eml": sample_eml, "legacy_doc": legacy_doc}
 
 OPT_IN = {"pre_ocr_pdf"}
 

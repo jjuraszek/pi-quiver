@@ -896,6 +896,52 @@ test("convertDocument: primary timeout -> fallback with keepPages from .done pag
 	} finally { rmSync(out, { recursive: true, force: true }); }
 });
 
+test("convertDocument: native images publish from child JSON and retained metadata, with clamp notes", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-native-"));
+	const native = { file: "page.jpeg", width: 2000, height: 2800 };
+	const stage = (b: { stagingDir: string }, page: number, file: string, meta: object) => {
+		stagePage(b, page, file);
+		writeFileSync(join(b.stagingDir, `p${page}`, ".done"), JSON.stringify(meta));
+	};
+	try {
+		const primary = await convertDocument(opts({ outputDir: join(out, "primary"), hideAnnotations: true }), undefined, seamsWith(async (_mode, co, b) => {
+			assert.equal(co.hideAnnotations, true);
+			stage(b, 1, native.file, { native });
+			return { ok: true, json: { markdown: "![](p1/page.jpeg)\n", nativeImages: [{ page: 1, ...native }] } };
+		}));
+		assert.deepStrictEqual(primary.details.nativeImages, [{ page: 1, ...native, file: join(out, "primary", "images", "multipage-p1-1.jpeg") }]);
+		assert.match(primary.output, /^Native-Images: page 1 \(embedded image streams, no render DPI\)$/m);
+		const fallback = await convertDocument(opts({ outputDir: join(out, "fallback") }), undefined, seamsWith(async (mode, co, b) => {
+			assert.equal(co.hideAnnotations, false);
+			if (mode === "pdf-primary") {
+				stage(b, 3, native.file, { native });
+				stage(b, 2, "page.png", { dpi: 164, requestedDpi: 300 });
+				stage(b, 4, "page.png", { dpi: 300, requestedDpi: 300 });
+				return { ok: false, reason: "timeout" };
+			}
+			assert.deepStrictEqual(co.keepPages, { "2": ["multipage-p2-1.png"], "3": ["multipage-p3-1.jpeg"], "4": ["multipage-p4-1.png"] });
+			stage(b, 1, native.file, { native });
+			return { ok: true, json: { markdown: "![](p1/page.jpeg)\n", nativeImages: [{ page: 1, ...native }] } };
+		}));
+		assert.deepStrictEqual(fallback.details.nativeImages, [1, 3].map((page) => ({ page, ...native, file: join(out, "fallback", "images", `multipage-p${page}-1.jpeg`) })));
+		assert.deepStrictEqual(fallback.details.notes, ["Page 2 rendered at 164 dpi (requested 300; 50 Mpx ceiling)"]);
+		assert.match(fallback.output, /^Native-Images: pages 1, 3 /m);
+		assert.match(readFileSync(fallback.details.savedTo, "utf8"), /Notes: Page 2 rendered at 164 dpi \(requested 300; 50 Mpx ceiling\)/);
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("convertDocument: unpublished native image entries do not reach the handle", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-native-missing-"));
+	try {
+		const r = await convertDocument(opts({ outputDir: out }), undefined, seamsWith(async () => ({
+			ok: true, json: { markdown: "text\n", nativeImages: [{ page: 1, file: "missing.jpeg", width: 2000, height: 2800 }] },
+		})));
+		assert.deepStrictEqual(r.details.nativeImages, []);
+		assert.doesNotMatch(r.output, /Native-Images:/);
+		assert.deepStrictEqual(r.details.notes, ["Native image p1/missing.jpeg not published"]);
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
 test("convertDocument: exit 3 -> no fallback, error verbatim", async () => {
 	const calls: string[] = [];
 	await assert.rejects(convertDocument(opts({ pages: "9" }), undefined, seamsWith(async (mode) => { calls.push(mode); return { ok: false, userError: "pages out of range: 9 (document has 6 pages)", pageCount: 6 }; })), /pages out of range: 9 \(document has 6 pages\)/);

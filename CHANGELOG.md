@@ -8,6 +8,14 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `doc_to_md`: textless PDF pages holding one eligible full-page image deliver the embedded stream without re-encoding; the handle prints `Native-Images:` and tool details / CLI JSON carry `nativeImages` (#27).
+- `doc_to_md`: native probing, PDF page renders, and textless-page inline OCR run in a spawned raster worker with per-job budgets; a toxic page becomes a `Failed pages` note instead of failing the conversion when other pages succeed (#27).
+- `doc_to_md`: the render ceiling rises from 16 to 50 Mpx; clamped PDF renders add Notes and report effective `pageImages[].dpi` plus `requestedDpi` (#27).
+- `doc_to_md`: `hideAnnotations` / `--hide-annotations` hides PDF annotations and form widgets on renders and lets annotated scans use native delivery; default runs keep their painted render (#27).
+- `doc_to_md`: `.done` markers retain native-image and clamp metadata for completed pages across primary-tier failure and fallback; corrupt metadata does not discard completed images (#27).
+
 ## v6.10.0 - 2026-10-02
 
 - `doc_to_md`: new per-call `words` option (`--words`; not settable) writes `<stem>.words.json` - per selected PDF/image page, every text-layer word and every word inline OCR recognized in the same run, with display-space bbox (points; source pixels for images) and `source` `text`/`ocr`. Under `--ocr-mode all` each sidecar gets `ocr/<stem>-pNNN.words.json`. Never triggers OCR; Markdown, page stats and OCR outcome are unchanged. Handle gains `Words:`, `--json` gains `wordsPath`, `wordsReason`, `wordsErrors`, `ocr.wordSidecars`; `--info --words` is a usage error (#28).

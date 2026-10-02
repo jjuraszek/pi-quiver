@@ -9,6 +9,36 @@ import { abortBundle, commitBundle, openBundle, ownedOcrPattern, publishWords, p
 
 const tmp = () => mkdtempSync(join(tmpdir(), "quiver-bundle-"));
 
+test("publishStaged: truncated completion metadata still publishes the page", () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "scan", false);
+		const dir = join(b.stagingDir, "p1");
+		mkdirSync(dir);
+		writeFileSync(join(dir, "page.jpeg"), "image");
+		writeFileSync(join(dir, ".done"), '{"native":');
+		assert.deepStrictEqual(publishStaged(b).get(1), { files: ["scan-p1-1.jpeg"], meta: {} });
+		assert.strictEqual(readFileSync(join(b.imagesDir, "scan-p1-1.jpeg"), "utf8"), "image");
+		assert.strictEqual(b.sourceMap.get("p1/page.jpeg"), "images/scan-p1-1.jpeg");
+		abortBundle(b);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const raw of ["null", "[1]"]) test(`publishStaged: non-object completion metadata ${raw} still publishes the page`, () => {
+	const root = tmp();
+	try {
+		const b = openBundle(root, "scan", false);
+		const dir = join(b.stagingDir, "p1");
+		mkdirSync(dir);
+		writeFileSync(join(dir, "page.jpeg"), "image");
+		writeFileSync(join(dir, ".done"), raw);
+		assert.deepStrictEqual(publishStaged(b).get(1), { files: ["scan-p1-1.jpeg"], meta: {} });
+		assert.strictEqual(readFileSync(join(b.imagesDir, "scan-p1-1.jpeg"), "utf8"), "image");
+		assert.strictEqual(b.sourceMap.get("p1/page.jpeg"), "images/scan-p1-1.jpeg");
+		abortBundle(b);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("ownedPattern / ownedCsvPattern: exact stem; p/s with optional second number; csv slug form", () => {
 	const re = ownedPattern("x");
 	assert.ok(re.test("x-p1-1.png") && re.test("x-s2-10.jpeg") && re.test("x-s3-1.png") && re.test("x-s3.png"));
@@ -142,13 +172,18 @@ test("publishStaged: only .done pages move, named <stem>-p<N>-<n>.<ext>, recorde
 	const root = tmp();
 	try {
 		const b = openBundle(root, "manual", false);
-		mkdirSync(join(b.stagingDir, "p3")); writeFileSync(join(b.stagingDir, "p3", "b.jpeg"), "1"); writeFileSync(join(b.stagingDir, "p3", "a.png"), "2"); writeFileSync(join(b.stagingDir, "p3", ".done"), "");
+		mkdirSync(join(b.stagingDir, "p3")); writeFileSync(join(b.stagingDir, "p3", "b.jpeg"), "1"); writeFileSync(join(b.stagingDir, "p3", "a.png"), "2"); writeFileSync(join(b.stagingDir, "p3", ".done"), JSON.stringify({ native: { file: "a.png", width: 40, height: 30 } }));
+		mkdirSync(join(b.stagingDir, "p5")); writeFileSync(join(b.stagingDir, "p5", "c.png"), "x"); writeFileSync(join(b.stagingDir, "p5", ".done"), " \n");
+		mkdirSync(join(b.stagingDir, "p6")); writeFileSync(join(b.stagingDir, "p6", ".done"), "");
 		mkdirSync(join(b.stagingDir, "p4")); writeFileSync(join(b.stagingDir, "p4", "z.png"), "3");
 		const published = publishStaged(b);
-		assert.deepStrictEqual([...published.entries()], [[3, ["manual-p3-1.png", "manual-p3-2.jpeg"]]]);
-		assert.deepStrictEqual([...published.get(3)!.entries()], [[0, "manual-p3-1.png"], [1, "manual-p3-2.jpeg"]]);
+		assert.deepStrictEqual([...published.entries()], [
+			[3, { files: ["manual-p3-1.png", "manual-p3-2.jpeg"], meta: { native: { file: "manual-p3-1.png", width: 40, height: 30 } } }],
+			[5, { files: ["manual-p5-1.png"], meta: {} }],
+			[6, { files: [], meta: {} }],
+		]);
 		assert.ok(existsSync(join(b.imagesDir, "manual-p3-1.png")) && !existsSync(join(b.imagesDir, "manual-p4-1.png")));
-		assert.deepStrictEqual([...b.manifest].sort(), ["manual-p3-1.png", "manual-p3-2.jpeg"]);
+		assert.deepStrictEqual([...b.manifest].sort(), ["manual-p3-1.png", "manual-p3-2.jpeg", "manual-p5-1.png"]);
 		assert.ok(!existsSync(join(b.stagingDir, "p3")));
 		abortBundle(b);
 		assert.ok(!existsSync(join(b.imagesDir, "manual-p3-1.png")) && !existsSync(b.lockPath) && !existsSync(b.stagingDir));

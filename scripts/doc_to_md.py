@@ -90,8 +90,9 @@ def page_dir(staging, n):
     return d
 
 
-def mark_done(d):
-    open(os.path.join(d, ".done"), "w").close()
+def mark_done(d, meta=None):
+    with open(os.path.join(d, ".done"), "w", encoding="utf-8") as fh:
+        json.dump(meta or {}, fh)
 
 
 OCR_SENTINEL = "\x00OCR {}\x00"
@@ -150,16 +151,232 @@ def clamped_dpi(w, h, dpi):
     return eff if eff >= MIN_RENDER_DPI else None
 
 
-def render_textless_page(page, d, o):
+RASTER_BUDGET_S, OCR_JOB_BUDGET_S, OCR_DPI = 20, 30, 300
+RASTER_SPAWN_BUDGET_S = 30
+MIN_OCR_JOB_S = 1
+NATIVE_MIN_COVERAGE, NATIVE_MAX_COVERAGE = 0.9, 1.1
+NATIVE_EXTS = ("png", "jpeg", "jpg")
+JOB_VERB = {"native": "render", "render": "render", "images": "render", "ocr": "OCR"}
+RASTER_INLINE = False  # tests only: run raster jobs in-process so monkeypatches reach them
+
+
+class RasterError(Exception):
+    """A raster job did not complete; str(exc) is the failedPages message."""
+
+
+class RasterUnavailable(Exception):
+    pass
+
+
+def raster_budget(default):
+    return float(os.environ.get("DOC_TO_MD_RASTER_BUDGET_S", default))
+
+
+def clamp_note(n, eff, requested):
+    return f"Page {n} rendered at {eff} dpi (requested {requested}; {MAX_RENDER_PX // 1_000_000} Mpx ceiling)"
+
+
+def native_page_image(doc, page, target_dir, allow_annots=False):
+    """One full-page, unrotated, unmasked PNG/JPEG stream with no vector overlay -> written untouched as page.<ext>."""
+    import pymupdf
+    if not allow_annots and (page.first_annot is not None or page.first_widget is not None):
+        return None
+    infos = page.get_image_info(xrefs=True)
+    if len(infos) != 1 or infos[0].get("xref", 0) <= 0 or page.rotation != 0:
+        return None
+    drawings = page.get_drawings()
+    if allow_annots:
+        # MuPDF includes appearance streams, clipped to annotation/widget rectangles.
+        annot_rects = [a.rect + (-1, -1, 1, 1) for items in (page.annots(), page.widgets()) for a in items]
+        drawings = [drawing for drawing in drawings if not any(drawing["rect"] in rect for rect in annot_rects)]
+    if drawings:
+        return None
+    info = infos[0]
+    a, b, c, d = info["transform"][:4]
+    if b != 0 or c != 0 or a <= 0 or d <= 0:
+        return None
+    area, bbox = page.rect.get_area(), pymupdf.Rect(info["bbox"])
+    if area <= 0 or (bbox & page.rect).get_area() / area < NATIVE_MIN_COVERAGE or bbox.get_area() / area > NATIVE_MAX_COVERAGE:
+        return None
+    img = doc.extract_image(info["xref"])
+    ext, cs = img["ext"].lower(), img.get("cs-name")
+    plain = cs in ("DeviceRGB", "DeviceGray") or (cs == "DeviceCMYK" and ext in ("jpeg", "jpg"))
+    if img.get("smask", 0) or ext not in NATIVE_EXTS or not img["image"] or not plain:
+        return None
+    name = f"page.{ext}"
+    with open(os.path.join(target_dir, name), "wb") as fh:
+        fh.write(img["image"])
+    return {"file": name, "width": img["width"], "height": img["height"]}
+
+
+def run_raster_job(doc, job):
+    import time
+    import pymupdf
+    n, kind = job["page"], job["kind"]
+    try:
+        if os.environ.get("DOC_TO_MD_RASTER_STALL_PAGE") in (str(n), f"{kind}:{n}"):  # tests only: a wedged page
+            time.sleep(3600)
+        if os.environ.get("DOC_TO_MD_RASTER_CRASH_PAGE") == str(n):  # tests only: partial output, stdout chatter, hard exit
+            if kind == "render":
+                with open(job["target"], "wb") as fh:
+                    fh.write(b"\x89PNG partial")
+            print("raster worker crash hook", flush=True)
+            os._exit(1)
+        page = doc[n - 1]
+        if kind == "native":
+            r = native_page_image(doc, page, job["target"], job.get("allowAnnots", False))
+            return {"ok": True, "eligible": r is not None, **(r or {})}
+        if kind == "render":
+            kw = {"dpi": job["dpi"], "annots": job["annots"]}
+            if job.get("clip") is not None:
+                kw["clip"] = pymupdf.Rect(job["clip"])
+            pix = page.get_pixmap(**kw)
+            pix.save(job["target"])
+            return {"ok": True, "width": pix.width, "height": pix.height}
+        if kind == "images":
+            files = []
+            for i, image in enumerate(page.get_image_info(xrefs=True), 1):
+                xref = image.get("xref", 0)
+                if xref > 0:
+                    img = doc.extract_image(xref)
+                    name = f"img{i}.{img['ext'].lower()}"
+                    with open(os.path.join(job["target"], name), "wb") as fh:
+                        fh.write(img["image"])
+                else:
+                    if job["dpi"] is None:
+                        continue
+                    name = f"img{i}.{job['format']}"
+                    pix = page.get_pixmap(clip=pymupdf.Rect(image["bbox"]), dpi=job["dpi"], annots=job["annots"])
+                    pix.save(os.path.join(job["target"], name))
+                files.append(name)
+            return {"ok": True, "files": files}
+        import pymupdf4llm
+        md = pymupdf4llm.to_markdown(doc, pages=[n - 1], write_images=False, page_separators=False, use_ocr=True, force_ocr=True,
+                                     ocr_language=job["lang"], ocr_dpi=job["ocrDpi"])
+        result = {"ok": True, "markdown": md}
+        if job.get("wordsSnapshot"):
+            # OCR mutates only the worker's document; carry that text layer back for parent-side word extraction.
+            try:
+                snapshot = pymupdf.open()
+                snapshot.insert_pdf(doc, from_page=n - 1, to_page=n - 1)
+                snapshot.save(job["wordsSnapshot"])
+                snapshot.close()
+            except Exception as exc:  # noqa: BLE001 - geometry never changes the OCR outcome
+                result["wordsSnapshotError"] = words_error(exc)
+        return result
+    except Exception as exc:  # noqa: BLE001 - the parent decides what a failed job costs
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def redirect_worker_stdout():
+    # redirect_stdout in the parent is a Python-object swap the spawned process does not inherit; pymupdf4llm prints to stdout.
+    try:
+        os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        sys.stdout = sys.stderr
+
+
+def raster_worker(conn, path):
+    redirect_worker_stdout()
+    import pymupdf
+    doc = pymupdf.open(path)
+    conn.send({"ready": True})
+    while True:
+        job = conn.recv()
+        if job["kind"] == "stop":
+            break
+        conn.send(run_raster_job(doc, job))
+    doc.close()
+
+
+class RasterWorker:
+    """One spawned PyMuPDF process per conversion. MuPDF spins at C level, so only an OS kill ends a toxic page; a job that overruns its budget or takes the process down costs that job, and the next job respawns."""
+
+    def __init__(self, path, doc):
+        self.path, self.doc, self.proc, self.conn = path, doc, None, None
+
+    def run(self, job, budget_s):
+        if RASTER_INLINE:
+            return run_raster_job(self.doc, job)
+        if self.proc is None:
+            try:
+                import multiprocessing
+                ctx = multiprocessing.get_context("spawn")
+                self.conn, child = ctx.Pipe()
+                self.proc = ctx.Process(target=raster_worker, args=(child, self.path))
+                try:
+                    self.proc.start()
+                finally:
+                    child.close()
+            except Exception as exc:
+                if self.conn is not None:
+                    self.conn.close()
+                self.proc = self.conn = None
+                raise RasterUnavailable(f"raster worker unavailable: {exc}") from exc
+            try:
+                ready = self.conn.poll(RASTER_SPAWN_BUDGET_S) and self.conn.recv() == {"ready": True}
+            except (EOFError, OSError):
+                ready = False
+            if not ready:
+                self.kill()
+                return {"ok": False, "error": "renderer failed to start"}
+        try:
+            self.conn.send(job)
+            if self.conn.poll(budget_s):
+                return self.conn.recv()
+            error = f"{JOB_VERB[job['kind']]} timed out after {budget_s:g}s"
+        except (EOFError, OSError):
+            error = "renderer crashed"
+        self.kill()
+        if job["kind"] == "render":
+            with contextlib.suppress(OSError):
+                os.remove(job["target"])
+        if job["kind"] == "ocr" and job.get("wordsSnapshot"):
+            with contextlib.suppress(OSError):
+                os.remove(job["wordsSnapshot"])
+        return {"ok": False, "error": error}
+
+    def kill(self):
+        if self.proc is not None:
+            if self.proc.is_alive():
+                self.proc.kill()
+            self.proc.join()
+            self.conn.close()
+            self.proc = self.conn = None
+
+    def stop(self):
+        if self.proc is None:
+            return
+        with contextlib.suppress(OSError):
+            self.conn.send({"kind": "stop"})
+        self.proc.join(2)
+        self.kill()
+
+
+def textless_picture(worker, page, n, d, o, notes, render):
+    """Native stream when the page is one full-page image, else (when render) a worker render at the clamped DPI. Returns (file name or None, .done metadata)."""
+    r = worker.run({"kind": "native", "page": n, "target": d, "allowAnnots": bool(o.get("hideAnnotations"))}, raster_budget(RASTER_BUDGET_S))
+    if r.get("ok") and r.get("eligible"):
+        return r["file"], {"native": {"file": r["file"], "width": r["width"], "height": r["height"]}}
+    for f in os.listdir(d):
+        if f.startswith("page."):  # a failed native job may have left a partial stream
+            os.remove(os.path.join(d, f))
+    if not render:
+        return None, {}
     eff = clamped_dpi(page.rect.width, page.rect.height, o["imageDpi"])
     if eff is None:
-        return None
+        return None, {}
     name = f"page.{o['imageFormat']}"
-    page.get_pixmap(dpi=eff).save(os.path.join(d, name))
-    return name
+    r = worker.run({"kind": "render", "page": n, "dpi": eff, "annots": not o.get("hideAnnotations"), "target": os.path.join(d, name)}, raster_budget(RASTER_BUDGET_S))
+    if not r["ok"]:
+        raise RasterError(r["error"])
+    if eff < o["imageDpi"]:
+        notes.append(clamp_note(n, eff, o["imageDpi"]))
+        return name, {"dpi": eff, "requestedDpi": o["imageDpi"]}
+    return name, {}
 
 
-def render_page_image(page, n, o, page_images):
+def render_page_image(worker, page, n, o, page_images, notes):
     d = o["pagesStagingDir"]
     eff = clamped_dpi(page.rect.width, page.rect.height, o["imageDpi"])
     if eff is None:
@@ -167,16 +384,22 @@ def render_page_image(page, n, o, page_images):
     os.makedirs(d, exist_ok=True)
     name = f"p{n}.{o['imageFormat']}"
     target = os.path.join(d, name)
-    try:
-        page.get_pixmap(dpi=eff).save(target)
-    except Exception:
-        try:
+    r = worker.run({"kind": "render", "page": n, "dpi": eff, "annots": not o.get("hideAnnotations"), "target": target}, raster_budget(RASTER_BUDGET_S))
+    if not r["ok"]:
+        notes.append(f"Page {n} render unavailable: {r['error']}")
+        with contextlib.suppress(OSError):
             os.remove(target)
-        except OSError:
-            pass
         return None
-    page_images.append({"page": n, "file": name})
+    entry = {"page": n, "file": name, "dpi": eff}
+    if eff < o["imageDpi"]:
+        entry["requestedDpi"] = o["imageDpi"]
+        notes.append(clamp_note(n, eff, o["imageDpi"]))
+    page_images.append(entry)
     return name
+
+
+def page_failure(n, exc):
+    return {"page": n, "error": str(exc) if isinstance(exc, RasterError) else f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def page_ocr_kwargs(textless, lang):
@@ -359,72 +582,113 @@ def mode_pdf_primary(o):
     pages = check_pages(o.get("pages"), doc.page_count)
     staging, out, empty, failed, notes = o["stagingDir"], [], [], [], []
     page_images = []
+    native_images = []
+    worker = RasterWorker(o["path"], doc)
     stats = []
     lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
     info = new_ocr(lang)
     status = ocr_status(True, lang) if o.get("ocr") else None
     ocr_ms, plain_ms = [], []
     word_pages, words_errors = [], {}
-    for i, n in enumerate(pages):
-        stats.append(page_stats(doc, n))
-        d = page_dir(staging, n)
-        try:
-            page = doc[n - 1]
-            rotation = page.rotation
-            textless = not page.get_text("text").strip()
-            if textless:
-                info["textless"].append(n)
-                if status is None:
-                    status = ocr_status(False, lang)
-            kw = page_ocr_kwargs(textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
-            if kw["use_ocr"]:
-                elapsed = (time.monotonic() - start) * 1000
-                est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
-                est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
-                if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
-                    info["budgetStopped"].append(n)
-                    kw = {"use_ocr": False}
-            t0 = time.monotonic()
+    try:
+        for i, n in enumerate(pages):
+            stats.append(page_stats(doc, n))
+            d = page_dir(staging, n)
             try:
-                md = primary_page_markdown(doc, n, d, o, kw, not textless) if kw["use_ocr"] or not textless else ""
-            except Exception:  # noqa: BLE001
-                if not kw["use_ocr"]:
-                    raise
-                kw, t0, md = {"use_ocr": False}, time.monotonic(), ""
-                info["ocrFailed"].append(n)
-            (ocr_ms if kw["use_ocr"] else plain_ms).append((time.monotonic() - t0) * 1000)
-            if textless:
-                pic = None if o.get("pageImages") else render_textless_page(page, d, o)
-                text = md.strip()
-                if kw["use_ocr"] and text:
-                    info["pages"].append(n)
-                else:
+                page = doc[n - 1]
+                rotation = page.rotation
+                textless = not page.get_text("text").strip()
+                if textless:
+                    info["textless"].append(n)
+                    if status is None:
+                        status = ocr_status(False, lang)
+                kw = page_ocr_kwargs(textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
+                if kw["use_ocr"]:
+                    elapsed = (time.monotonic() - start) * 1000
+                    est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
+                    est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
+                    if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
+                        info["budgetStopped"].append(n)
+                        kw = {"use_ocr": False}
+                text, meta = "", {}
+                ocr_words = None
+                if textless:
+                    pic, meta = textless_picture(worker, page, n, d, o, notes, render=not o.get("pageImages"))
+                    t0 = time.monotonic()
                     if kw["use_ocr"]:
-                        info["noText"].append(n)
+                        remaining = (budget - (time.monotonic() - start) * 1000 - OCR_BUDGET_RESERVE_MS) / 1000
+                        if remaining < MIN_OCR_JOB_S:
+                            info["budgetStopped"].append(n)
+                            kw = {"use_ocr": False}
+                        else:
+                            ocr_dpi = clamped_dpi(page.rect.width, page.rect.height, OCR_DPI)
+                            words_snapshot = os.path.join(staging, f".ocr-words-p{n}.pdf") if o.get("words") else None
+                            try:
+                                r = worker.run({"kind": "ocr", "page": n, "lang": lang, "ocrDpi": ocr_dpi, **({"wordsSnapshot": words_snapshot} if words_snapshot else {})}, min(raster_budget(OCR_JOB_BUDGET_S), remaining)) if ocr_dpi is not None else {"ok": False}
+                                if words_snapshot and r["ok"]:
+                                    if r.get("wordsSnapshotError"):
+                                        words_errors[str(n)] = r["wordsSnapshotError"]
+                                    else:
+                                        try:
+                                            with open_pdf(words_snapshot) as snapshot:
+                                                ocr_words = words_page(snapshot[0], n, rotation, page_words(snapshot[0], True))
+                                        except Exception as exc:  # noqa: BLE001
+                                            words_errors[str(n)] = words_error(exc)
+                            finally:
+                                if words_snapshot:
+                                    with contextlib.suppress(OSError):
+                                        os.remove(words_snapshot)
+                            if r["ok"]:
+                                text = r["markdown"].strip()
+                            else:
+                                kw = {"use_ocr": False}
+                                info["ocrFailed"].append(n)
+                    md = ""
+                else:
+                    t0 = time.monotonic()
+                    md = primary_page_markdown(doc, n, d, o, kw, True)
+                if not (textless and not kw["use_ocr"]):
+                    (ocr_ms if kw["use_ocr"] else plain_ms).append((time.monotonic() - t0) * 1000)
+                if textless:
+                    if kw["use_ocr"] and text:
+                        info["pages"].append(n)
+                    else:
+                        if kw["use_ocr"]:
+                            info["noText"].append(n)
+                        empty.append(n)
+                elif not md.strip():
                     empty.append(n)
-            elif not md.strip():
+                mark_done(d, meta)
+                page_pic = render_page_image(worker, page, n, o, page_images, notes) if o.get("pageImages") else None
+                if textless:
+                    parts = [f"![page {n}](p{n}/{pic})"] if pic else []
+                    if kw["use_ocr"] and text:
+                        parts.append(ocr_block(f"p{n}/{pic}" if pic else f"pages/{page_pic}" if page_pic else "-", text))
+                    md = "\n\n".join(parts)
+                if page_pic:
+                    md = "\n\n".join(x for x in [md.rstrip(), f"![page {n}](pages/{page_pic})"] if x)
+                out.append(md.rstrip())
+                if o.get("words") and not (textless and o.get("ocr") and not kw["use_ocr"]):
+                    try:
+                        if textless and kw["use_ocr"]:
+                            if ocr_words is not None:
+                                word_pages.append(ocr_words)
+                        else:
+                            word_pages.append(words_page(page, n, rotation, page_words(page, kw["use_ocr"])))
+                    except Exception as exc:  # noqa: BLE001
+                        words_errors[str(n)] = words_error(exc)
+                if meta.get("native"):
+                    native_images.append({"page": n, **meta["native"]})
+            except RasterUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                shutil.rmtree(d, ignore_errors=True)
+                failed.append(page_failure(n, exc))
                 empty.append(n)
-            mark_done(d)
-            page_pic = render_page_image(page, n, o, page_images) if o.get("pageImages") else None
-            if textless:
-                parts = [f"![page {n}](p{n}/{pic})"] if pic else []
-                if kw["use_ocr"] and text:
-                    parts.append(ocr_block(f"pages/{page_pic}" if page_pic else f"p{n}/{pic}" if pic else "-", text))
-                md = "\n\n".join(parts)
-            if page_pic:
-                md = "\n\n".join(x for x in [md.rstrip(), f"![page {n}](pages/{page_pic})"] if x)
-            out.append(md.rstrip())
-            if o.get("words") and not (textless and o.get("ocr") and not kw["use_ocr"]):
-                try:
-                    word_pages.append(words_page(page, n, rotation, page_words(page, kw["use_ocr"])))
-                except Exception as exc:  # noqa: BLE001
-                    words_errors[str(n)] = words_error(exc)
-        except Exception as exc:  # noqa: BLE001
-            shutil.rmtree(d, ignore_errors=True)
-            failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
-            empty.append(n)
-            out.append("")
-        out.append(SEP.format(n=n).strip("\n"))
+                out.append("")
+            out.append(SEP.format(n=n).strip("\n"))
+    finally:
+        worker.stop()
     if failed and len(failed) == len(pages):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
     if status is not None:
@@ -433,7 +697,7 @@ def mode_pdf_primary(o):
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     result = {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images, "pageStats": stats}
+              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": info, "pageImages": page_images, "nativeImages": native_images, "pageStats": stats}
     if o.get("words"):
         result.update(write_words(staging, "pt", word_pages, words_errors))
     return result
@@ -446,72 +710,75 @@ def mode_pdf_fallback(o):
     keep = {int(k): v for k, v in (o.get("keepPages") or {}).items()}
     staging, out, empty, failed = o["stagingDir"], [], [], []
     page_images = []
+    native_images = []
+    worker = RasterWorker(o["path"], doc)
     stats = []
     lang = o.get("ocrLanguage", "eng")
     ocr_info = new_ocr(lang)
     word_pages, words_errors = [], {}
     status = {"status": "unavailable", "reason": "fallback tier", "tesseract": None} if o.get("ocr") else None
-    for n in pages:
-        stats.append(page_stats(doc, n))
-        links = [f"![](images/{f})" for f in keep.get(n, [])]
-        text = ""
-        page_pic = None
-        page_ok = False
-        try:
-            page = doc[n - 1]
-            rotation = page.rotation
-            text = page.get_text("text").strip()
-            if not text:
-                ocr_info["textless"].append(n)
-                if status is None:
-                    status = ocr_status(False, lang)
-            if n not in keep:
-                d = page_dir(staging, n)
-                if not text and not o.get("pageImages"):
-                    pic = render_textless_page(page, d, o)
-                    if pic:
-                        links.append(f"![page {n}](p{n}/{pic})")
-                elif text:
-                    i = 0
-                    for image in page.get_image_info(xrefs=True):
-                        i += 1
-                        xref = image.get("xref", 0)
-                        if xref > 0:
-                            img = doc.extract_image(xref)
-                            name = f"img{i}.{img['ext'].lower()}"
-                            with open(os.path.join(d, name), "wb") as fh:
-                                fh.write(img["image"])
-                        else:
-                            name = f"img{i}.{o['imageFormat']}"
-                            page.get_pixmap(clip=pymupdf.Rect(image["bbox"]), dpi=o["imageDpi"]).save(os.path.join(d, name))
-                        links.append(f"![](p{n}/{name})")
-                mark_done(d)
-            page_pic = render_page_image(page, n, o, page_images) if o.get("pageImages") else None
-            page_ok = True
-        except Exception as exc:  # noqa: BLE001
-            shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
-            text = ""
+    notes = [DEGRADED_NOTE]
+    try:
+        for n in pages:
+            stats.append(page_stats(doc, n))
             links = [f"![](images/{f})" for f in keep.get(n, [])]
-            failed.append({"page": n, "error": f"{type(exc).__name__}: {exc}"[:300]})
-        if o.get("words") and page_ok and not (not text and o.get("ocr")):
+            text = ""
+            page_pic = None
+            meta = {}
+            page_ok = False
             try:
-                word_pages.append(words_page(page, n, rotation, page_words(page, False)))
+                page = doc[n - 1]
+                rotation = page.rotation
+                text = page.get_text("text").strip()
+                if not text:
+                    ocr_info["textless"].append(n)
+                    if status is None:
+                        status = ocr_status(False, lang)
+                if n not in keep:
+                    d = page_dir(staging, n)
+                    if not text:
+                        pic, meta = textless_picture(worker, page, n, d, o, notes, render=not o.get("pageImages"))
+                        if pic:
+                            links.append(f"![page {n}](p{n}/{pic})")
+                    else:
+                        eff = clamped_dpi(page.rect.width, page.rect.height, o["imageDpi"])
+                        r = worker.run({"kind": "images", "page": n, "dpi": eff, "annots": not o.get("hideAnnotations"), "format": o["imageFormat"], "target": d}, raster_budget(RASTER_BUDGET_S))
+                        if not r["ok"]:
+                            raise RasterError(r["error"])
+                        links.extend(f"![](p{n}/{name})" for name in r["files"])
+                    mark_done(d, meta)
+                page_pic = render_page_image(worker, page, n, o, page_images, notes) if o.get("pageImages") else None
+                page_ok = True
+            except RasterUnavailable:
+                raise
             except Exception as exc:  # noqa: BLE001
-                words_errors[str(n)] = words_error(exc)
-        if not text:
-            empty.append(n)
-        out.append("\n\n".join(x for x in [text, "\n".join(links), f"![page {n}](pages/{page_pic})" if page_pic else ""] if x))
-        out.append(SEP.format(n=n).strip("\n"))
+                shutil.rmtree(os.path.join(staging, f"p{n}"), ignore_errors=True)
+                text = ""
+                meta = {}
+                links = [f"![](images/{f})" for f in keep.get(n, [])]
+                failed.append(page_failure(n, exc))
+            if o.get("words") and page_ok and not (not text and o.get("ocr")):
+                try:
+                    word_pages.append(words_page(page, n, rotation, page_words(page, False)))
+                except Exception as exc:  # noqa: BLE001
+                    words_errors[str(n)] = words_error(exc)
+            if not text:
+                empty.append(n)
+            out.append("\n\n".join(x for x in [text, "\n".join(links), f"![page {n}](pages/{page_pic})" if page_pic else ""] if x))
+            if meta.get("native"):
+                native_images.append({"page": n, **meta["native"]})
+            out.append(SEP.format(n=n).strip("\n"))
+    finally:
+        worker.stop()
     if failed and len(failed) == len(pages):
         raise RuntimeError("every selected page failed: " + failed[0]["error"])
     if status is not None:
         apply_status(ocr_info, status)
-    notes = [DEGRADED_NOTE]
     missing = len(pages) - len(page_images) if o.get("pageImages") else 0
     if missing:
         notes.append(f"Page images: {missing} of {len(pages)} unavailable")
     result = {"markdown": "\n\n".join(out) + "\n", "pages": pages, "pageCount": doc.page_count,
-              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images, "pageStats": stats}
+              "emptyPages": empty, "failedPages": failed, "notes": notes, "ocr": ocr_info, "pageImages": page_images, "nativeImages": native_images, "pageStats": stats}
     if o.get("words"):
         result.update(write_words(staging, "pt", word_pages, words_errors))
     return result
@@ -614,7 +881,7 @@ def col_letter(i):
 
 PREVIEW_ROWS, PREVIEW_COLS = 100, 50
 PROFILE_MAJORITY, DISTINCT_CAP, SLUG_MAX = 0.6, 50, 40
-MAX_RENDER_PX, MIN_RENDER_DPI, MIN_PAGE_PT = 16_000_000, 36, 72
+MAX_RENDER_PX, MIN_RENDER_DPI, MIN_PAGE_PT = 50_000_000, 36, 72
 INV_HEADER = "| # | name | kind | size | hidden | charts | images | rendered | data |\n|---|---|---|---|---|---|---|---|---|\n"
 XLS_NOTE = "Rendered views: unavailable (visual detection not supported for .xls)"
 
@@ -1424,7 +1691,6 @@ def mode_info_excel(o):
     return {"sheets": sheets}
 
 def mode_render_pages(o):
-    import math
     import pymupdf
     doc = pymupdf.open(o["path"])
     expected = o["expectedPages"]
@@ -1439,8 +1705,8 @@ def mode_render_pages(o):
             if w < MIN_PAGE_PT or h < MIN_PAGE_PT:
                 failed.append({"idx": idx, "reason": f"rendered view degenerate (page {w:.0f} x {h:.0f} pt)"})
                 continue
-            eff = min(dpi, math.floor(math.sqrt(MAX_RENDER_PX / (w * h / 72 ** 2))))
-            if eff < MIN_RENDER_DPI:
+            eff = clamped_dpi(w, h, dpi)
+            if eff is None:
                 failed.append({"idx": idx, "reason": f"rendered view too large (page {w:.0f} x {h:.0f} pt)"})
                 continue
             name = f"s{idx}.{fmt}"

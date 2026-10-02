@@ -39,12 +39,15 @@ export interface OcrInfo {
 	childError: string | null;
 }
 
+export interface NativeImage { page: number; file: string; width: number; height: number }
+
 export interface HandleData {
 	savedTo: string; imagesDir: string | null; sheetsDir: string | null; pagesDir: string | null; type: InputType; engine: Engine; tier: Tier;
 	pageCount: number | null; pages: number[] | null; explicitBreaks: number | null; imageCount: number; pageImageCount: number; pageImagesReason: string | null; bytes: number; lines: number;
 	degraded: string | null; fallbackReason: string | null; failedPages: number[]; emptyPages: number[];
 	notes: string[]; outline: OutlineEntry[]; outlineTotal: number; ocr: OcrInfo | null;
 	pageStats: PageStat[] | null; pageStatsPath: string | null; ocrDir: string | null;
+	nativeImages: NativeImage[];
 	wordsPath: string | null; wordsReason: string | null; wordsErrors: Record<number, string>;
 }
 
@@ -171,6 +174,7 @@ export function formatHandle(h: HandleData): string {
 	if (h.pagesDir && h.pageImageCount > 0) lines.push(`Pages-Dir: ${h.pagesDir} (${h.pageImageCount} pages)`);
 	else if (h.pageImagesReason) lines.push(`Pages-Dir: none - ${h.pageImagesReason}`);
 	if (h.pageStatsPath) lines.push(`Page-Stats: ${h.pageStatsPath}`);
+	if (h.nativeImages.length) lines.push(`Native-Images: ${h.nativeImages.length === 1 ? "page" : "pages"} ${compactRanges(h.nativeImages.map((n) => n.page))} (embedded image streams, no render DPI)`);
 	if (h.wordsPath) {
 		const bad = Object.keys(h.wordsErrors).map(Number).sort((a, b) => a - b);
 		lines.push(`Words: ${h.wordsPath}${bad.length ? ` (extraction failed for pages ${compactRanges(bad)}: ${h.wordsErrors[bad[0]]})` : ""}`);

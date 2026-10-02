@@ -16,6 +16,7 @@ const LOAD = [
 	"import contextlib, importlib.util, json, os, sys",
 	`spec = importlib.util.spec_from_file_location("doc_to_md", ${JSON.stringify(scriptPath())})`,
 	"m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)",
+	"m.RASTER_INLINE = True",
 ].join("\n");
 // body runs with stdout redirected to stderr and must assign OUT; OUT is printed as JSON.
 async function py(body: string, env: NodeJS.ProcessEnv = process.env): Promise<any> {
@@ -382,7 +383,7 @@ test("render-pages child: renders only requested pages, applies pixel budget, re
 		assert.equal(ok.ok, true);
 		assert.deepStrictEqual(ok.failed, []);
 		assert.deepStrictEqual(ok.rendered.map((r: { idx: number; file: string }) => [r.idx, r.file]), [[1, "s1.png"], [3, "s3.png"]]);
-		assert.ok(ok.rendered[0].dpi < 600 && ok.rendered[0].dpi >= 36, "16 Mpx budget caps a 600 dpi request");
+		assert.strictEqual(ok.rendered[0].dpi, 600, "A4 at 600 dpi is 34.8 Mpx, under the 50 Mpx ceiling");
 		assert.ok(existsSync(join(d.stagingDir, "s1.png")) && existsSync(join(d.stagingDir, "s3.png")) && !existsSync(join(d.stagingDir, "s0.png")));
 		const bad = await child("render-pages", { path: fx("multipage.pdf"), sheetIndices: [0], expectedPages: 5, imageDpi: 150, imageFormat: "png", stagingDir: d.stagingDir });
 		assert.deepStrictEqual(bad, { ok: false, reason: "page-count mismatch (6 vs 5)" });
@@ -441,7 +442,7 @@ test("image child: too-small skip, native ocr_dpi, OCR exception keeps the image
 		assert.equal(out[2].status, "ran"); assert.deepEqual(out[2].ocrFailed, [1]); assert.deepEqual(out[2].pages, []);
 		assert.equal(out[3], "![ocr](p1/original.png)\n");
 		assert.deepEqual(out[4], [out[5]]);
-		assert.equal(out[6], 500); assert.equal(out[7], 200);
+		assert.equal(out[6], 883); assert.equal(out[7], 200);
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 
@@ -493,6 +494,8 @@ test("textless page keeps one picture in both PDF tiers", T, async () => {
 		const p = await child("pdf-primary", { path: fx("scan.pdf"), stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: false });
 		assert.ok(p.markdown.includes("![page 1](p1/page.png)"), p.markdown);
 		assert.deepEqual(readdirSync(join(d.stagingDir, "p1")).sort(), [".done", "page.png"]);
+		assert.deepStrictEqual(p.nativeImages, []);
+		assert.deepStrictEqual(JSON.parse(readFileSync(join(d.stagingDir, "p1", ".done"), "utf8")), {});
 		assert.deepEqual(p.emptyPages, [1]); assert.deepEqual(p.ocr.textless, [1]); assert.equal(p.ocr.status, "off");
 		const off = await child("pdf-fallback", { path: fx("scan.pdf"), stagingDir: join(d.root, "off"), imageFormat: "png", imageDpi: 72, ocr: false });
 		assert.equal(off.ocr.status, "off"); assert.equal(typeof off.ocr.tesseract, "boolean");
@@ -510,7 +513,7 @@ test("clamped render and OCR budget", T, async () => {
 		"b = [m.ocr_admit(0, 4000, 0, 250, 60000), m.ocr_admit(50, 4000, 0, 250, 10000), m.ocr_admit(0, 4000, 0, 250, 8000), m.ocr_admit(40000, 4000, 10, 250, 60000), m.ocr_admit(52000, 4000, 10, 250, 60000)]",
 		"OUT = [a, b]",
 	].join("\n"));
-	assert.deepEqual(out[0], [150, 96, null, null]); assert.deepEqual(out[1], [true, true, false, true, false]);
+	assert.deepEqual(out[0], [150, 150, null, null]); assert.deepEqual(out[1], [true, true, false, true, false]);
 });
 
 test("OCR budget stop and per-page OCR failure retry", T, async () => {
@@ -525,6 +528,50 @@ test("OCR budget stop and per-page OCR failure retry", T, async () => {
 		assert.equal(out[0].status, "ran"); assert.deepEqual(out[0].budgetStopped, [1]); assert.deepEqual(out[1], [false]);
 		assert.deepEqual(out[2].ocrFailed, [1]); assert.deepEqual(out[3], [true, false]); assert.deepEqual(out[4], []);
 		assert.ok(out[5].includes("![page 1](p1/page.png)") && out[5].includes("PAGE-2"));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native work exhausting OCR budget stops without dispatch and stays out of extraction estimates", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py([
+			READY, "import time, pymupdf",
+			`doc = pymupdf.open(); image = open(${JSON.stringify(fx("ocr.png"))}, 'rb').read()`,
+			"for _ in range(2):",
+			"    page = doc.new_page(); page.insert_image(page.rect, stream=image)",
+			`doc.save(${JSON.stringify(join(d.root, "scans.pdf"))}); doc.close()`,
+			"clock = [0.0]; jobs = []; estimates = []", 
+			"time.monotonic = lambda: clock[0]",
+			"original = m.run_raster_job",
+			"def run(doc, job):",
+			"    jobs.append(job['kind'])",
+			"    if job['kind'] == 'native': clock[0] += 10.0",
+			"    if job['kind'] == 'ocr':",
+			"        clock[0] += 0.1",
+			"        return {'ok': True, 'markdown': 'recognized'}",
+			"    return original(doc, job)",
+			"m.run_raster_job = run",
+			"def admit(elapsed, ocr, remaining, plain, budget):",
+			"    estimates.append([ocr, plain])",
+			"    return True",
+			"m.ocr_admit = admit",
+			"results = []",
+			"for budget in (14000, 15300, 60000):",
+			"    clock[0] = 0.0; jobs.clear(); estimates.clear()",
+			`    r = m.mode_pdf_primary({'path': ${JSON.stringify(join(d.root, "scans.pdf"))}, 'stagingDir': os.path.join(${JSON.stringify(d.root)}, str(budget)), 'imageFormat': 'png', 'imageDpi': 72, 'ocr': True, 'ocrBudgetMs': budget})`,
+			"    results.append([r['ocr'], list(jobs), list(estimates)])",
+			"OUT = results",
+		].join("\n"));
+		assert.deepEqual(out[0][0].budgetStopped, [1, 2]);
+		assert.deepEqual(out[0][0].ocrFailed, []);
+		assert.ok(!out[0][1].includes("ocr"));
+		assert.equal(out[0][2][1][1], out[0][2][0][1]);
+		assert.deepEqual(out[1][0].budgetStopped, [1, 2]);
+		assert.deepEqual(out[1][0].ocrFailed, []);
+		assert.ok(!out[1][1].includes("ocr"));
+		assert.equal(out[1][2][1][1], out[1][2][0][1]);
+		assert.deepEqual(out[2][0].pages, [1, 2]);
+		assert.ok(Math.abs(out[2][2][1][0] - 100) < 0.001);
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 
@@ -642,7 +689,7 @@ test("pageImages: primary and fallback tiers render selected pages before marker
 		for (const mode of ["pdf-primary", "pdf-fallback"]) {
 			rmSync(pages, { recursive: true, force: true });
 			const r = await child(mode, { path: fx("multipage.pdf"), pages: [1, 2, 4], stagingDir: d.stagingDir, pagesStagingDir: pages, pageImages: true, imageDpi: 50, imageFormat: "png" });
-			assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png" }, { page: 2, file: "p2.png" }, { page: 4, file: "p4.png" }]);
+			assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png", dpi: 50 }, { page: 2, file: "p2.png", dpi: 50 }, { page: 4, file: "p4.png", dpi: 50 }]);
 			assert.deepStrictEqual(readdirSync(pages).sort(), ["p1.png", "p2.png", "p4.png"]);
 			assert.match(r.markdown, /!\[page 2\]\(pages\/p2\.png\)\n\n--- end of page\.page_number=2 ---/);
 			assert.strictEqual((r.markdown.match(/!\[page 4\]/g) ?? []).length, 1);
@@ -657,12 +704,12 @@ test("pageImages: a failed primary page does not leave an orphan render", T, asy
 	try {
 		const r = await py(`
 real = m.mark_done
-def fail_second(d):
+def fail_second(d, meta=None):
     if os.path.basename(d) == 'p2': raise RuntimeError('page body failed')
-    return real(d)
+    return real(d, meta)
 m.mark_done = fail_second
 OUT = m.mode_pdf_primary({"path": ${JSON.stringify(fx("multipage.pdf"))}, "pages": [1, 2], "stagingDir": ${JSON.stringify(d.stagingDir)}, "pagesStagingDir": ${JSON.stringify(pages)}, "pageImages": True, "imageDpi": 50, "imageFormat": "png", "ocr": False})`);
-		assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png" }]);
+		assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png", dpi: 50 }]);
 		assert.ok(!existsSync(join(pages, "p2.png")));
 		assert.deepStrictEqual(r.failedPages, [{ page: 2, error: "RuntimeError: page body failed" }]);
 		assert.ok(r.notes.includes("Page images: 1 of 2 unavailable"));
@@ -686,8 +733,9 @@ pymupdf.Page.get_pixmap = broken
 OUT = m.mode_pdf_${mode}({"path": ${JSON.stringify(fx("multipage.pdf"))}, "pages": [1, 2], "stagingDir": ${JSON.stringify(d.stagingDir)}, "pagesStagingDir": ${JSON.stringify(join(d.root, "pages"))}, "pageImages": True, "imageDpi": 50, "imageFormat": "png", "ocr": False})`);
 			assert.match(r.markdown, /PAGE-2/);
 			assert.match(r.markdown, /--- end of page\.page_number=2 ---/);
-			assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png" }]);
+			assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png", dpi: 50 }]);
 			assert.ok(r.notes.includes("Page images: 1 of 2 unavailable"), JSON.stringify(r.notes));
+			assert.ok(r.notes.includes("Page 2 render unavailable: RuntimeError: render failed"), JSON.stringify(r.notes));
 			assert.deepStrictEqual(r.failedPages, []);
 		}
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
@@ -927,7 +975,7 @@ test("words: native tokens, rotation and empty pages on both PDF tiers", T, asyn
 		}
 		const failedStaging = join(d.root, "render-failed");
 		const failed = await py([
-			"def render(page, n, o, images):",
+			"def render(worker, page, n, o, images, notes):",
 			"    if n == 1: raise RuntimeError('render failed')",
 			"m.render_page_image = render",
 			`OUT = m.mode_pdf_primary(${JSON.stringify({ path: fx("multipage.pdf"), pages: [1, 2], stagingDir: failedStaging, imageFormat: "png", imageDpi: 72 }).replace(/}$/, ', "words": True, "pageImages": True}')})`,
@@ -959,7 +1007,32 @@ test("words: inline OCR provenance and image pixel geometry", T, async (t) => {
 	if ((await py(`OUT = m.ocr_status(True, "eng")["status"]`)) !== "ready") { t.skip("no Tesseract language data"); return; }
 	const d = dirs();
 	try {
-		await child("pdf-primary", { path: fx("scan.pdf"), pages: [1], stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: true, words: true });
+		const opts = { path: fx("scan.pdf"), pages: [1], stagingDir: d.stagingDir, imageFormat: "png", imageDpi: 72, ocr: true, words: true };
+		const good = await child("pdf-primary", opts);
+		assert.deepEqual(readdirSync(join(d.stagingDir, "p1")).sort(), [".done", "page.png"]);
+		assert.ok(!readdirSync(d.stagingDir, { recursive: true }).some((f) => String(f).includes(".ocr-words")));
+		const badStaging = join(d.root, "snapshot-failed");
+		const bad = await py([
+			"import pymupdf",
+			"save = pymupdf.Document.save",
+			"def fail_snapshot(self, filename, *args, **kwargs):",
+			"    if '.ocr-words' in str(filename):",
+			"        with open(filename, 'wb') as fh: fh.write(b'partial snapshot')",
+			"        raise ValueError('snapshot save failed')",
+			"    return save(self, filename, *args, **kwargs)",
+			"pymupdf.Document.save = fail_snapshot",
+			"mark_done = m.mark_done",
+			"def checked_done(d, meta):",
+			"    assert not any(name.startswith('.ocr-words') for name in os.listdir(os.path.dirname(d)))",
+			"    assert not any(name.startswith('.ocr-words') for name in os.listdir(d))",
+			"    return mark_done(d, meta)",
+			"m.mark_done = checked_done",
+			`OUT = m.mode_pdf_primary(${JSON.stringify({ ...opts, stagingDir: badStaging }).replace(/true/g, "True")})`,
+		].join("\n"));
+		assert.deepEqual(bad.wordsErrors, { "1": "ValueError: snapshot save failed" });
+		assert.equal(bad.markdown, good.markdown);
+		assert.deepEqual(readdirSync(join(badStaging, "p1")).sort(), [".done", "page.png"]);
+		assert.ok(!readdirSync(badStaging, { recursive: true }).some((f) => String(f).includes(".ocr-words")));
 		const w = readWords(d.stagingDir).pages[0].words;
 		assert.deepEqual(w.map((x: any) => x.text), ["Hello", "OCR", "world", "12345"]);
 		assert.ok(w.every((x: any) => x.source === "ocr" && x.bbox[0] >= 36 && x.bbox[1] >= 72 && x.bbox[2] <= 576 && x.bbox[3] <= 175), JSON.stringify(w));
@@ -1138,5 +1211,379 @@ test("email child: safe names, duplicates, bodiless and invalid message", T, asy
 		const bad = await childRaw("email", { path: join(d.root, "bad.msg"), stem: "bad", stagingDir: d.stagingDir, attachmentsStagingDir: d.attachmentsStagingDir });
 		assert.equal(bad.code, 1);
 		assert.match(bad.stderr, /email parse failed: /);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+const PAGE = (path: string, staging: string, extra: Record<string, unknown> = {}) => ({ path, stagingDir: staging, imageFormat: "png", imageDpi: 150, ocr: false, ...extra });
+
+test("worker OCR timeout and crash remove partial word snapshots", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py(`m.RASTER_INLINE = False
+class Pipe:
+    def __init__(self, crash): self.crash = crash
+    def send(self, job): pass
+    def poll(self, budget):
+        if self.crash: raise EOFError()
+        return False
+results = []
+for crash in (False, True):
+    target = ${JSON.stringify(join(d.root, ".ocr-words-p1.pdf"))}
+    with open(target, 'wb') as fh: fh.write(b'partial')
+    worker = m.RasterWorker('unused', None)
+    worker.proc = object()
+    worker.conn = Pipe(crash)
+    worker.kill = lambda: None
+    result = worker.run({'kind': 'ocr', 'page': 1, 'wordsSnapshot': target}, 1)
+    results.append([result, os.path.exists(target)])
+OUT = results`);
+		assert.deepEqual(out, [[{ ok: false, error: "OCR timed out after 1s" }, false], [{ ok: false, error: "renderer crashed" }, false]]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("worker stdout redirect tolerates missing and fileno-less streams", T, async () => {
+	assert.deepStrictEqual(await py(`results = []
+for stream in (None, object()):
+    sys.stdout = stream
+    m.redirect_worker_stdout()
+    results.append(sys.stdout is sys.stderr)
+OUT = results`), [true, true]);
+});
+
+test("worker startup without ready fails within its separate budget", T, async () => {
+	const r = await py(`import multiprocessing, time
+m.RASTER_INLINE = False
+m.RASTER_SPAWN_BUDGET_S = 1
+class NeverReadyContext:
+    def __init__(self): self.ctx = multiprocessing.get_context('spawn')
+    def Pipe(self):
+        parent, self.child = self.ctx.Pipe()
+        class HeldPipe:
+            def close(self): pass
+        return parent, HeldPipe()
+    def Process(self, **kwargs): return self.ctx.Process(target=time.sleep, args=(60,))
+ctx = NeverReadyContext()
+multiprocessing.get_context = lambda kind: ctx
+w = m.RasterWorker('unused', None)
+start = time.monotonic()
+try:
+    result = w.run({'kind': 'native', 'page': 1, 'target': 'unused'}, 20)
+finally:
+    w.stop()
+OUT = [result, time.monotonic() - start, w.proc is None]`);
+	assert.deepStrictEqual(r[0], { ok: false, error: "renderer failed to start" });
+	assert.ok(r[1] >= 1 && r[1] < 5, String(r[1]));
+	assert.strictEqual(r[2], true);
+});
+
+test("worker exiting before ready fails startup and clears the process", T, async () => {
+	const r = await py(`import multiprocessing, time
+m.RASTER_INLINE = False
+m.raster_worker = sys.exit
+class ExitingContext:
+    def __init__(self): self.ctx = multiprocessing.get_context('spawn')
+    def Pipe(self): return self.ctx.Pipe()
+    def Process(self, **kwargs): return self.ctx.Process(target=kwargs['target'], args=(0,))
+ctx = ExitingContext()
+multiprocessing.get_context = lambda kind: ctx
+w = m.RasterWorker('unused', None)
+start = time.monotonic()
+try:
+    result = w.run({'kind': 'native', 'page': 1, 'target': 'unused'}, 20)
+    OUT = [result, w.proc is None, time.monotonic() - start]
+finally:
+    w.stop()`);
+	assert.deepStrictEqual(r[0], { ok: false, error: "renderer failed to start" });
+	assert.strictEqual(r[1], true);
+	assert.ok(r[2] < 10, String(r[2]));
+});
+
+test("annotated scan renders by default and delivers native only when annotations are hidden", T, async () => {
+	const d = dirs();
+	try {
+		for (const mode of ["pdf-primary", "pdf-fallback"]) for (const hideAnnotations of [false, true]) {
+			const staging = join(d.root, `${mode}-${hideAnnotations}`);
+			const r = await child(mode, PAGE(fx("annotated-scan.pdf"), staging, { hideAnnotations }));
+			const file = hideAnnotations ? "page.jpeg" : "page.png";
+			assert.ok(r.markdown.includes(`![page 1](p1/${file})`), r.markdown);
+			assert.deepStrictEqual(r.nativeImages, hideAnnotations ? [{ page: 1, file, width: 2000, height: 2800 }] : []);
+			assert.deepStrictEqual(JSON.parse(readFileSync(join(staging, "p1", ".done"), "utf8")), hideAnnotations ? { native: { file, width: 2000, height: 2800 } } : {});
+		}
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native report excludes a page whose completion marker fails", T, async () => {
+	const d = dirs();
+	try {
+		for (const mode of ["primary", "fallback"]) {
+			const r = await py(`
+real = m.mark_done
+def broken(d, meta=None):
+    if os.path.basename(d) == 'p2': raise RuntimeError('completion failed')
+    return real(d, meta)
+m.mark_done = broken
+OUT = m.mode_pdf_${mode}({"path": ${JSON.stringify(fx("textless-3.pdf"))}, "stagingDir": ${JSON.stringify(join(d.root, mode))}, "imageFormat": "png", "imageDpi": 150, "ocr": False})`);
+			assert.deepStrictEqual(r.nativeImages.map((n: { page: number }) => n.page), [1, 3]);
+		}
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native page image: single full-page JPEG is delivered as the stream in both tiers; .done carries it", T, async () => {
+	const d = dirs();
+	try {
+		for (const mode of ["pdf-primary", "pdf-fallback"]) {
+			const staging = join(d.root, mode);
+			const r = await child(mode, PAGE(fx("single-image-page.pdf"), staging));
+			assert.ok(r.markdown.includes("![page 1](p1/page.jpeg)"), r.markdown);
+			assert.deepStrictEqual(r.nativeImages, [{ page: 1, file: "page.jpeg", width: 2000, height: 2800 }]);
+			assert.deepStrictEqual(readdirSync(join(staging, "p1")).sort(), [".done", "page.jpeg"]);
+			assert.deepStrictEqual(JSON.parse(readFileSync(join(staging, "p1", ".done"), "utf8")), { native: { file: "page.jpeg", width: 2000, height: 2800 } });
+			assert.deepStrictEqual([r.emptyPages, r.pageImages, r.notes.filter((n: string) => n.startsWith("Page 1 rendered"))], [[1], [], []]);
+			const same = await py(`import pymupdf\ndoc = pymupdf.open(${JSON.stringify(fx("single-image-page.pdf"))})\nxref = doc[0].get_image_info(xrefs=True)[0]["xref"]\nOUT = open(${JSON.stringify(join(staging, "p1", "page.jpeg"))}, "rb").read() == doc.extract_image(xref)["image"]`);
+			assert.strictEqual(same, true);
+		}
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("raster worker: caught job errors preserve the process; startup failures abort the tier", T, async () => {
+	const d = dirs();
+	try {
+		const r = await py(`
+import multiprocessing, pymupdf
+sys.modules['doc_to_md'] = m
+sys.path.insert(0, os.path.dirname(m.__file__))
+m.RASTER_INLINE = False
+os.makedirs(${JSON.stringify(d.stagingDir)}, exist_ok=True)
+doc = pymupdf.open(${JSON.stringify(fx("single-image-page.pdf"))})
+w = m.RasterWorker(${JSON.stringify(fx("single-image-page.pdf"))}, doc)
+try:
+    bad = w.run({"kind": "native", "page": 99, "target": ${JSON.stringify(d.stagingDir)}}, 20)
+    pid = w.proc.pid
+    good = w.run({"kind": "native", "page": 1, "target": ${JSON.stringify(d.stagingDir)}}, 20)
+    same = w.proc.pid == pid
+finally:
+    w.stop()
+class BadContext:
+    def Pipe(self): raise OSError('spawn disabled')
+multiprocessing.get_context = lambda kind: BadContext()
+errors = []
+for mode in (m.mode_pdf_primary, m.mode_pdf_fallback):
+    try:
+        mode({"path": ${JSON.stringify(fx("single-image-page.pdf"))}, "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 150, "ocr": False})
+    except Exception as exc:
+        errors.append(str(exc))
+OUT = [bad['ok'], good['eligible'], same, w.proc is None, errors]`);
+		assert.deepStrictEqual(r, [false, true, true, true, ["raster worker unavailable: spawn disabled", "raster worker unavailable: spawn disabled"]]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native eligibility: logo, vector overlay and rotated placement render instead", T, async () => {
+	const d = dirs();
+	try {
+		for (const name of ["logo-page.pdf", "overlay-page.pdf", "rotated-page.pdf"]) {
+			const staging = join(d.root, name);
+			const r = await child("pdf-primary", PAGE(fx(name), staging));
+			assert.ok(r.markdown.includes("![page 1](p1/page.png)"), `${name}: ${r.markdown}`);
+			assert.deepStrictEqual(r.nativeImages, [], name);
+			assert.deepStrictEqual(JSON.parse(readFileSync(join(staging, "p1", ".done"), "utf8")), {});
+		}
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native + pageImages: both artifacts for an eligible page, pages/ render only for an ineligible one", T, async () => {
+	const d = dirs(); const pages = join(d.root, "pages", ".stage-x");
+	try {
+		const r = await child("pdf-primary", PAGE(fx("single-image-page.pdf"), d.stagingDir, { pagesStagingDir: pages, pageImages: true }));
+		assert.match(r.markdown, /!\[page 1\]\(p1\/page\.jpeg\)\n\n!\[page 1\]\(pages\/p1\.png\)\n\n--- end of page\.page_number=1 ---/);
+		assert.deepStrictEqual(r.pageImages, [{ page: 1, file: "p1.png", dpi: 150 }]);
+		const logo = await child("pdf-primary", PAGE(fx("logo-page.pdf"), join(d.root, "logo"), { pagesStagingDir: join(d.root, "lp"), pageImages: true }));
+		assert.ok(!logo.markdown.includes("p1/page.png") && logo.markdown.includes("pages/p1.png"), logo.markdown);
+		assert.deepStrictEqual(readdirSync(join(d.root, "logo", "p1")), [".done"]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("clamp report: tall page at 300 dpi renders at 164 with requestedDpi and a note; 150 dpi is unclamped", T, async () => {
+	const d = dirs(); const pages = join(d.root, "pages", ".stage-x");
+	try {
+		const hi = await child("pdf-primary", PAGE(fx("tall-page.pdf"), d.stagingDir, { pagesStagingDir: pages, pageImages: true, imageDpi: 300 }));
+		assert.deepStrictEqual(hi.pageImages, [{ page: 1, file: "p1.png", dpi: 164, requestedDpi: 300 }]);
+		assert.ok(hi.notes.includes("Page 1 rendered at 164 dpi (requested 300; 50 Mpx ceiling)"), JSON.stringify(hi.notes));
+		const pic = await child("pdf-fallback", PAGE(fx("tall-page.pdf"), join(d.root, "fb"), { imageDpi: 300 }));
+		assert.deepStrictEqual(JSON.parse(readFileSync(join(d.root, "fb", "p1", ".done"), "utf8")), { dpi: 164, requestedDpi: 300 });
+		assert.ok(pic.notes.includes("Page 1 rendered at 164 dpi (requested 300; 50 Mpx ceiling)"));
+		const lo = await child("pdf-primary", PAGE(fx("tall-page.pdf"), join(d.root, "lo"), { pagesStagingDir: join(d.root, "lop"), pageImages: true }));
+		assert.deepStrictEqual(lo.pageImages, [{ page: 1, file: "p1.png", dpi: 150 }]);
+		assert.ok(!lo.notes.some((n: string) => n.startsWith("Page 1 rendered")));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("hideAnnotations: annotated page renders byte-identical to the clean page only with the flag", T, async () => {
+	const d = dirs();
+	try {
+		const render = async (name: string, hide: boolean) => { const pages = join(d.root, `${name}-${hide}`); await child("pdf-primary", PAGE(fx(name), join(d.root, `s-${name}-${hide}`), { pagesStagingDir: pages, pageImages: true, hideAnnotations: hide })); return readFileSync(join(pages, "p1.png")); };
+		const clean = await render("annotated-clean.pdf", false);
+		assert.ok((await render("annotated.pdf", true)).equals(clean));
+		assert.ok(!(await render("annotated.pdf", false)).equals(clean));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("raster worker: a stalled page is dropped with a note and the conversion continues", T, async () => {
+	const d = dirs();
+	try {
+		const r = await childRaw("pdf-primary", PAGE(fx("textless-3.pdf"), d.stagingDir), { ...process.env, DOC_TO_MD_RASTER_STALL_PAGE: "2", DOC_TO_MD_RASTER_BUDGET_S: "2" });
+		assert.equal(r.code, 0, r.stderr.slice(-2000));
+		const j = JSON.parse(r.stdout);
+		assert.deepStrictEqual(j.failedPages, [{ page: 2, error: "render timed out after 2s" }]);
+		assert.deepStrictEqual(j.nativeImages.map((n: { page: number }) => n.page), [1, 3]);
+		assert.match(j.markdown, /--- end of page\.page_number=2 ---/);
+		assert.ok(!existsSync(join(d.stagingDir, "p2")));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("raster worker: a crashing page is reported, its partial file removed, its stdout chatter kept off the JSON channel", T, async () => {
+	const d = dirs(); const pages = join(d.root, "pages", ".stage-x");
+	try {
+		const r = await childRaw("pdf-primary", PAGE(fx("textless-3.pdf"), d.stagingDir), { ...process.env, DOC_TO_MD_RASTER_CRASH_PAGE: "2" });
+		assert.equal(r.code, 0, r.stderr.slice(-2000));
+		const j = JSON.parse(r.stdout);
+		assert.deepStrictEqual(j.failedPages, [{ page: 2, error: "renderer crashed" }]);
+		assert.ok(!existsSync(join(d.stagingDir, "p2")));
+		assert.deepStrictEqual(j.nativeImages.map((n: { page: number }) => n.page), [1, 3]);
+		const rendered = await childRaw("pdf-primary", PAGE(fx("textless-3.pdf"), join(d.root, "rendered"), { pagesStagingDir: pages, pageImages: true }), { ...process.env, DOC_TO_MD_RASTER_CRASH_PAGE: "2" });
+		assert.equal(rendered.code, 0, rendered.stderr);
+		assert.deepStrictEqual(JSON.parse(rendered.stdout).failedPages, []);
+		assert.deepStrictEqual(readdirSync(pages).sort(), ["p1.png", "p3.png"]);
+		assert.ok(r.stderr.includes("raster worker crash hook") && !r.stdout.includes("raster worker crash hook"));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("raster worker: an OCR stall marks ocrFailed, the picture is still delivered", T, async (t) => {
+	if ((await py(`OUT = m.ocr_status(True, "eng")["status"]`)) !== "ready") { t.skip("no Tesseract language data"); return; }
+	const d = dirs();
+	try {
+		const r = await childRaw("pdf-primary", PAGE(fx("textless-3.pdf"), d.stagingDir, { ocr: true, ocrLanguage: "eng", ocrBudgetMs: 60000 }), { ...process.env, DOC_TO_MD_RASTER_STALL_PAGE: "ocr:2", DOC_TO_MD_RASTER_BUDGET_S: "2" });
+		assert.equal(r.code, 0, r.stderr.slice(-2000));
+		const j = JSON.parse(r.stdout);
+		assert.equal(j.ocr.status, "ran");
+		assert.deepStrictEqual([j.ocr.ocrFailed, j.failedPages], [[2], []]);
+		assert.ok(j.markdown.includes("![page 2](p2/page.jpeg)"));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native inline OCR cites the native stream when pageImages is enabled", T, async () => {
+	const d = dirs();
+	try {
+		const r = await py(`
+import pymupdf4llm
+${READY}
+seen = []
+jobs = []
+original_run = m.run_raster_job
+def run(doc, job):
+    jobs.append(job['kind'])
+    return original_run(doc, job)
+m.run_raster_job = run
+def markdown(doc, **kw):
+    seen.append(kw)
+    return 'recognized words'
+pymupdf4llm.to_markdown = markdown
+result = m.mode_pdf_primary({"path": ${JSON.stringify(fx("single-image-page.pdf"))}, "stagingDir": ${JSON.stringify(d.stagingDir)}, "pagesStagingDir": ${JSON.stringify(join(d.root, "pages"))}, "pageImages": True, "imageFormat": "png", "imageDpi": 150, "ocr": True, "ocrLanguage": "eng", "ocrBudgetMs": 60000})
+OUT = [result, seen, jobs]`);
+		assert.deepStrictEqual(r[2], ["native", "ocr", "render"]);
+		assert.match(r[0].markdown, /\x00OCR p1\/page\.jpeg\x00/);
+		assert.ok(r[0].markdown.indexOf("p1/page.jpeg") < r[0].markdown.indexOf("pages/p1.png"));
+		assert.deepStrictEqual(r[1], [{ pages: [0], write_images: false, page_separators: false, use_ocr: true, force_ocr: true, ocr_language: "eng", ocr_dpi: 300 }]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("native inline OCR: None DPI skips OCR and preserves the native picture", T, async () => {
+	const d = dirs();
+	try {
+		const r = await py(`
+${READY}
+jobs = []
+original_run = m.run_raster_job
+def run(doc, job):
+    jobs.append(job['kind'])
+    return original_run(doc, job)
+m.run_raster_job = run
+original_clamp = m.clamped_dpi
+m.clamped_dpi = lambda w, h, dpi: None if dpi == m.OCR_DPI else original_clamp(w, h, dpi)
+result = m.mode_pdf_primary(json.loads(${JSON.stringify(JSON.stringify(PAGE(fx("single-image-page.pdf"), d.stagingDir, { ocr: true })))}))
+OUT = [result, jobs]`);
+		assert.deepStrictEqual(r[1], ["native"]);
+		assert.deepStrictEqual(r[0].ocr.ocrFailed, [1]);
+		assert.deepStrictEqual(r[0].failedPages, []);
+		assert.match(r[0].markdown, /!\[page 1\]\(p1\/page\.jpeg\)/);
+		assert.ok(existsSync(join(d.stagingDir, "p1", "page.jpeg")));
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("fallback inline image: None DPI skips the image without failing the page", T, async () => {
+	const d = dirs();
+	try {
+		const r = await py(`
+import pymupdf
+pymupdf.Page.get_text = lambda self, *args, **kw: 'retained text'
+pymupdf.Page.get_image_info = lambda self, **kw: [{'xref': 0, 'bbox': (0, 0, 100, 100)}]
+m.clamped_dpi = lambda *args: None
+jobs = []
+original_run = m.run_raster_job
+def run(doc, job):
+    jobs.append(job['kind'])
+    return original_run(doc, job)
+m.run_raster_job = run
+result = m.mode_pdf_fallback(json.loads(${JSON.stringify(JSON.stringify(PAGE(fx("single-image-page.pdf"), d.stagingDir)))}))
+OUT = [result, jobs]`);
+		assert.deepStrictEqual(r[1], ["images"]);
+		assert.deepStrictEqual(r[0].failedPages, []);
+		assert.match(r[0].markdown, /retained text/);
+		assert.ok(!r[0].markdown.includes("![]("));
+		assert.deepStrictEqual(readdirSync(join(d.stagingDir, "p1")), [".done"]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("fallback inline images: one worker job extracts xrefs and renders xref-less clips in order", T, async () => {
+	const d = dirs();
+	try {
+		const r = await py(`
+import pymupdf
+original_info = pymupdf.Page.get_image_info
+def info(self, **kw):
+    images = original_info(self, **kw)
+    if kw.get('xrefs'): images[1]['xref'] = 0
+    return images
+pymupdf.Page.get_image_info = info
+jobs = []
+original_run = m.run_raster_job
+def run(doc, job):
+    jobs.append(job)
+    return original_run(doc, job)
+m.run_raster_job = run
+result = m.mode_pdf_fallback(json.loads(${JSON.stringify(JSON.stringify(PAGE(fx("mixed-images.pdf"), d.stagingDir, { imageFormat: "jpg", hideAnnotations: true })))}))
+OUT = [result, jobs]`);
+		assert.deepStrictEqual(r[1], [{ kind: "images", page: 1, dpi: 150, annots: false, format: "jpg", target: join(d.stagingDir, "p1") }]);
+		assert.deepStrictEqual(r[0].failedPages, []);
+		assert.match(r[0].markdown, /!\[\]\(p1\/img1\.png\)\n!\[\]\(p1\/img2\.jpg\)/);
+		assert.deepStrictEqual(readdirSync(join(d.stagingDir, "p1")).sort(), [".done", "img1.png", "img2.jpg"]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("fallback inline images: a stalled images job drops only its text-bearing page", T, async () => {
+	const d = dirs();
+	try {
+		const path = join(d.root, "text-images-and-text.pdf");
+		await py(`import pymupdf
+with pymupdf.open(${JSON.stringify(fx("mixed-images.pdf"))}) as doc, pymupdf.open(${JSON.stringify(fx("multipage.pdf"))}) as other:
+    doc.insert_pdf(other, from_page=1, to_page=1)
+    doc.save(${JSON.stringify(path)})
+OUT = True`);
+		const r = await childRaw("pdf-fallback", PAGE(path, d.stagingDir), { ...process.env, DOC_TO_MD_RASTER_STALL_PAGE: "images:1", DOC_TO_MD_RASTER_BUDGET_S: "2" });
+		assert.equal(r.code, 0, r.stderr);
+		const j = JSON.parse(r.stdout);
+		assert.deepStrictEqual(j.failedPages, [{ page: 1, error: "render timed out after 2s" }]);
+		assert.match(j.markdown, /PAGE-2/);
+		assert.ok(!existsSync(join(d.stagingDir, "p1")));
+		assert.equal(j.pageStats[0].images, 2);
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });

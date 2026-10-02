@@ -12,8 +12,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
-import { type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
+import { type StagedPage, type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type NativeImage, type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, UsageError, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
 export * from "./doc-to-md-options.ts";
@@ -467,7 +467,7 @@ const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdi
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
 export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email" | "ocr-pages";
-export interface TierJson { words?: boolean; wordsErrors?: Record<string, string>; pageStats?: PageStat[]; status?: string; written?: number[]; noText?: number[]; ocrFailed?: number[]; ocrErrors?: Record<string, string>; budgetStopped?: number[]; pageImages?: { page: number; file: string }[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
+export interface TierJson { words?: boolean; wordsErrors?: Record<string, string>; pageStats?: PageStat[]; status?: string; written?: number[]; noText?: number[]; ocrFailed?: number[]; ocrErrors?: Record<string, string>; budgetStopped?: number[]; pageImages?: { page: number; file: string; dpi?: number; requestedDpi?: number }[]; nativeImages?: NativeImage[]; ocr?: OcrInfo; markdown?: string; pages?: number[]; pageCount?: number; emptyPages?: number[]; failedPages?: { page: number; error: string }[]; notes?: string[]; images?: { sheetIndex: number; file: string }[]; metadata?: Record<string, string>; toc?: [number, string, number | null][]; explicitBreaks?: number; engine?: string; degraded?: boolean; fallbackReason?: string | null; sheets?: SheetInfo[]; renderPages?: number[]; sheetCount?: number; ok?: boolean; reason?: string; rendered?: { idx: number; file: string; dpi: number }[]; failed?: { idx: number; reason: string }[]; }
 export type TierResult = { ok: true; json: TierJson } | { ok: false; reason: string; detail?: string } | { ok: false; userError: string; pageCount?: number };
 
 export interface PipelineSeams {
@@ -586,6 +586,25 @@ function handleOcr(tier: Tier, type: InputType, o: DocToMdOptions, json: TierJso
 	return { ...emptyOcr(o.ocrLanguage), ...x };
 }
 
+const nativeFromChild = (b: Bundle, json: TierJson, notes: string[]): NativeImage[] => (json.nativeImages ?? []).flatMap((e) => {
+	const file = b.sourceMap.get(`p${e.page}/${e.file}`);
+	if (!file) {
+		notes.push(`Native image p${e.page}/${e.file} not published`);
+		return [];
+	}
+	return [{ ...e, file: join(b.root, file) }];
+});
+
+// A dead primary has no JSON response; retained pages carry their image and clamp facts in .done.
+function retainedNative(b: Bundle, kept: Map<number, StagedPage>, notes: string[]): NativeImage[] {
+	const out: NativeImage[] = [];
+	for (const [page, k] of kept) {
+		if (k.meta.native) out.push({ page, ...k.meta.native, file: join(b.imagesDir, k.meta.native.file) });
+		if (k.meta.dpi !== undefined && k.meta.requestedDpi !== undefined && k.meta.dpi < k.meta.requestedDpi) notes.push(`Page ${page} rendered at ${k.meta.dpi} dpi (requested ${k.meta.requestedDpi}; 50 Mpx ceiling)`);
+	}
+	return out;
+}
+
 export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, seams?: Partial<PipelineSeams>): Promise<ConvertOutcome> {
 	const s: PipelineSeams = { backend: (c) => getBackend(c, undefined, signal), runTier: runTierReal, office: tryConvertOffice, ...seams };
 	const inputPath = resolve(o.path);
@@ -612,10 +631,11 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		const base = { path: inputPath, pages: o.pages, ...(o.words && (type === "pdf" || type === "image") ? { words: true } : {}), stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs };
+		const base = { path: inputPath, pages: o.pages, ...(o.words && (type === "pdf" || type === "image") ? { words: true } : {}), stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, hideAnnotations: o.hideAnnotations };
 		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
 		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
+		let nativeImages: NativeImage[] = [];
 		let officeRoute: string | null = null;
 		let copyReason: string | null = null;
 		if (type === "html") {
@@ -728,17 +748,18 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 			} else {
 				const p = await s.runTier("pdf-primary", pdfBase, b, signal, o.primaryTimeoutMs, backend);
 				const kept = publishStaged(b);
-				if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; if (json.pageImages?.length) publishPageImages(b, json.pageCount ?? 0); }
+				if (p.ok) { tier = "primary"; engine = "pymupdf4llm"; json = p.json; nativeImages = nativeFromChild(b, json, notes); if (json.pageImages?.length) publishPageImages(b, json.pageCount ?? 0); }
 				else if ("userError" in p) throw new Error(p.userError);
 				else {
 					if (signal?.aborted) throw new Error("aborted");
-					const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v]));
+					const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v.files]));
 					rmSync(b.pagesStagingDir, { recursive: true, force: true });
 					const f = await s.runTier("pdf-fallback", { ...pdfBase, keepPages }, b, signal, o.fallbackTimeoutMs, backend);
 					publishStaged(b);
 					if (f.ok && f.json.pageImages?.length) publishPageImages(b, f.json.pageCount ?? 0);
 					if (!f.ok) throw new Error("userError" in f ? f.userError : `Conversion failed: primary ${p.reason}; fallback ${f.reason}${detailSuffix(f)}`);
 					tier = "fallback"; engine = "pymupdf-text"; json = f.json; degraded = DEGRADED_TEXT; fallbackReason = `primary ${p.reason}`;
+					nativeImages = [...retainedNative(b, kept, notes), ...nativeFromChild(b, json, notes)].sort((x, y) => x.page - y.page);
 				}
 			}
 		}
@@ -789,7 +810,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 		const markdown = (head.length ? `${head.join("\n")}\n\n` : "") + body;
 		commitBundle(b, markdown);
 		const outline = scanOutline(markdown, o.outlineMaxEntries);
-		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr, pageStats, pageStatsPath: pageStats ? b.pageStatsPath : null, ocrDir: b.ocrManifest.size ? b.ocrDir : null, wordsPath, wordsReason, wordsErrors };
+		const details: DocToMdDetails = { path: inputPath, backend: backend.kind, pymupdfVersion: o.pymupdfVersion, inputType: type, file: b.mdPath, outputDir: b.root, savedTo: b.mdPath, imagesDir: b.imagesDir, sheetsDir: b.csvManifest.size ? b.sheetsDir : null, pagesDir: b.pageManifest.size ? b.pagesDir : null, pageImageCount: b.pageManifest.size, pageImagesReason, type, engine, tier, pageCount: json.pageCount ?? null, pages: o.pages, explicitBreaks, imageCount: b.manifest.size, bytes: Buffer.byteLength(markdown, "utf8"), lines: markdown.split("\n").length, degraded, fallbackReason, failedPages: (json.failedPages ?? []).map((f) => f.page), emptyPages: json.emptyPages ?? [], notes, outline: outline.entries, outlineTotal: outline.total, ocr, pageStats, pageStatsPath: pageStats ? b.pageStatsPath : null, ocrDir: b.ocrManifest.size ? b.ocrDir : null, nativeImages, wordsPath, wordsReason, wordsErrors };
 		return { output: formatHandle(details), details };
 	} catch (e) { abortBundle(b); throw e; }
 	finally { office?.cleanup(); }

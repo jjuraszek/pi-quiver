@@ -5,7 +5,7 @@ import { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline,
 const base: HandleData = {
 	savedTo: "/out/manual.md", imagesDir: "/out/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary",
 	pageCount: 42, pages: [3, 4, 5], explicitBreaks: null, imageCount: 4, pageImageCount: 0, pageImagesReason: null, bytes: 18637, lines: 412, degraded: null, fallbackReason: null,
-	pageStats: null, pageStatsPath: null, ocrDir: null,
+	nativeImages: [], pageStats: null, pageStatsPath: null, ocrDir: null,
 	wordsPath: null, wordsReason: null, wordsErrors: {},
 	failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [{ line: 1, level: 1, title: "Installation", page: null }, { line: 88, level: 2, title: "Wiring", page: null }], outlineTotal: 2,
 };
@@ -109,7 +109,7 @@ test("formatInfoHandle: pdf and xlsx shapes", () => {
 });
 
 test("formatHandle: Sheets-Dir printed after Images-Dir only when set", () => {
-	const base = { pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/out/book.md", imagesDir: "/out/images", pagesDir: null, type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
+	const base = { nativeImages: [], pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/out/book.md", imagesDir: "/out/images", pagesDir: null, type: "xlsx" as const, engine: "openpyxl" as const, tier: "excel" as const, pageCount: null, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [], ocr: null, notes: [], outline: [], outlineTotal: 0 };
 	const withSheets = formatHandle({ ...base, sheetsDir: "/out/sheets" }).split("\n");
 	assert.deepStrictEqual(withSheets.slice(0, 3), ["Saved-To: /out/book.md", "Images-Dir: /out/images", "Sheets-Dir: /out/sheets"]);
 	assert.ok(!formatHandle({ ...base, sheetsDir: null }).includes("Sheets-Dir"));
@@ -131,6 +131,14 @@ test("ocrLine: ran with no-text pages lists the page ranges", () => {
 test("formatHandle: DOCX without explicit breaks carries the citation suffix", () => {
 	const h = formatHandle({ ...base, type: "docx", tier: "docx", engine: "mammoth", pageCount: 1, pages: null, explicitBreaks: 0 });
 	assert.match(h, /^Page-Count: 1 \(no explicit page breaks\) - no page markers; cite by Outline line   Pages: all/m);
+});
+
+test("formatHandle: Native-Images follows Page-Stats, uses ranges, and is omitted when empty", () => {
+	const nativeImages = [1, 2, 3, 4, 7].map((page) => ({ page, file: `/out/images/manual-p${page}-1.jpeg`, width: 10, height: 10 }));
+	const one = formatHandle({ ...base, pageStatsPath: "/out/manual.pages.json", nativeImages: nativeImages.slice(0, 1) }).split("\n");
+	assert.strictEqual(one[one.indexOf("Page-Stats: /out/manual.pages.json") + 1], "Native-Images: page 1 (embedded image streams, no render DPI)");
+	assert.match(formatHandle({ ...base, nativeImages }), /^Native-Images: pages 1-4, 7 \(embedded image streams, no render DPI\)$/m);
+	assert.ok(!formatHandle(base).includes("Native-Images:"));
 });
 
 test("formatSize", () => {
@@ -200,7 +208,7 @@ test("ocrLine: every row and clause, first match wins", () => {
 });
 
 test("formatHandle: OCR line after Failed/Empty-Pages, omitted when ocr is null; OCR blockquote headings not in the Outline", () => {
-	const h: HandleData = { pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
+	const h: HandleData = { nativeImages: [], pageStats: null, pageStatsPath: null, ocrDir: null, wordsPath: null, wordsReason: null, wordsErrors: {}, savedTo: "/o/s.md", imagesDir: "/o/images", sheetsDir: null, pagesDir: null, type: "pdf", engine: "pymupdf4llm", tier: "primary", pageCount: 2, pages: null, explicitBreaks: null, imageCount: 1, pageImageCount: 0, pageImagesReason: null, bytes: 10, lines: 1, degraded: null, fallbackReason: null, failedPages: [], emptyPages: [1], notes: ["n"], outline: [], outlineTotal: 0, ocr: { ...OCR0, textless: [1], tesseract: true } };
 	const lines = formatHandle(h).split("\n");
 	assert.strictEqual(lines[lines.indexOf("Empty-Pages: 1") + 1], "OCR: off - 1 page(s) without a text layer; rerun with ocr=true");
 	assert.ok(!formatHandle({ ...h, ocr: null }).includes("OCR:"));
@@ -218,4 +226,6 @@ test("Words: line - path, extraction-failed clause, reasons, absent without --wo
 	assert.strictEqual(at({ wordsReason: "write failed - EACCES" })[2], "Words: write failed - EACCES");
 	const withStats = at({ pageStatsPath: "/out/manual.pages.json", wordsPath: "/out/manual.words.json", ocrDir: "/out/ocr" });
 	assert.deepStrictEqual(withStats.slice(2, 5), ["Page-Stats: /out/manual.pages.json", "Words: /out/manual.words.json", "OCR-Dir: /out/ocr"]);
+	const withNative = at({ pageStatsPath: "/out/manual.pages.json", nativeImages: [{ page: 1, file: "/out/images/page.jpeg", width: 2000, height: 2800 }], wordsPath: "/out/manual.words.json", ocrDir: "/out/ocr" });
+	assert.deepStrictEqual(withNative.slice(2, 6), ["Page-Stats: /out/manual.pages.json", "Native-Images: page 1 (embedded image streams, no render DPI)", "Words: /out/manual.words.json", "OCR-Dir: /out/ocr"]);
 });

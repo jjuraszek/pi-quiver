@@ -21,6 +21,7 @@ export interface Tunables {
 	outlineMaxEntries: number;
 	ocr: boolean;
 	ocrLanguage: string;
+	hideAnnotations: boolean;
 }
 
 export interface DocToMdOptions extends Tunables {
@@ -87,6 +88,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "outlineMaxEntries", flag: "--outline-max-entries", type: "int", default: 40, settable: true, help: "Heading outline / TOC / sheet inventory cap in the handle" },
 	{ key: "ocr", flag: "--ocr", type: "bool", default: false, settable: true, help: "Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off)" },
 	{ key: "ocrLanguage", flag: "--ocr-language", type: "lang", default: "eng", settable: true, help: "Tesseract language code(s), +-joined, e.g. deu+eng" },
+	{ key: "hideAnnotations", flag: "--hide-annotations", type: "bool", default: false, settable: true, help: "Render PDF pages without annotations (sticky notes, highlights, stamps - and form-field widgets, so filled form values disappear); default paints them, as PyMuPDF does. Applies to pages/ renders and textless-page renders, not to OCR text or embedded images; also lets an annotated scan be delivered as its embedded image." },
 ];
 
 export const TUNABLE_DEFAULTS: Tunables = Object.fromEntries(

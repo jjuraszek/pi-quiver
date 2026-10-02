@@ -1,6 +1,7 @@
 # doc_to_md bundle gaps: OCR images, formats, page renders, numbering, scripting surface
 
 > **Superseded by:** [doc/specs/2026-10-01-gh-26-caller-driven-ocr-sidecars.md](./2026-10-01-gh-26-caller-driven-ocr-sidecars.md) - Design 1 (PDF OCR per-page decision) extended by `ocrMode: all`; the textless default stays as written
+> **Superseded by:** [doc/specs/2026-10-01-gh-27-textless-page-images.md](./2026-10-01-gh-27-textless-page-images.md) - Design 4 (page images): the textless-page picture and the one-render-per-page dedupe; `pages/` naming and protocol stay as written
 > **Superseded by:** [doc/specs/2026-10-01-gh-28-doc-to-md-word-positions.md](./2026-10-01-gh-28-doc-to-md-word-positions.md) - the deferred `<stem>.words.json` acceptance criterion only
 
 **Goal:** Close the eight gaps issue #25 found when converting a real 4,648-file document capture, without narrowing `doc_to_md` to that capture: fix the OCR image loss, add `.xlsm`/`.doc`/`.msg`/`.eml`, restore Word auto-numbering on the fast DOCX path, add opt-in page images, tighten the CLI scripting surface, and make the Claude Code skill regenerate from the tool schema.

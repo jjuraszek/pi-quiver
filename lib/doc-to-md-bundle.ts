@@ -109,9 +109,12 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 	} catch (e) { rmSync(lockPath, { force: true }); throw e; }
 }
 
-/** Publish every `p<N>/` staging dir carrying `.done`; discard partial ones. Returns page -> published filenames. */
-export function publishStaged(b: Bundle): Map<number, string[]> {
-	const out = new Map<number, string[]>();
+export interface DoneMeta { native?: { file: string; width: number; height: number }; dpi?: number; requestedDpi?: number }
+export interface StagedPage { files: string[]; meta: DoneMeta }
+
+/** Publish completed pages, retaining metadata with native filenames renamed; discard partial pages. */
+export function publishStaged(b: Bundle): Map<number, StagedPage> {
+	const out = new Map<number, StagedPage>();
 	if (!existsSync(b.stagingDir)) return out;
 	for (const dir of readdirSync(b.stagingDir).sort()) {
 		const m = dir.match(/^p(\d+)$/);
@@ -119,6 +122,12 @@ export function publishStaged(b: Bundle): Map<number, string[]> {
 		const pageDir = join(b.stagingDir, dir);
 		if (!existsSync(join(pageDir, ".done"))) { rmSync(pageDir, { recursive: true, force: true }); continue; }
 		const page = Number(m[1]);
+		const raw = readFileSync(join(pageDir, ".done"), "utf8").trim();
+		let meta: DoneMeta = {};
+		try {
+			const v = raw ? JSON.parse(raw) : {};
+			if (v && typeof v === "object" && !Array.isArray(v)) meta = v;
+		} catch { /* Completed images survive truncated metadata. */ }
 		const files = readdirSync(pageDir).filter((f) => f !== ".done" && statSync(join(pageDir, f)).isFile()).sort();
 		const names: string[] = [];
 		files.forEach((f, i) => {
@@ -128,8 +137,9 @@ export function publishStaged(b: Bundle): Map<number, string[]> {
 			b.sourceMap.set(`${dir}/${f}`, `images/${name}`);
 			names.push(name);
 		});
+		if (meta.native) meta.native = { ...meta.native, file: names[files.indexOf(meta.native.file)] ?? meta.native.file };
 		rmSync(pageDir, { recursive: true, force: true });
-		out.set(page, names);
+		out.set(page, { files: names, meta });
 	}
 	return out;
 }

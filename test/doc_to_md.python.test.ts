@@ -432,6 +432,198 @@ test("ocr-mode all: a wedged sidecar child is killed at the deadline; page 1 nam
 	}
 });
 
+const withEnv = async (vars: Record<string, string>, run: () => Promise<void>) => {
+	const previous = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+	Object.assign(process.env, vars);
+	try { await run(); } finally {
+		for (const [k, v] of Object.entries(previous)) {
+			if (v === undefined) delete process.env[k]; else process.env[k] = v;
+		}
+	}
+};
+
+test("annotated-scan.pdf: default renders annotations and hidden annotations allow native delivery", T, async () => {
+	for (const hideAnnotations of [false, true]) {
+		const outputDir = join(tmp, String(hideAnnotations));
+		const r = await convertDocument(opts(fx("annotated-scan.pdf"), { outputDir, hideAnnotations }));
+		const name = `annotated-scan-p1-1.${hideAnnotations ? "jpeg" : "png"}`;
+		assert.deepStrictEqual(r.details.nativeImages, hideAnnotations ? [{ page: 1, file: join(outputDir, "images", name), width: 2000, height: 2800 }] : []);
+		assert.ok(linksResolve(r.details.savedTo).includes(`![page 1](images/${name})`));
+	}
+});
+
+test("single-image-page.pdf: both tiers publish native metadata and links without clamp notes", T, async () => {
+	const embedded = join(tmp, "embedded.jpeg");
+	const probe = spawnSync("uv", ["run", "--with", "pymupdf==1.27.2.3", "--python", "3.14", "python", "-c", 'import pymupdf,sys; doc=pymupdf.open(sys.argv[1]); open(sys.argv[2], "wb").write(doc.extract_image(doc[0].get_image_info(xrefs=True)[0]["xref"])["image"])', fx("single-image-page.pdf"), embedded], { encoding: "utf8" });
+	assert.strictEqual(probe.status, 0, probe.stderr);
+	for (const primaryTimeoutMs of [60_000, 1]) {
+		const outputDir = join(tmp, String(primaryTimeoutMs));
+		const r = await convertDocument(opts(fx("single-image-page.pdf"), { primaryTimeoutMs, outputDir, words: true }));
+		assert.deepStrictEqual(words(r).pages[0].words, []);
+		assert.strictEqual(r.details.tier, primaryTimeoutMs === 1 ? "fallback" : "primary");
+		assert.deepStrictEqual(r.details.nativeImages, [{ page: 1, file: join(outputDir, "images", "single-image-page-p1-1.jpeg"), width: 2000, height: 2800 }]);
+		assert.deepStrictEqual(readFileSync(r.details.nativeImages[0].file), readFileSync(embedded));
+		assert.match(r.output, /^Native-Images: page 1 \(embedded image streams, no render DPI\)$/m);
+		assert.ok(linksResolve(r.details.savedTo).includes("![page 1](images/single-image-page-p1-1.jpeg)"));
+		assert.ok(!r.details.notes.some((n) => n.startsWith("Page 1 rendered")));
+	}
+});
+
+test("single-image-page.pdf --page-images: native link precedes the page render", T, async (t) => {
+	const plain = await convertDocument(opts(fx("single-image-page.pdf"), { pageImages: true, outputDir: tmp }));
+	assert.match(linksResolve(plain.details.savedTo), /!\[page 1\]\(images\/single-image-page-p1-1\.jpeg\)\n\n!\[page 1\]\(pages\/single-image-page-p1\.png\)/);
+	assert.strictEqual(plain.details.pageImageCount, 1);
+	const r = await convertDocument(opts(fx("single-image-page.pdf"), { pageImages: true, ocr: true, outputDir: join(tmp, "ocr") }));
+	if (r.details.ocr?.status !== "ran") { t.skip(`OCR ${r.details.ocr?.status}: ${r.details.ocr?.reason}`); return; }
+	const md = linksResolve(r.details.savedTo);
+	if (r.details.ocr.pages.includes(1)) {
+		assert.match(md, /^> Text recognized in images\/single-image-page-p1-1\.jpeg \(OCR, may contain recognition errors\):\n>\n>/m);
+	} else {
+		assert.ok(r.details.ocr.noText.includes(1));
+		assert.doesNotMatch(md, /^> Text recognized in /m);
+	}
+});
+
+test("ineligible textless pages --page-images: only page renders, no native metadata or clamp", T, async () => {
+	for (const name of ["logo-page.pdf", "overlay-page.pdf", "rotated-page.pdf"]) {
+		const outputDir = join(tmp, name);
+		const seams: Partial<PipelineSeams> = { runTier: async (mode, ...rest) => {
+			const child = await runTierReal(mode, ...rest);
+			if (mode === "pdf-primary") {
+				assert.ok(child.ok);
+				assert.deepStrictEqual(child.json.pageImages, [{ page: 1, file: "p1.png", dpi: 150 }], name);
+			}
+			return child;
+		} };
+		const r = await convertDocument(opts(fx(name), { pageImages: true, outputDir }), undefined, seams);
+		assert.strictEqual(r.details.pageImageCount, 1, name);
+		assert.doesNotMatch(linksResolve(r.details.savedTo), /rendered at/, name);
+		assert.deepStrictEqual(r.details.nativeImages, [], name);
+		assert.ok(!r.details.notes.some((n) => n.includes("rendered at")), name);
+		assert.deepStrictEqual(readdirSyncSafe(join(outputDir, "images")), [], name);
+		assert.ok(existsSync(join(outputDir, "pages", `${name.replace(".pdf", "")}-p1.png`)), name);
+		linksResolve(r.details.savedTo);
+	}
+});
+
+test("tall-page.pdf --page-images: 300 dpi clamps to 164; default has no clamp note", T, async () => {
+	const seams: Partial<PipelineSeams> = { runTier: async (mode, ...rest) => {
+		const child = await runTierReal(mode, ...rest);
+		if (mode === "pdf-primary") {
+			assert.ok(child.ok);
+			assert.deepStrictEqual(child.json.pageImages, [rest[0].imageDpi === 300
+				? { page: 1, file: "p1.png", dpi: 164, requestedDpi: 300 }
+				: { page: 1, file: "p1.png", dpi: 150 }]);
+		}
+		return child;
+	} };
+	const hi = await convertDocument(opts(fx("tall-page.pdf"), { pageImages: true, imageDpi: 300, outputDir: join(tmp, "hi") }), undefined, seams);
+	const note = "Page 1 rendered at 164 dpi (requested 300; 50 Mpx ceiling)";
+	assert.deepStrictEqual(hi.details.notes.filter((n) => n.includes("rendered at")), [note]);
+	assert.match(linksResolve(hi.details.savedTo), /^Notes: Page 1 rendered at 164 dpi \(requested 300; 50 Mpx ceiling\)$/m);
+	const lo = await convertDocument(opts(fx("tall-page.pdf"), { pageImages: true, outputDir: join(tmp, "lo") }), undefined, seams);
+	assert.ok(!lo.details.notes.some((n) => n.includes("rendered at")));
+	linksResolve(lo.details.savedTo);
+});
+
+test("annotated.pdf --hide-annotations: render matches clean fixture; default differs", T, async () => {
+	const clean = await convertDocument(opts(fx("annotated-clean.pdf"), { pageImages: true, outputDir: join(tmp, "clean") }));
+	const hidden = await convertDocument(opts(fx("annotated.pdf"), { pageImages: true, hideAnnotations: true, outputDir: join(tmp, "hidden") }));
+	const painted = await convertDocument(opts(fx("annotated.pdf"), { pageImages: true, outputDir: join(tmp, "painted") }));
+	const png = (r: typeof clean, stem: string) => readFileSync(join(r.details.pagesDir!, `${stem}-p1.png`));
+	assert.ok(png(hidden, "annotated").equals(png(clean, "annotated-clean")));
+	assert.ok(!png(painted, "annotated").equals(png(clean, "annotated-clean")));
+});
+
+test("textless-3.pdf: stalled native job drops page 2 while primary finishes within 15 seconds", T, async () => {
+	await withEnv({ DOC_TO_MD_RASTER_STALL_PAGE: "2", DOC_TO_MD_RASTER_BUDGET_S: "2" }, async () => {
+		const start = Date.now();
+		const r = await convertDocument(opts(fx("textless-3.pdf"), { outputDir: tmp }));
+		assert.ok(Date.now() - start < 15_000, `took ${Date.now() - start}ms`);
+		assert.strictEqual(r.details.tier, "primary");
+		assert.strictEqual(r.details.fallbackReason, null);
+		assert.strictEqual(r.details.degraded, null);
+		assert.doesNotMatch(r.output, /Degraded:|Fallback-Reason:|primary timeout/i);
+		assert.match(r.output, /Tier: primary/);
+		assert.deepStrictEqual([r.details.failedPages, r.details.nativeImages.map((n) => n.page)], [[2], [1, 3]]);
+		assert.match(linksResolve(r.details.savedTo), /^Failed pages: 2 \(render timed out after 2s\)$/m);
+		assert.match(r.output, /^Failed-Pages: 2(?:\s|$)/m);
+	});
+});
+
+test("textless-3.pdf: crashing native job reports renderer crashed and worker respawns", T, async () => {
+	await withEnv({ DOC_TO_MD_RASTER_CRASH_PAGE: "2" }, async () => {
+		const r = await convertDocument(opts(fx("textless-3.pdf"), { outputDir: tmp }));
+		assert.deepStrictEqual(r.details.failedPages, [2]);
+		assert.match(linksResolve(r.details.savedTo), /^Failed pages: 2 \(renderer crashed\)$/m);
+		assert.deepStrictEqual(readdirSyncSafe(join(tmp, "images")).sort(), ["textless-3-p1-1.jpeg", "textless-3-p3-1.jpeg"]);
+		assert.deepStrictEqual(r.details.nativeImages.map((n) => n.page), [1, 3]);
+	});
+});
+
+test("textless-3.pdf --ocr: stalled OCR job keeps its native picture without failedPages", T, async (t) => {
+	await withEnv({ DOC_TO_MD_RASTER_STALL_PAGE: "ocr:2", DOC_TO_MD_RASTER_BUDGET_S: "2" }, async () => {
+		const r = await convertDocument(opts(fx("textless-3.pdf"), { ocr: true, outputDir: tmp }));
+		if (r.details.ocr?.status !== "ran") { t.skip(`OCR ${r.details.ocr?.status}: ${r.details.ocr?.reason}`); return; }
+		assert.deepStrictEqual(r.details.ocr.ocrFailed, [2]);
+		assert.deepStrictEqual(r.details.ocr.pages, []);
+		assert.deepStrictEqual([r.details.ocr.noText, r.details.failedPages], [[1, 3], []]);
+		assert.deepStrictEqual(r.details.nativeImages.map((n) => n.page), [1, 2, 3]);
+		assert.match(r.output, /Tier: primary/);
+		linksResolve(r.details.savedTo);
+	});
+});
+
+test("textless-3.pdf --page-images: worker stdout chatter does not corrupt JSON; crashed render unavailable", T, async () => {
+	await withEnv({ DOC_TO_MD_RASTER_CRASH_PAGE: "2" }, async () => {
+		const r = await convertDocument(opts(fx("textless-3.pdf"), { pageImages: true, outputDir: tmp }));
+		assert.deepStrictEqual(r.details.failedPages, []);
+		assert.match(linksResolve(r.details.savedTo), /Page images: 1 of 3 unavailable/);
+		assert.ok(r.details.notes.includes("Page 2 render unavailable: renderer crashed"));
+		assert.deepStrictEqual(readdirSyncSafe(join(tmp, "pages")).sort(), ["textless-3-p1.png", "textless-3-p3.png"]);
+		assert.deepStrictEqual(readdirSyncSafe(join(tmp, "images")).sort(), ["textless-3-p1-1.jpeg", "textless-3-p3-1.jpeg"]);
+	});
+});
+
+test("interrupted primary: fallback retains page 1 native image and drops stalled page 2", T, async () => {
+	await withEnv({ DOC_TO_MD_RASTER_STALL_PAGE: "2", DOC_TO_MD_RASTER_BUDGET_S: "5" }, async () => {
+		const start = Date.now();
+		let keepPages: unknown;
+		const seams: Partial<PipelineSeams> = { runTier: async (mode, ...rest) => {
+			if (mode === "pdf-fallback") keepPages = rest[0].keepPages;
+			return runTierReal(mode, ...rest);
+		} };
+		const r = await convertDocument(opts(fx("textless-3.pdf"), { primaryTimeoutMs: 4000, outputDir: tmp }), undefined, seams);
+		const elapsed = Date.now() - start;
+		assert.ok(elapsed < 20_000, `took ${elapsed}ms`);
+		assert.strictEqual(r.details.tier, "fallback");
+		assert.match(r.details.fallbackReason!, /timeout/);
+		assert.deepStrictEqual(r.details.nativeImages.map((n) => n.page), [1, 3]);
+		assert.strictEqual(r.details.nativeImages[0].file, join(tmp, "images", "textless-3-p1-1.jpeg"));
+		assert.deepStrictEqual((keepPages as Record<string, string[]>)["1"], ["textless-3-p1-1.jpeg"]);
+		assert.deepStrictEqual(readdirSyncSafe(join(tmp, "images")).filter((f) => f.startsWith("textless-3-p1-")), ["textless-3-p1-1.jpeg"]);
+		assert.deepStrictEqual(r.details.failedPages, [2]);
+		assert.match(r.output, /^Native-Images: pages 1, 3 /m);
+		assert.match(linksResolve(r.details.savedTo), /^Failed pages: 2 \(render timed out after 5s\)$/m);
+	});
+});
+
+test("primary failure after native completion: fallback retains native metadata in the handle", T, async () => {
+	let keepPages: unknown;
+	const seams: Partial<PipelineSeams> = { runTier: async (mode, ...rest) => {
+		if (mode === "pdf-fallback") keepPages = rest[0].keepPages;
+		const r = await runTierReal(mode, ...rest);
+		return mode === "pdf-primary" ? { ok: false, reason: "forced after completion" } : r;
+	} };
+	const r = await convertDocument(opts(fx("single-image-page.pdf"), { outputDir: tmp }), undefined, seams);
+	assert.match(r.output, /Tier: fallback/);
+	assert.deepStrictEqual(r.details.nativeImages, [{ page: 1, file: join(tmp, "images", "single-image-page-p1-1.jpeg"), width: 2000, height: 2800 }]);
+	assert.deepStrictEqual(readdirSyncSafe(join(tmp, "images")), ["single-image-page-p1-1.jpeg"]);
+	assert.deepStrictEqual((keepPages as Record<string, string[]>)["1"], ["single-image-page-p1-1.jpeg"]);
+	assert.match(r.output, /^Native-Images: page 1 /m);
+	linksResolve(r.details.savedTo);
+});
+
 const words = (r: { details: { wordsPath: string | null } }) => {
 	assert.ok(r.details.wordsPath, "words document published");
 	return JSON.parse(readFileSync(r.details.wordsPath, "utf8"));
