@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.11.0 - 2026-10-02
 
 - `doc_to_md`: textless PDF pages holding one eligible full-page image deliver the embedded stream without re-encoding; the handle prints `Native-Images:` and tool details / CLI JSON carry `nativeImages` (#27).
 - `doc_to_md`: native probing, PDF page renders, and textless-page inline OCR run in a spawned raster worker with per-job budgets; a toxic page becomes a `Failed pages` note instead of failing the conversion when other pages succeed (#27).
