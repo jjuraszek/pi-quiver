@@ -6,7 +6,7 @@ description: Cut a pi-quiver release (major/minor/patch) - bump version, tag, pu
 Run a release of this package using the `release` skill at
 `.agents/skills/release/SKILL.md`.
 
-Requested bump type: {{args}}
+Requested bump type: ${@:-none}
 
 A given bump type is the approval: run `release.sh <level>` directly (it
 promotes the CHANGELOG `## Unreleased` section, bumps, tags, pushes; CI

@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `/rebase-worktree [base]` prompt template (pi only, `prompts/`): rebases the current worktree onto `origin/<base>` (default `main`), resolves conflicts inline, runs only the tests covering the resolved files, never pushes.
+
 ## v6.11.0 - 2026-10-02
 
 - `doc_to_md`: textless PDF pages holding one eligible full-page image deliver the embedded stream without re-encoding; the handle prints `Native-Images:` and tool details / CLI JSON carry `nativeImages` (#27).

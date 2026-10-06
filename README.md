@@ -71,6 +71,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
 | `extensions/provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Each stall is aborted; while pi's `retry.enabled` is true and the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) remains, its aborted attempt is hidden from the model and re-driven by the watchdog after pi's backoff; behavior guide: [doc/provider-stall-watchdog.md](doc/provider-stall-watchdog.md). OFF by default. |
 | `extensions/slack.ts` | `slack_search`, `slack_thread`, `slack_post`, `slack_update`, `slack_delete`, `slack_pin`, `slack_upload`, `slack_cache_refresh` | Context-safe Slack search/threads/posting with dual `user`/`bot` token identities, Block Kit flattening and optional raw JSON output for threads, a workspace-keyed channel/user name->ID cache, DM targets by `@name` / user ID, fetch-style output size gating, and a transactional headline+detail-thread announce protocol with a documented recovery path. OFF by default. Behavior lives in `lib/slack-core.ts` and `lib/slack-cache.ts`. |
+| `prompts/rebase-worktree.md` | `/rebase-worktree [base]` | Prompt template, pi only. Rebases the current worktree onto `origin/<base>` (default `main`), resolves conflicts inline with the authorization stated in the prompt, runs only the tests that cover the resolved files, and reports the resolutions and fix commits. Never pushes; it syncs the branch so a later CI run or `/skill:gatekeep-pr` sees current `main`. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md), [doc/slack.md](doc/slack.md).
 
@@ -397,8 +398,8 @@ Published to npm by CI. Pushing a `vX.Y.Z` tag triggers
 `npm run test:all`, and publishes with `npm publish --provenance --access
 public` via OIDC trusted publishing. **Never run `npm publish` by hand.**
 
-Cut a release with the helper script (also exposed as the `/release` prompt +
-the `release` skill at `.agents/skills/release/`):
+Cut a release with the helper script (also exposed as the project-local
+`/release` prompt in `.pi/prompts/` + the `release` skill at `.agents/skills/release/`):
 
 ```bash
 bash .agents/skills/release/scripts/release.sh propose      # suggest a level

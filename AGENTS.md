@@ -1,6 +1,6 @@
 # pi-quiver
 
-Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`; everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
+Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`, plus the `/rebase-worktree` prompt template (`prompts/`, listed in `pi.prompts`); everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
 
 <!-- agents-core:begin v8 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning
@@ -96,6 +96,7 @@ One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** 
 
 ```
 extensions/                 # one top-level file = one extension entry point; nothing else at top level
+prompts/                    # shipped pi prompt templates (/rebase-worktree), listed one by one in package.json pi.prompts; .pi/prompts/ holds repo-local ones (/release)
 lib/extension-config.ts     # getAgentDir()-based settings.json resolution + QUIVER_CONFIG_KEYS registry + lint
 lib/fetch-core.ts           # fetch data plane; extensions/fetch.ts and bin/pi-quiver.ts are thin adapters
 lib/doc-to-md-*.ts          # doc_to_md core, options, bundle protocol, handle shapes; lib/unpdf-worker.ts
@@ -114,8 +115,8 @@ test/                       # node --test suites, one per extension, + layout.te
 - **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
 - **Opt-in extensions check `enabled` per hook and do nothing when off**; `slack` additionally gates registration at `session_start` (zero tools, hooks, or I/O when disabled). Toggling takes effect next session.
 - **`skills/doc-to-md/SKILL.md` is generated** - edit `skills/doc-to-md/SKILL.head.md` or the descriptors, then run `node scripts/gen-skill.mjs`; `test/skill-generation.test.ts` fails on drift.
-- **A new extension** is documented in `README.md` and gets a `CHANGELOG.md` `## Unreleased` bullet in the same commit.
-- **Packaging:** `package.json` `files` ships `extensions`, `lib`, `dist`, `scripts/doc_to_md.py`, `scripts/docx_numbering.py`; `dist/` is built at `prepack` (esbuild, `--packages=external`). `test/packed-install.test.ts` installs the packed tarball and runs the bin. Check with `npm pack --dry-run`.
+- **A new extension or prompt template** is documented in `README.md` and gets a `CHANGELOG.md` `## Unreleased` bullet in the same commit.
+- **Packaging:** `package.json` `files` ships `extensions`, `prompts`, `lib`, `dist`, `scripts/doc_to_md.py`, `scripts/docx_numbering.py`; `dist/` is built at `prepack` (esbuild, `--packages=external`). `test/packed-install.test.ts` installs the packed tarball and runs the bin. Check with `npm pack --dry-run`.
 
 ## Testing
 

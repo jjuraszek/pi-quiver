@@ -34,6 +34,7 @@
   },
   "files": [
     "extensions",
+    "prompts",
     "lib",
     "dist",
     "scripts/doc_to_md.py",
@@ -53,6 +54,9 @@
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "prompts": [
+      "./prompts/rebase-worktree.md"
     ],
     "image": "https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png"
   },
