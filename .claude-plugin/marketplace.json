@@ -6,7 +6,7 @@
 	"plugins": [
 		{
 			"name": "quiver",
-			"version": "6.12.0",
+			"version": "6.13.0",
 			"source": "./",
 			"description": "Claude Code skills backed by the pi-quiver toolbox",
 			"strict": false,
