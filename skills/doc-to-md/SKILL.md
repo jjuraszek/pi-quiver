@@ -29,6 +29,8 @@ Outline:
 
 Then `read` the `Saved-To` file (offset/limit); images live under `Images-Dir` when the handle reports it.
 
+Convert without OCR first and read `Page-Stats` to pick the pages that need OCR. Keep each OCR call within `quiver.docToMd.ocrMaxPages` (default 10, settings-only; no tool parameter or CLI flag). For forced OCR, use `ocrMode: "all"` (`--ocr-mode all`) with an explicit distinct-page selection within the ceiling; a larger selection is rejected before any work. In textless mode, expect OCR on only the first `ocrMaxPages` textless pages, and read the `OCR:` line for the remaining pages and the selection to rerun.
+
 Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` usage error.
 
 `npx -y pi-quiver@6.12.0 doc-to-md --help` lists every flag.
@@ -57,6 +59,7 @@ Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` us
 | `--outline-max-entries` | Heading outline / TOC / sheet inventory cap in the handle (default `40`) |
 | `--ocr` | Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off) |
 | `--ocr-language` | Tesseract language code(s), +-joined, e.g. deu+eng (default `eng`) |
+| `quiver.docToMd.ocrMaxPages` | Most pages one invocation OCRs; ocrMode all rejects a larger distinct-page selection before any work, textless mode OCRs the first ocrMaxPages textless pages and names the rest in the OCR: line (settings-only) (default `10`) |
 | `--hide-annotations` | Render PDF pages without annotations (sticky notes, highlights, stamps - and form-field widgets, so filled form values disappear); default paints them, as PyMuPDF does. Applies to pages/ renders and textless-page renders, not to OCR text or embedded images; also lets an annotated scan be delivered as its embedded image. |
 
 ## Bundle layout
@@ -89,5 +92,9 @@ Two-pass OCR (PDF, PPTX, DOC):
   3. --ocr-mode all refuses to run without --ocr and an explicit --pages.
      The "ocr" object (OCR: line) names failed, budget-stopped, killed and
      not-attempted pages and the exact --pages to re-run.
+  4. OCR is capped at quiver.docToMd.ocrMaxPages pages per call (default 10,
+     settings-only): --ocr-mode all refuses a larger distinct-page selection
+     before any work; textless mode OCRs the first ocrMaxPages textless pages
+     and the OCR: line names the rest with the exact --pages to re-run.
   Details: doc/doc-to-md.md (bundle contract, failure buckets).
 ```

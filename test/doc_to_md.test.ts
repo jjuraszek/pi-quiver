@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 test("tool description names supported formats and bundle locations", () => {
 	let description = "";
 	docToMdExtension({ registerTool: (tool: { description: string }) => { description = tool.description; } } as unknown as ExtensionAPI);
-	for (const term of ["DOC", "XLSM", ".msg", ".eml", "pageImages", "pages/", "attachments/", "Two-pass OCR", "ocrMode", "Page-Stats"]) assert.ok(description.includes(term), term);
+	for (const term of ["DOC", "XLSM", ".msg", ".eml", "pageImages", "pages/", "attachments/", "Two-pass OCR", "ocrMode", "Page-Stats", "ocrMaxPages"]) assert.ok(description.includes(term), term);
 	assert.doesNotMatch(description, /Pages without a text layer and image inputs always keep their picture in images\//);
 	assert.ok(!description.includes("\n"));
 });
@@ -80,7 +80,7 @@ test("ocrMode all guards precede backend work", async () => {
 	await assert.rejects(convertDocument(opts({ ocrMode: "all", pages: "2" }), undefined, noWork), new core.UsageError("--ocr-mode all requires --ocr"));
 	for (const pages of [undefined, ""]) await assert.rejects(convertDocument(opts({ ocr: true, ocrMode: "all", pages }), undefined, noWork), new core.UsageError('--ocr-mode all requires an explicit --pages selection (e.g. --pages 2,7); omitted pages and --pages "" mean all pages and are refused to keep OCR cost bounded'));
 	for (const path of [DOCX, HTML_PAGE, OCR_PNG]) await assert.rejects(convertDocument(opts({ path, ocr: true, ocrMode: "all", pages: "1" }), undefined, noWork), new core.UsageError("--ocr-mode all applies to PDF, PPTX and DOC inputs only (DOCX pages are page-break segments, not PDF pages; convert the DOCX to PDF first)"));
-	await assert.rejects(convertDocument(opts({ ocr: true, ocrMode: "all", pages: "1-100" }), undefined, seamsWith(async () => { throw Error("tier called"); }, { kind: "none", reason: "missing" })), /no Python backend/);
+	await assert.rejects(convertDocument(opts({ ocr: true, ocrMode: "all", pages: "1-10" }), undefined, seamsWith(async () => { throw Error("tier called"); }, { kind: "none", reason: "missing" })), /no Python backend/);
 });
 
 test("recoverOcrPages rebuilds markers, active checkpoint, empty and missing staging", () => {
@@ -674,7 +674,7 @@ const seamsWith = (runTier: PipelineSeams["runTier"], backend: Backend = { kind:
 const HTML_PAGE = fileURLToPath(new URL("../test/fixtures/html/page.html", import.meta.url));
 const OCR_PNG = fileURLToPath(new URL("../test/fixtures/ocr.png", import.meta.url));
 const imageOpts = (extra: Record<string, unknown> = {}) => resolveOptions({ path: OCR_PNG, ...extra } as never, {}, {});
-const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null };
+const OCR0: OcrInfo = { status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], ceilingStopped: [], ocrMaxPages: 10, reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null };
 
 test("words publication, child options, errors and nonfatal reasons", async () => {
 	const out = mkdtempSync(join(tmpdir(), "quiver-words-"));
@@ -1573,4 +1573,47 @@ test("same stem twice without overwrite renames and notes", async () => {
 		assert.ok(c.details.savedTo.endsWith("multipage-3.md"));
 		assert.match(c.output, /^Notes: renamed to multipage-3 \(multipage\.md exists\)$/m);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("tool schema omits the settings-only ocrMaxPages; a per-call value cannot raise the ceiling", () => {
+	let props: Record<string, unknown> = {};
+	docToMdExtension({ registerTool: (tool: { parameters: { properties: Record<string, unknown> } }) => { props = tool.parameters.properties; } } as unknown as ExtensionAPI);
+	assert.ok("ocrLanguage" in props && "ocrMode" in props);
+	assert.ok(!("ocrMaxPages" in props));
+	assert.throws(() => resolveOptions({ path: MULTIPAGE, ocr: true, ocrMode: "all", pages: "1-11", ocrMaxPages: 999 } as never, {}, {}), (e: Error) => e instanceof core.UsageError && /the OCR page ceiling is 10 \(quiver\.docToMd\.ocrMaxPages\)/.test(e.message));
+});
+
+test("pdf-primary receives ocrMaxPages; DOCX on the LibreOffice route renders the DOCX ceiling clause", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-docx-ceiling-"));
+	try {
+		const modes: string[] = [];
+		const o = resolveOptions({ path: DOCX, outputDir: out, ocr: true } as never, { ocrMaxPages: 1 }, {});
+		const r = await convertDocument(o, undefined, { backend: async () => PY_NO_DOCX, office: fakeOffice({ ok: true, pdfPath: MULTIPAGE, cleanup: () => {} }), runTier: async (mode, co) => {
+			modes.push(mode);
+			assert.deepEqual([co.ocr, co.ocrMaxPages, co.ocrBudgetMs], [true, 1, TUNABLE_DEFAULTS.primaryTimeoutMs]);
+			return { ok: true, json: { markdown: "scan\n", pageStats: [], ocr: { ...OCR0, status: "ran", tesseract: true, textless: [1, 2, 3], pages: [1], ceilingStopped: [2, 3] } } };
+		} });
+		assert.deepEqual(modes, ["pdf-primary"]);
+		assert.deepEqual([r.details.ocr?.ocrMaxPages, r.details.ocr?.ceilingStopped], [1, [2, 3]]);
+		assert.match(r.output, /^OCR: 1 page\(s\) \(eng\); OCR page ceiling \(1\) reached for rendered pages=2-3; export the document to PDF and rerun on it with pages=2, or raise quiver\.docToMd\.ocrMaxPages$/m);
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("forced OCR never carries ceilingStopped; image copy and unpdf OCR info carry the effective ceiling", async () => {
+	const out = mkdtempSync(join(tmpdir(), "quiver-ceiling-info-"));
+	try {
+		const r = await convertDocument(resolveOptions({ path: OCR_PNG, outputDir: out, ocr: true } as never, { ocrMaxPages: 4 }, {}), undefined, seamsWith(async () => { throw Error("tier called"); }, { kind: "none", reason: "missing" }));
+		assert.deepEqual([r.details.ocr?.status, r.details.ocr?.ocrMaxPages, r.details.ocr?.ceilingStopped], ["unavailable", 4, []]);
+		const u = await convertDocument(resolveOptions({ path: MULTIPAGE, outputDir: join(out, "unpdf"), ocr: true } as never, { ocrMaxPages: 4 }, {}), undefined, seamsWith(async () => okTier("text\n", [1]), { kind: "none", reason: "missing" }));
+		assert.deepEqual([u.details.ocr?.status, u.details.ocr?.ocrMaxPages, u.details.ocr?.ceilingStopped], ["unavailable", 4, []]);
+		const f = await convertDocument(resolveOptions({ path: MULTIPAGE, outputDir: join(out, "forced"), ocr: true, ocrMode: "all", pages: "1-2" } as never, { ocrMaxPages: 4 }, {}), undefined, seamsWith(async (mode, co) => {
+			if (mode === "pdf-primary") return { ok: true, json: { markdown: "x\n", pageStats: [], ocr: OCR0 } };
+			assert.equal(mode, "ocr-pages");
+			for (const page of [1, 2]) stageSidecar(String(co.stagingDir), String(co.stem), page, ".done");
+			return { ok: true, json: { status: "ran", written: [1, 2] } };
+		}));
+		assert.equal(f.details.ocr?.mode, "all");
+		assert.equal(f.details.ocr?.ocrMaxPages, 4);
+		assert.deepEqual(f.details.ocr?.ceilingStopped, []);
+	} finally { rmSync(out, { recursive: true, force: true }); }
 });

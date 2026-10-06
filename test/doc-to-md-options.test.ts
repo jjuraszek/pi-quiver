@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert";
 import {
 	BUNDLE_LAYOUT, DOC_TO_MD_OPTIONS, TUNABLE_DEFAULTS, UsageError, classifyInput, coerceDocToMdSettings,
-	parsePages, renderHelp, resolveOptions, sanitizeStem, usagePatterns, USAGE_PATTERNS,
+	countDistinctPages, ocrCeilingMessage, pageIntervals, renderHelp, resolveOptions, sanitizeStem, usagePatterns, USAGE_PATTERNS,
 } from "../lib/doc-to-md-options.ts";
 
 test("descriptors: every tunable has a flag, default and help; per-call intents are not settable", () => {
 	for (const d of DOC_TO_MD_OPTIONS) {
 		assert.ok(d.help.length > 0, d.key);
-		if (d.key !== "path") assert.match(d.flag!, /^--[a-z-]+$/, d.key);
+		if (d.key !== "path" && !d.settingsOnly) assert.match(d.flag!, /^--[a-z-]+$/, d.key);
 	}
 	const intents = DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map((d) => d.key).sort();
 	assert.deepStrictEqual(intents, ["info", "ocrMode", "outputDir", "overwrite", "pageImages", "pages", "path", "words"]);
@@ -75,11 +75,12 @@ test("coerceDocToMdSettings: numeric strings are ill-typed", () => {
 	assert.ok(warnings[0].includes("imageDpi"));
 });
 
-test("parsePages: inclusive 1-based, sorted, deduped", () => {
-	assert.deepStrictEqual(parsePages("12-15"), [12, 13, 14, 15]);
-	assert.deepStrictEqual(parsePages("3,7,10-12,7"), [3, 7, 10, 11, 12]);
-	assert.deepStrictEqual(parsePages(" 2 , 1 "), [1, 2]);
-	for (const bad of ["0", "a", "5-3", "1-", "-2", "1,,2", "1.5"]) assert.throws(() => parsePages(bad), UsageError, bad);
+test("resolveOptions pages: inclusive 1-based, sorted, deduped", () => {
+	const pages = (spec: string) => resolveOptions({ path: "a.pdf", pages: spec }, {}, {}).pages;
+	assert.deepStrictEqual(pages("12-15"), [12, 13, 14, 15]);
+	assert.deepStrictEqual(pages("3,7,10-12,7"), [3, 7, 10, 11, 12]);
+	assert.deepStrictEqual(pages(" 2 , 1 "), [1, 2]);
+	for (const bad of ["0", "a", "5-3", "1-", "-2", "1,,2", "1.5"]) assert.throws(() => pages(bad), UsageError, bad);
 });
 
 test("sanitizeStem: [A-Za-z0-9._-] only, runs collapsed, empty -> document", () => {
@@ -147,11 +148,12 @@ test("classifyInput: new office and email extensions", () => {
 	assert.throws(() => classifyInput("a.webp"), /supported: .*\.xlsm.*\.doc.*\.msg.*\.eml/);
 });
 
-test("parsePages: empty string means all pages", () => {
-	assert.strictEqual(parsePages(""), null);
-	assert.strictEqual(parsePages("   "), null);
+test("pageIntervals: empty string means all pages", () => {
+	assert.strictEqual(pageIntervals(""), null);
+	assert.strictEqual(pageIntervals("   "), null);
 	assert.strictEqual(resolveOptions({ path: "a.pdf", pages: "" }, {}, {}).pages, null);
-	assert.throws(() => parsePages("1,,2"), /invalid --pages/);
+	assert.throws(() => pageIntervals("1,,2"), /invalid --pages/);
+	assert.throws(() => resolveOptions({ path: "a.pdf", pages: 1 as never }, {}, {}), { constructor: UsageError, message: "--pages must be a string" });
 });
 
 test("pageImages: per-call bool, default false, not settable", () => {
@@ -208,6 +210,72 @@ test("BUNDLE_LAYOUT: help names every artifact and its handle field", () => {
 		assert.ok(renderHelp().includes(row.artifact), row.artifact);
 		assert.ok(renderHelp().includes(`named by ${row.namedBy}`), row.namedBy);
 	}
+});
+
+test("ocrMaxPages: settings-only descriptor and ignored per-call override", () => {
+	const d = DOC_TO_MD_OPTIONS.find((o) => o.key === "ocrMaxPages")!;
+	assert.deepStrictEqual([d.type, d.default, d.settable, d.settingsOnly, d.flag], ["int", 10, true, true, null]);
+	assert.strictEqual(TUNABLE_DEFAULTS.ocrMaxPages, 10);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocrMaxPages: 999 }, {}, {}).ocrMaxPages, 10);
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocrMaxPages: 999 }, { ocrMaxPages: 3 }, {}).ocrMaxPages, 3);
+	assert.strictEqual(DOC_TO_MD_OPTIONS.filter((o) => o.settingsOnly).length, 1);
+});
+
+test("ocrMaxPages: invalid settings warn and drop, all ints must be safe", () => {
+	for (const v of [0, -1, 1.5, "10", true, null, 2 ** 53]) {
+		const warnings: string[] = [];
+		assert.deepStrictEqual(coerceDocToMdSettings({ ocrMaxPages: v }, (m) => warnings.push(m)), {});
+		assert.deepStrictEqual(warnings, ["pi-quiver: quiver.docToMd.ocrMaxPages must be a positive integer; ignored."]);
+	}
+	assert.deepStrictEqual(coerceDocToMdSettings({ ocrMaxPages: 25, primaryTimeoutMs: 2 ** 53 }, () => {}), { ocrMaxPages: 25 });
+});
+
+test("pageIntervals and countDistinctPages: distinct counts without expansion and safe endpoints", () => {
+	assert.deepStrictEqual(pageIntervals(""), null);
+	assert.deepStrictEqual(pageIntervals("2,7,19"), [[2, 2], [7, 7], [19, 19]]);
+	assert.deepStrictEqual(pageIntervals("1-8,5-10"), [[1, 8], [5, 10]]);
+	for (const [spec, count] of [["2,7,19", 3], ["1-8,5-10", 10], ["1-5,3", 5], ["10-12,1-3,2-11", 12], ["1-9999999999", 9999999999]] as const) {
+		assert.strictEqual(countDistinctPages(pageIntervals(spec)!), count);
+	}
+	assert.throws(() => pageIntervals("1-9007199254740993"), (e: Error) => e instanceof UsageError && e.message === 'invalid --pages "1-9007199254740993": page numbers above 9007199254740991 are not supported');
+	assert.throws(() => pageIntervals("3-1"), /ranges ascend/);
+	assert.deepStrictEqual(resolveOptions({ path: "a.pdf", pages: "1-3,2" }, {}, {}).pages, [1, 2, 3]);
+});
+
+test("resolveOptions: forced ceiling precedes expansion, textless remains uncapped", () => {
+	const forced = (pages: string, settings = {}) => resolveOptions({ path: "a.pdf", ocr: true, ocrMode: "all", pages }, settings, {});
+	const expected = (count: number, spec: string, ceiling = 10) => `ocrMode "all" selects ${count} distinct pages (pages=${spec}); the OCR page ceiling is ${ceiling} (quiver.docToMd.ocrMaxPages). Broad OCR is slow and usually unnecessary: convert without OCR first, read Page-Stats to find the pages that need it, and select only those. For more than ${ceiling} pages, run explicit sequential batches within the ceiling and inspect each result before the next. The ceiling is settings-only; no tool or CLI argument raises it.`;
+	assert.throws(() => forced("1-11"), (e: Error) => e instanceof UsageError && e.message === expected(11, "1-11"));
+	assert.strictEqual(ocrCeilingMessage(11, 10, "1-11"), expected(11, "1-11"));
+	assert.deepStrictEqual(forced("1-10").pages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+	assert.strictEqual(forced("1-8,5-10").pages!.length, 10);
+	assert.throws(() => forced("1-8,5-11"), (e: Error) => e.message.startsWith('ocrMode "all" selects 11 distinct pages (pages=1-8,5-11)'));
+	assert.deepStrictEqual(forced("2,7,19").pages, [2, 7, 19]);
+	assert.throws(() => forced("1-6", { ocrMaxPages: 5 }), (e: Error) => e.message === expected(6, "1-6", 5));
+	assert.strictEqual(forced("1-15", { ocrMaxPages: 20 }).pages!.length, 15);
+	const started = performance.now();
+	assert.throws(() => forced("1-9999999999"), (e: Error) => e.message.startsWith('ocrMode "all" selects 9999999999 distinct pages'));
+	// Expanding ten billion pages would take minutes or exhaust memory.
+	assert.ok(performance.now() - started < 5000, "huge range must be rejected before expansion");
+	const long = Array.from({ length: 11 }, (_, i) => String(i + 1)).join(" ,       ");
+	assert.ok(long.length > 80);
+	assert.throws(() => forced(long), (e: Error) => {
+		assert.ok(e.message.includes(`(pages=${long.slice(0, 77)}...)`));
+		assert.strictEqual(e.message.match(/pages=([^)]*)\)/)![1].length, 80);
+		return true;
+	});
+	assert.throws(() => resolveOptions({ path: "a.pdf", ocrMode: "all", pages: "1-11" }, {}, {}), (e: Error) => e instanceof UsageError && /ceiling is 10/.test(e.message));
+	assert.strictEqual(resolveOptions({ path: "a.pdf", ocr: true, pages: "1-11" }, {}, {}).pages!.length, 11);
+	assert.throws(() => resolveOptions({ path: "a.pdf", pages: "1-9007199254740993" }, {}, {}), (e: Error) => e instanceof UsageError && /above 9007199254740991/.test(e.message));
+	assert.throws(() => resolveOptions({ path: "a.pdf", pages: "x" }, {}, {}), /bad token "x"/);
+});
+
+test("renderHelp and USAGE_PATTERNS name the settings-only ceiling", () => {
+	const help = renderHelp();
+	assert.ok(!help.includes("--ocr-max-pages"));
+	assert.match(help, /^  quiver\.docToMd\.ocrMaxPages Most pages one invocation OCRs; .* \(settings-only\) \(default 10\)$/m);
+	assert.ok(help.indexOf("quiver.docToMd.ocrMaxPages") > help.indexOf("Tunables"));
+	assert.ok(USAGE_PATTERNS.includes("4. OCR is capped at quiver.docToMd.ocrMaxPages pages per call (default 10,"));
 });
 
 test("renderHelp: lists every flag and both tables", () => {

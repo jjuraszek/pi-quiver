@@ -124,7 +124,7 @@ test("formatHandle: Pages-Dir printed after Sheets-Dir when page images exist; n
 });
 
 test("ocrLine: ran with no-text pages lists the page ranges", () => {
-	const ocr: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "ran", lang: "eng", textless: [1, 2, 3, 7], pages: [1, 2, 3, 7], noText: [2, 3, 7], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+	const ocr: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "ran", lang: "eng", textless: [1, 2, 3, 7], pages: [1, 2, 3, 7], noText: [2, 3, 7], ocrFailed: [], budgetStopped: [], ceilingStopped: [], ocrMaxPages: 10, reason: null, tesseract: null };
 	assert.strictEqual(ocrLine(ocr, "pdf"), "OCR: 4 page(s) (eng); no text on pages 2-3, 7");
 });
 
@@ -147,7 +147,7 @@ test("formatSize", () => {
 	assert.strictEqual(formatSize(3 * 1024 * 1024), "3.0MB");
 });
 
-const OCR0: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null };
+const OCR0: OcrInfo = { mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null, status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], ceilingStopped: [], ocrMaxPages: 10, reason: null, tesseract: null };
 const FORCED: OcrInfo = { ...OCR0, status: "ran", mode: "all" };
 
 test("ocrLine: forced mode lists only non-empty buckets and ends with the re-run hint", () => {
@@ -167,12 +167,12 @@ test("ocr JSON shapes: textless defaults and forced sidecar outcomes survive ser
 	assert.strictEqual(parsed.wordsReason, null);
 	assert.deepStrictEqual(parsed.wordsErrors, { "2": "ValueError: x", "5": "RuntimeError: boom" });
 	assert.deepStrictEqual(JSON.parse(JSON.stringify(OCR0)), {
-		status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null,
+		status: "off", lang: "eng", textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], ceilingStopped: [], ocrMaxPages: 10, reason: null, tesseract: null,
 		mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null,
 	});
 	const forced: OcrInfo = { ...FORCED, pages: [2], sidecars: { 2: "/out/ocr/s-p002.md" }, wordSidecars: { 2: "/out/ocr/s-p002.words.json" }, ocrFailed: [4], ocrErrors: { 4: "boom" }, killed: 13, notAttempted: [20], childError: null };
 	assert.deepStrictEqual(JSON.parse(JSON.stringify(forced)), {
-		status: "ran", lang: "eng", textless: [], pages: [2], noText: [], ocrFailed: [4], budgetStopped: [], reason: null, tesseract: null,
+		status: "ran", lang: "eng", textless: [], pages: [2], noText: [], ocrFailed: [4], budgetStopped: [], ceilingStopped: [], ocrMaxPages: 10, reason: null, tesseract: null,
 		mode: "all", sidecars: { "2": "/out/ocr/s-p002.md" }, wordSidecars: { "2": "/out/ocr/s-p002.words.json" }, ocrErrors: { "4": "boom" }, killed: 13, notAttempted: [20], childError: null,
 	});
 });
@@ -213,6 +213,20 @@ test("formatHandle: OCR line after Failed/Empty-Pages, omitted when ocr is null;
 	assert.strictEqual(lines[lines.indexOf("Empty-Pages: 1") + 1], "OCR: off - 1 page(s) without a text layer; rerun with ocr=true");
 	assert.ok(!formatHandle({ ...h, ocr: null }).includes("OCR:"));
 	assert.deepStrictEqual(scanOutline("> # Scanned heading\n>\n# Real\n", 10).entries.map((e) => e.title), ["Real"]);
+});
+
+test("ocrLine: ceiling clause on the textless ran branch, after the budget clause; DOCX variant; forced line unchanged", () => {
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1, 2], textless: [1, 2, 11, 14, 19], ceilingStopped: [11, 14, 19], ocrMaxPages: 2 }, "pdf"),
+		"OCR: 2 page(s) (eng); OCR page ceiling (2) reached for pages=11,14,19; rerun with pages=11,14 or raise quiver.docToMd.ocrMaxPages");
+	const twenty = Array.from({ length: 20 }, (_, i) => i + 11);
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1], ceilingStopped: twenty }, "pdf"),
+		"OCR: 1 page(s) (eng); OCR page ceiling (10) reached for pages=11-30; rerun with pages=11-20 or raise quiver.docToMd.ocrMaxPages");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1], budgetStopped: [5], ceilingStopped: [6, 7] }, "pdf"),
+		"OCR: 1 page(s) (eng); time budget reached for pages=5; rerun with pages=5 or raise primaryTimeoutMs; OCR page ceiling (10) reached for pages=6-7; rerun with pages=6-7 or raise quiver.docToMd.ocrMaxPages");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1], ceilingStopped: [2, 3], ocrMaxPages: 1 }, "docx"),
+		"OCR: 1 page(s) (eng); OCR page ceiling (1) reached for rendered pages=2-3; export the document to PDF and rerun on it with pages=2, or raise quiver.docToMd.ocrMaxPages");
+	assert.strictEqual(ocrLine({ ...OCR0, status: "ran", pages: [1, 2, 3] }, "pdf"), "OCR: 3 page(s) (eng)");
+	assert.strictEqual(ocrLine({ ...FORCED, pages: [2], ceilingStopped: [9] }, "pdf"), "OCR: forced (eng) - sidecars for page 2");
 });
 
 test("Words: line - path, extraction-failed clause, reasons, absent without --words", () => {

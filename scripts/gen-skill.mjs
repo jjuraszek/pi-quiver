@@ -9,8 +9,9 @@ const version = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).ver
 const out = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : join(ROOT, "skills", "doc-to-md");
 const formats = SUPPORTED_EXTENSIONS.join(" ");
 const head = readFileSync(join(ROOT, "skills", "doc-to-md", "SKILL.head.md"), "utf8").replaceAll("{{VERSION}}", version).replaceAll("{{FORMATS}}", formats);
-const row = (d) => `| \`${d.flag}\` | ${d.help}${d.default !== null && d.type !== "bool" ? ` (default \`${d.default}\`)` : ""} |`;
-const flags = ["| Flag | Meaning |", "|---|---|", "| `--json` | Print the handle as one JSON object (CLI only) |", ...DOC_TO_MD_OPTIONS.filter((d) => d.flag).map(row)].join("\n");
+const label = (d) => d.flag ?? `quiver.docToMd.${d.key}`;
+const row = (d) => `| \`${label(d)}\` | ${d.help}${d.settingsOnly ? " (settings-only)" : ""}${d.default !== null && d.type !== "bool" ? ` (default \`${d.default}\`)` : ""} |`;
+const flags = ["| Flag | Meaning |", "|---|---|", "| `--json` | Print the handle as one JSON object (CLI only) |", ...DOC_TO_MD_OPTIONS.filter((d) => d.flag || d.settingsOnly).map(row)].join("\n");
 const layout = ["| Artifact | Trigger | Content | Named by |", "|---|---|---|---|", ...BUNDLE_LAYOUT.map((r) => `| \`${r.artifact}\` | ${r.trigger} | ${r.content} | ${r.namedBy} |`)].join("\n");
 mkdirSync(out, { recursive: true });
 const usage = usagePatterns(`npx -y pi-quiver@${version} doc-to-md`);

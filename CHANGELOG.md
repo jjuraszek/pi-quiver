@@ -10,6 +10,7 @@ via OIDC trusted publishing. The release helper at
 
 ## v6.12.0 - 2026-10-06
 
+- `doc_to_md` / `pi-quiver doc-to-md`: `quiver.docToMd.ocrMaxPages` (default 10, settings-only) caps the pages one call OCRs. `ocrMode: "all"` rejects a larger distinct-page selection before any work (CLI exit 2), counting merged ranges without expanding them; textless mode OCRs the first `ocrMaxPages` textless pages and lists the rest as `ceilingStopped` with the `pages` to rerun. Integer settings now require safe integers. (#29)
 - `/rebase-worktree [base]` prompt template (pi only, `prompts/`): rebases the current worktree onto `origin/<base>` (default `main`), resolves conflicts inline, runs only the tests covering the resolved files, never pushes.
 
 ## v6.11.0 - 2026-10-02

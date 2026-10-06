@@ -21,6 +21,7 @@ export interface Tunables {
 	outlineMaxEntries: number;
 	ocr: boolean;
 	ocrLanguage: string;
+	ocrMaxPages: number;
 	hideAnnotations: boolean;
 }
 
@@ -56,6 +57,7 @@ export interface OptionDescriptor {
 	default: string | number | boolean | null;
 	settable: boolean;
 	env?: string;
+	settingsOnly?: boolean;
 	enumValues?: readonly string[];
 	help: string;
 }
@@ -88,6 +90,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "outlineMaxEntries", flag: "--outline-max-entries", type: "int", default: 40, settable: true, help: "Heading outline / TOC / sheet inventory cap in the handle" },
 	{ key: "ocr", flag: "--ocr", type: "bool", default: false, settable: true, help: "Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off)" },
 	{ key: "ocrLanguage", flag: "--ocr-language", type: "lang", default: "eng", settable: true, help: "Tesseract language code(s), +-joined, e.g. deu+eng" },
+	{ key: "ocrMaxPages", flag: null, type: "int", default: 10, settable: true, settingsOnly: true, help: "Most pages one invocation OCRs; ocrMode all rejects a larger distinct-page selection before any work, textless mode OCRs the first ocrMaxPages textless pages and names the rest in the OCR: line" },
 	{ key: "hideAnnotations", flag: "--hide-annotations", type: "bool", default: false, settable: true, help: "Render PDF pages without annotations (sticky notes, highlights, stamps - and form-field widgets, so filled form values disappear); default paints them, as PyMuPDF does. Applies to pages/ renders and textless-page renders, not to OCR text or embedded images; also lets an annotated scan be delivered as its embedded image." },
 ];
 
@@ -108,7 +111,7 @@ function coerceValue(d: OptionDescriptor, raw: unknown, fromString = false): { o
 	switch (d.type) {
 		case "int": {
 			const n = fromString && typeof raw === "string" ? Number(raw) : raw;
-			return typeof n === "number" && Number.isInteger(n) && n > 0 ? { ok: true, value: n } : { ok: false, reason: "must be a positive integer" };
+			return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? { ok: true, value: n } : { ok: false, reason: "must be a positive integer" };
 		}
 		case "bool": return typeof raw === "boolean" ? { ok: true, value: raw } : { ok: false, reason: "must be true or false" };
 		case "enum": return typeof raw === "string" && d.enumValues!.includes(raw) ? { ok: true, value: raw } : { ok: false, reason: `must be one of ${d.enumValues!.join(", ")}` };
@@ -118,7 +121,7 @@ function coerceValue(d: OptionDescriptor, raw: unknown, fromString = false): { o
 			return { ok: true, value: raw };
 		case "lang": return typeof raw === "string" && OCR_LANGUAGE_RE.test(raw) ? { ok: true, value: raw } : { ok: false, reason: "must be Tesseract language codes joined by + (e.g. eng, deu+eng)" };
 		case "string": return typeof raw === "string" && raw.length > 0 ? { ok: true, value: raw } : { ok: false, reason: "must be a non-empty string" };
-		case "pages": return typeof raw === "string" ? { ok: true, value: parsePages(raw) } : { ok: false, reason: "must be a string" };
+		case "pages": return typeof raw === "string" ? { ok: true, value: pageIntervals(raw) } : { ok: false, reason: "must be a string" };
 	}
 }
 
@@ -136,20 +139,42 @@ export function coerceDocToMdSettings(raw: unknown, warn: (message: string) => v
 	return out as Partial<Tunables>;
 }
 
-export function parsePages(spec: string): number[] | null {
+export type PageInterval = [number, number];
+
+export function pageIntervals(spec: string): PageInterval[] | null {
 	if (spec.trim() === "") return null;
-	const out = new Set<number>();
+	const out: PageInterval[] = [];
 	const parts = spec.split(",").map((s) => s.trim());
 	if (parts.length === 0 || parts.some((p) => p === "")) throw new UsageError(`invalid --pages "${spec}": expected e.g. "12-15" or "3,7,10-12"`);
 	for (const p of parts) {
 		const m = p.match(/^(\d+)(?:-(\d+))?$/);
 		if (!m) throw new UsageError(`invalid --pages "${spec}": bad token "${p}"`);
 		const a = Number(m[1]), b = m[2] === undefined ? a : Number(m[2]);
+		if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b)) throw new UsageError(`invalid --pages "${spec}": page numbers above ${Number.MAX_SAFE_INTEGER} are not supported`);
 		if (a < 1 || b < a) throw new UsageError(`invalid --pages "${spec}": pages are 1-based and ranges ascend`);
-		for (let i = a; i <= b; i++) out.add(i);
+		out.push([a, b]);
 	}
+	return out;
+}
+
+export function countDistinctPages(intervals: PageInterval[]): number {
+	const sorted = [...intervals].sort((x, y) => x[0] - y[0]);
+	let total = 0, start = sorted[0][0], end = sorted[0][1];
+	for (const [a, b] of sorted.slice(1)) {
+		if (a > end + 1) { total += end - start + 1; start = a; end = b; }
+		else end = Math.max(end, b);
+	}
+	return total + end - start + 1;
+}
+
+function expandPages(intervals: PageInterval[]): number[] {
+	const out = new Set<number>();
+	for (const [a, b] of intervals) for (let i = a; i <= b; i++) out.add(i);
 	return [...out].sort((x, y) => x - y);
 }
+
+export const ocrCeilingMessage = (count: number, ceiling: number, spec: string): string =>
+	`ocrMode "all" selects ${count} distinct pages (pages=${spec.length > 80 ? `${spec.slice(0, 77)}...` : spec}); the OCR page ceiling is ${ceiling} (quiver.docToMd.ocrMaxPages). Broad OCR is slow and usually unnecessary: convert without OCR first, read Page-Stats to find the pages that need it, and select only those. For more than ${ceiling} pages, run explicit sequential batches within the ceiling and inspect each result before the next. The ceiling is settings-only; no tool or CLI argument raises it.`;
 
 export function sanitizeStem(base: string): string {
 	const s = base.replace(/[^A-Za-z0-9._-]+/g, "_");
@@ -165,7 +190,7 @@ export function classifyInput(filePath: string): InputType {
 	return t;
 }
 
-/** per-call > settings > deprecated env > default. Throws UsageError for bad per-call values or info + bundle option. */
+/** per-call > settings > deprecated env > default. Throws UsageError for bad per-call values, an over-ceiling forced selection, or info + bundle option. */
 export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables>, env: NodeJS.ProcessEnv): DocToMdOptions {
 	const out: Record<string, unknown> = { path: perCall.path };
 	for (const d of DOC_TO_MD_OPTIONS) {
@@ -177,7 +202,7 @@ export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables
 			value = c.value;
 		}
 		if (d.settable && (settings as Record<string, unknown>)[d.key] !== undefined) value = (settings as Record<string, unknown>)[d.key];
-		const pc = (perCall as unknown as Record<string, unknown>)[d.key];
+		const pc = d.settingsOnly ? undefined : (perCall as unknown as Record<string, unknown>)[d.key];
 		if (pc !== undefined && pc !== null) {
 			const c = coerceValue(d, pc);
 			if (!c.ok) throw new UsageError(`${d.flag} ${c.reason}`);
@@ -186,6 +211,12 @@ export function resolveOptions(perCall: PerCallInput, settings: Partial<Tunables
 		out[d.key] = value;
 	}
 	const o = out as unknown as DocToMdOptions;
+	const intervals = out.pages as PageInterval[] | null;
+	if (intervals && o.ocrMode === "all") {
+		const n = countDistinctPages(intervals);
+		if (n > o.ocrMaxPages) throw new UsageError(ocrCeilingMessage(n, o.ocrMaxPages, perCall.pages!));
+	}
+	o.pages = intervals && expandPages(intervals);
 	if (o.info && (o.pages !== null || o.outputDir !== null || o.overwrite || o.pageImages || o.words || o.ocrMode === "all")) {
 		throw new UsageError("--info cannot be combined with --pages, --output-dir, --overwrite, --page-images, --words or --ocr-mode all");
 	}
@@ -207,6 +238,10 @@ export const USAGE_PATTERNS = [
 	"  3. --ocr-mode all refuses to run without --ocr and an explicit --pages.",
 	'     The "ocr" object (OCR: line) names failed, budget-stopped, killed and',
 	"     not-attempted pages and the exact --pages to re-run.",
+	"  4. OCR is capped at quiver.docToMd.ocrMaxPages pages per call (default 10,",
+	"     settings-only): --ocr-mode all refuses a larger distinct-page selection",
+	"     before any work; textless mode OCRs the first ocrMaxPages textless pages",
+	"     and the OCR: line names the rest with the exact --pages to re-run.",
 	"  Details: doc/doc-to-md.md (bundle contract, failure buckets).",
 ].join("\n");
 
@@ -228,7 +263,7 @@ export const BUNDLE_LAYOUT: readonly { artifact: string; trigger: string; conten
 const bundleLayoutText = (): string => BUNDLE_LAYOUT.map((r) => `  ${r.artifact.padEnd(28)} ${r.trigger}; ${r.content}; named by ${r.namedBy}`).join("\n");
 
 export function renderHelp(): string {
-	const row = (d: OptionDescriptor) => `  ${(d.flag ?? "<path>").padEnd(26)} ${d.help}${d.default !== null && d.key !== "info" && d.key !== "overwrite" ? ` (default ${d.default})` : ""}`;
+	const row = (d: OptionDescriptor) => `  ${(d.flag ?? (d.settingsOnly ? `quiver.docToMd.${d.key}` : "<path>")).padEnd(26)} ${d.help}${d.settingsOnly ? " (settings-only)" : ""}${d.default !== null && d.key !== "info" && d.key !== "overwrite" ? ` (default ${d.default})` : ""}`;
 	return [
 		"Usage: pi-quiver doc-to-md [flags] <path>",
 		"", "Per-call:", ...DOC_TO_MD_OPTIONS.filter((d) => !d.settable).map(row),

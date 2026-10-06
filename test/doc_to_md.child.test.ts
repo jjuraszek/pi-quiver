@@ -622,6 +622,51 @@ test("PDF OCR budget admits all, some, or no textless pages with a controlled cl
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 
+test("OCR page ceiling caps textless pages, precedes the time budget, counts failed pages, defaults to 10", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py([
+			"import pymupdf4llm, time",
+			"m.ocr_status = lambda ocr, lang: {'status': 'ready' if ocr else 'off', 'reason': None, 'tesseract': None}",
+			"clock = [0.0]; calls = []; boom = [False]",
+			"time.monotonic = lambda: clock[0]",
+			"def tm(*a, **k):",
+			"    assert k.get('use_ocr') and k.get('force_ocr')",
+			"    calls.append(k['pages'][0] + 1)",
+			"    clock[0] += 4.0",
+			"    if boom[0] and len(calls) == 1: raise RuntimeError('tesseract exploded')",
+			"    return 'recognized text'",
+			"pymupdf4llm.to_markdown = tm",
+			"results = []",
+			"def run(tag, **extra):",
+			"    clock[0] = 0.0; calls.clear()",
+			`    r = m.mode_pdf_primary({'path': ${JSON.stringify(fx("textless-3.pdf"))}, 'stagingDir': os.path.join(${JSON.stringify(d.root)}, tag), 'imageFormat': 'png', 'imageDpi': 72, 'ocrLanguage': 'eng', **extra})`,
+			"    results.append([r['ocr'], list(calls), r['emptyPages'], r['markdown']])",
+			"run('ceiling1', ocr=True, ocrBudgetMs=60000, ocrMaxPages=1)",
+			"run('ceiling1-budget', ocr=True, ocrBudgetMs=12000, ocrMaxPages=1)",
+			"run('budget-only', ocr=True, ocrBudgetMs=12000)",
+			"run('off', ocr=False, ocrMaxPages=1)",
+			"run('default', ocr=True, ocrBudgetMs=60000)",
+			"boom[0] = True",
+			"run('failed', ocr=True, ocrBudgetMs=60000, ocrMaxPages=1)",
+			"OUT = results",
+		].join("\n"));
+		const [ceiling, both, budgetOnly, off, dflt, failed] = out;
+		assert.deepEqual([ceiling[0].pages, ceiling[0].ceilingStopped, ceiling[0].budgetStopped, ceiling[1], ceiling[2]], [[1], [2, 3], [], [1], [2, 3]]);
+		for (const n of [1, 2, 3]) {
+			const picture = readdirSync(join(d.root, "ceiling1", `p${n}`)).find(name => name.startsWith("page."));
+			assert.ok(picture);
+			assert.ok(ceiling[3].includes(`![page ${n}](p${n}/${picture})`));
+			assert.equal(ceiling[3].includes(`\x00OCR p${n}/${picture}\x00`), n === 1);
+		}
+		assert.deepEqual([both[0].pages, both[0].ceilingStopped, both[0].budgetStopped, both[1]], [[1], [2, 3], [], [1]]);
+		assert.deepEqual([budgetOnly[0].budgetStopped, budgetOnly[0].ceilingStopped], [[2, 3], []]);
+		assert.deepEqual([off[0].status, off[0].ceilingStopped, off[0].budgetStopped, off[1]], ["off", [], [], []]);
+		assert.deepEqual([dflt[0].pages, dflt[0].ceilingStopped, dflt[1]], [[1, 2, 3], [], [1, 2, 3]]);
+		assert.deepEqual([failed[0].pages, failed[0].ocrFailed, failed[0].ceilingStopped, failed[1]], [[], [1], [2, 3], [1]]);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
 test("forced OCR with no recognized text stays empty", T, async () => {
 	const d = dirs();
 	try {

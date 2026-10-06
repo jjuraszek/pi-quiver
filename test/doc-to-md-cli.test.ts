@@ -229,3 +229,49 @@ test("CLI subprocess: --help lists --ocr-mode and the two-pass recipe", async ()
 	assert.ok(stdout.includes("Two-pass OCR (PDF, PPTX, DOC):"));
 	assert.ok(stdout.includes("pi-quiver doc-to-md report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json"));
 });
+
+test("parseCliArgs: --ocr-max-pages is not a flag", () => {
+	assert.deepStrictEqual(parseCliArgs(["doc-to-md", "--ocr-max-pages", "5", "a.pdf"]), { ok: false, error: "unknown flag: --ocr-max-pages" });
+});
+
+test("CLI subprocess: forced selection over the ceiling exits 2 at resolve time; settings raise and lower it, project over user, invalid project value falls back", async () => {
+	const tmp = mkdtempSync(join(tmpdir(), "quiver-ocr-ceiling-"));
+	try {
+		const usage = (e: { code?: number; stderr?: string }, re: RegExp) => e.code === 2 && re.test(e.stderr ?? "") && /Usage:/.test(e.stderr ?? "");
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr", "--ocr-mode", "all", "--pages", "1-11", MULTIPAGE], { env: scrubbedEnv(tmp) }),
+			(e: { code?: number; stderr?: string }) => usage(e, /^ocrMode "all" selects 11 distinct pages \(pages=1-11\); the OCR page ceiling is 10 \(quiver\.docToMd\.ocrMaxPages\)\./m));
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr-mode", "all", "--pages", "1-9999999999", MULTIPAGE], { env: scrubbedEnv(tmp) }),
+			(e: { code?: number; stderr?: string }) => usage(e, /selects 9999999999 distinct pages/));
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr", "--ocr-mode", "all", "--pages", "1-10", MULTIPAGE], { env: scrubbedEnv(tmp) }),
+			(e: { code?: number; stderr?: string }) => e.code === 1 && /no Python backend/.test(e.stderr ?? ""));
+		const agent = join(tmp, "agent"), proj = join(tmp, "proj");
+		mkdirSync(agent); mkdirSync(join(proj, ".pi"), { recursive: true });
+		writeFileSync(join(agent, "settings.json"), JSON.stringify({ quiver: { docToMd: { ocrMaxPages: 3, imageDpi: 72, ocr: true } } }));
+		writeFileSync(join(proj, ".pi", "settings.json"), JSON.stringify({ quiver: { docToMd: { ocrMaxPages: 5 } } }));
+		assert.deepStrictEqual(readCliSettings(proj, { PI_CODING_AGENT_DIR: agent }, () => {}), { ocrMaxPages: 5, imageDpi: 72, ocr: true });
+		const env = { ...scrubbedEnv(tmp), PI_CODING_AGENT_DIR: agent };
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr-mode", "all", "--pages", "1-6", MULTIPAGE], { env, cwd: proj }),
+			(e: { code?: number; stderr?: string }) => usage(e, /selects 6 distinct pages \(pages=1-6\); the OCR page ceiling is 5 /));
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr-mode", "all", "--pages", "1-5", MULTIPAGE], { env, cwd: proj }),
+			(e: { code?: number; stderr?: string }) => e.code === 1 && /no Python backend/.test(e.stderr ?? ""));
+		writeFileSync(join(proj, ".pi", "settings.json"), JSON.stringify({ quiver: { docToMd: { ocrMaxPages: 0 } } }));
+		const warnings: string[] = [];
+		assert.deepStrictEqual(readCliSettings(proj, { PI_CODING_AGENT_DIR: agent }, (m) => warnings.push(m)), { ocrMaxPages: 3, imageDpi: 72, ocr: true });
+		assert.deepStrictEqual(warnings, ["pi-quiver: quiver.docToMd.ocrMaxPages must be a positive integer; ignored."]);
+		await assert.rejects(execFileAsync(process.execPath, [BIN, "doc-to-md", "--ocr-mode", "all", "--pages", "1-4", MULTIPAGE], { env, cwd: proj }),
+			(e: { code?: number; stderr?: string }) => usage(e, /the OCR page ceiling is 3 /) && /ocrMaxPages must be a positive integer; ignored/.test(e.stderr ?? ""));
+		const noOcr = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--no-ocr", "--json", MULTIPAGE], { env, cwd: proj });
+		assert.strictEqual(JSON.parse(noOcr.stdout).ocr, null);
+	} finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("CLI subprocess: --help lists the settings-only ceiling under Tunables and the capped-OCR usage note", async () => {
+	const { stdout } = await execFileAsync(process.execPath, [BIN, "doc-to-md", "--help"]);
+	const tunablesStart = stdout.indexOf("\nTunables (also settable under quiver.docToMd in settings.json; per-call > settings > default):");
+	const tunablesEnd = stdout.indexOf("\nResult: a handle", tunablesStart);
+	assert.ok(tunablesStart >= 0 && tunablesEnd > tunablesStart);
+	const tunables = stdout.slice(tunablesStart, tunablesEnd);
+	assert.match(tunables, /^  quiver\.docToMd\.ocrMaxPages .*\(settings-only\) \(default 10\)$/m);
+	assert.ok(!stdout.includes("--ocr-max-pages"));
+	assert.ok(stdout.includes("4. OCR is capped at quiver.docToMd.ocrMaxPages pages per call"));
+});

@@ -28,6 +28,8 @@ export interface OcrInfo {
 	noText: number[];
 	ocrFailed: number[];
 	budgetStopped: number[];
+	ceilingStopped: number[];
+	ocrMaxPages: number;
 	reason: string | null;
 	tesseract: boolean | null;
 	mode: OcrMode;
@@ -120,6 +122,13 @@ export function ocrLine(ocr: OcrInfo, type: InputType): string {
 			if (ocr.budgetStopped.length) {
 				const r = compactRanges(ocr.budgetStopped, Number.POSITIVE_INFINITY).replaceAll(", ", ",");
 				clauses.push(`time budget reached for pages=${r}; rerun with pages=${r} or raise primaryTimeoutMs`);
+			}
+			if (ocr.ceilingStopped.length) {
+				const all = compactRanges(ocr.ceilingStopped, Number.POSITIVE_INFINITY).replaceAll(", ", ",");
+				const next = compactRanges(ocr.ceilingStopped.slice(0, ocr.ocrMaxPages), Number.POSITIVE_INFINITY).replaceAll(", ", ",");
+				clauses.push(type === "docx"
+					? `OCR page ceiling (${ocr.ocrMaxPages}) reached for rendered pages=${all}; export the document to PDF and rerun on it with pages=${next}, or raise quiver.docToMd.ocrMaxPages`
+					: `OCR page ceiling (${ocr.ocrMaxPages}) reached for pages=${all}; rerun with pages=${next} or raise quiver.docToMd.ocrMaxPages`);
 			}
 			return clauses.join("; ");
 		}

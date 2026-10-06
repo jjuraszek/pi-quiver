@@ -536,7 +536,7 @@ export function reconcileRenderMarkers(md: string, renderPages: number[], fmt: s
 	return md;
 }
 
-export const emptyOcr = (lang: string): OcrInfo => ({ status: "off", lang, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null });
+export const emptyOcr = (o: Pick<DocToMdOptions, "ocrLanguage" | "ocrMaxPages">): OcrInfo => ({ status: "off", lang: o.ocrLanguage, textless: [], pages: [], noText: [], ocrFailed: [], budgetStopped: [], ceilingStopped: [], ocrMaxPages: o.ocrMaxPages, reason: null, tesseract: null, mode: "textless", sidecars: {}, wordSidecars: {}, ocrErrors: {}, killed: null, notAttempted: [], childError: null });
 
 export interface OcrPagesOutcome { written: number[]; noText: number[]; ocrFailed: number[]; ocrErrors: Record<number, string>; budgetStopped: number[]; killed: number | null; notAttempted: number[]; childError: string | null; }
 const emptyOutcome = (): OcrPagesOutcome => ({ written: [], noText: [], ocrFailed: [], ocrErrors: {}, budgetStopped: [], killed: null, notAttempted: [], childError: null });
@@ -580,10 +580,10 @@ export function resolveOcrLabels(md: string, sourceMap: Map<string, string>): st
 }
 
 function handleOcr(tier: Tier, type: InputType, o: DocToMdOptions, json: TierJson): OcrInfo | null {
-	if (tier === "unpdf") return o.ocr ? { ...emptyOcr(o.ocrLanguage), status: "unavailable", reason: "no Python backend" } : null;
+	if (tier === "unpdf") return o.ocr ? { ...emptyOcr(o), status: "unavailable", reason: "no Python backend" } : null;
 	const x = json.ocr;
 	if (!x || (type !== "image" && !x.textless.length && !x.pages.length && !x.ocrFailed.length)) return null;
-	return { ...emptyOcr(o.ocrLanguage), ...x };
+	return { ...emptyOcr(o), ...x, ocrMaxPages: o.ocrMaxPages };
 }
 
 const nativeFromChild = (b: Bundle, json: TierJson, notes: string[]): NativeImage[] => (json.nativeImages ?? []).flatMap((e) => {
@@ -631,7 +631,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 	let office: { pdfPath: string; cleanup: () => void } | null = null;
 	try {
 		let pdfPath = inputPath;
-		const base = { path: inputPath, pages: o.pages, ...(o.words && (type === "pdf" || type === "image") ? { words: true } : {}), stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, hideAnnotations: o.hideAnnotations };
+		const base = { path: inputPath, pages: o.pages, ...(o.words && (type === "pdf" || type === "image") ? { words: true } : {}), stagingDir: b.stagingDir, sheetsStagingDir: b.sheetsStagingDir, pageImages: o.pageImages, pagesStagingDir: b.pagesStagingDir, imageDpi: o.imageDpi, imageFormat: o.imageFormat, maxOutputBytes: o.maxOutputBytes, pymupdfVersion: o.pymupdfVersion, ocr: o.ocr && !forced, ocrLanguage: o.ocrLanguage, ocrBudgetMs: o.primaryTimeoutMs, ocrMaxPages: o.ocrMaxPages, hideAnnotations: o.hideAnnotations };
 		let tier: Tier | undefined, engine: Engine | undefined, json: TierJson | undefined, degraded: string | null = null, fallbackReason: string | null = null;
 		let explicitBreaks: number | null = null;
 		let notes: string[] = [];
@@ -672,7 +672,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 				writeFileSync(join(dir, ".done"), "");
 				publishStaged(b);
 				tier = "image"; engine = "copy";
-				json = { markdown: `![${b.stem}](p1/${file})\n`, pageCount: 1, notes: [], ocr: { ...emptyOcr(o.ocrLanguage), status: "unavailable", reason } };
+				json = { markdown: `![${b.stem}](p1/${file})\n`, pageCount: 1, notes: [], ocr: { ...emptyOcr(o), status: "unavailable", reason } };
 			}
 		}
 		if (type === "docx" && !lacksDocx(backend)) {
@@ -792,7 +792,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 			const outcome = r.ok && r.json.status === "ran" ? outcomeFromChild(r.json)
 				: recoverOcrPages(b.ocrStagingDir, o.pages!, !r.ok ? ("userError" in r ? r.userError : `${r.reason}${detailSuffix(r)}`) : "malformed child output");
 			const { sidecars, wordSidecars } = publishSidecars(b);
-			ocr = { ...emptyOcr(o.ocrLanguage), ...json.ocr, status: "ran", reason: null, mode: "all", pages: outcome.written, noText: outcome.noText, ocrFailed: outcome.ocrFailed, ocrErrors: outcome.ocrErrors, budgetStopped: outcome.budgetStopped, killed: outcome.killed, notAttempted: outcome.notAttempted, childError: outcome.childError, sidecars: Object.fromEntries(sidecars), wordSidecars: Object.fromEntries(wordSidecars) };
+			ocr = { ...emptyOcr(o), ...json.ocr, ocrMaxPages: o.ocrMaxPages, status: "ran", reason: null, mode: "all", pages: outcome.written, noText: outcome.noText, ocrFailed: outcome.ocrFailed, ocrErrors: outcome.ocrErrors, budgetStopped: outcome.budgetStopped, killed: outcome.killed, notAttempted: outcome.notAttempted, childError: outcome.childError, sidecars: Object.fromEntries(sidecars), wordSidecars: Object.fromEntries(wordSidecars) };
 			if (o.words && r.ok) takeWordsErrors(r.json);
 		}
 		if (!isExcel) notes = [...notes, ...(json.notes ?? [])];

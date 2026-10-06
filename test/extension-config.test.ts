@@ -74,6 +74,7 @@ test("registry: every extension default-config key is registered; docToMd equals
 		assert.ok(QUIVER_CONFIG_KEYS.slack.includes(field), `slack.${field} missing from QUIVER_CONFIG_KEYS`);
 	}
 	assert.deepEqual([...QUIVER_CONFIG_KEYS.docToMd], Object.keys(docToMdDefaults));
+	assert.ok(QUIVER_CONFIG_KEYS.docToMd.includes("ocrMaxPages"));
 });
 
 test("docToMd: a stale maxCellsPerSheet key is linted as unknown (migration signal)", () => {
@@ -82,7 +83,7 @@ test("docToMd: a stale maxCellsPerSheet key is linted as unknown (migration sign
 		resolveConfig(cwd, "docToMd", docToMdDefaults, (raw) => (raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined), (m) => warnings.push(m));
 		assert.equal(warnings.length, 1);
 		assert.ok(warnings[0].startsWith(`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}`));
-		assert.match(warnings[0], /"quiver\.docToMd\.maxCellsPerSheet" - unknown; accepted: primaryTimeoutMs, fallbackTimeoutMs, sofficeTimeoutMs, excelTimeoutMs, warmTimeoutMs, pymupdfVersion, imageDpi, imageFormat, maxOutputBytes, outlineMaxEntries, ocr, ocrLanguage, hideAnnotations/);
+		assert.match(warnings[0], /"quiver\.docToMd\.maxCellsPerSheet" - unknown; accepted: primaryTimeoutMs, fallbackTimeoutMs, sofficeTimeoutMs, excelTimeoutMs, warmTimeoutMs, pymupdfVersion, imageDpi, imageFormat, maxOutputBytes, outlineMaxEntries, ocr, ocrLanguage, ocrMaxPages, hideAnnotations/);
 	});
 });
 
@@ -92,7 +93,7 @@ test("docToMd: ocrMode in settings is linted as unknown (per-call only)", () => 
 		resolveConfig(cwd, "docToMd", docToMdDefaults, (raw) => (raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined), (m) => warnings.push(m));
 		assert.equal(warnings.length, 1);
 		assert.ok(warnings[0].startsWith(`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}`));
-		assert.match(warnings[0], /"quiver\.docToMd\.ocrMode" - unknown; accepted: primaryTimeoutMs, fallbackTimeoutMs, sofficeTimeoutMs, excelTimeoutMs, warmTimeoutMs, pymupdfVersion, imageDpi, imageFormat, maxOutputBytes, outlineMaxEntries, ocr, ocrLanguage, hideAnnotations/);
+		assert.match(warnings[0], /"quiver\.docToMd\.ocrMode" - unknown; accepted: primaryTimeoutMs, fallbackTimeoutMs, sofficeTimeoutMs, excelTimeoutMs, warmTimeoutMs, pymupdfVersion, imageDpi, imageFormat, maxOutputBytes, outlineMaxEntries, ocr, ocrLanguage, ocrMaxPages, hideAnnotations/);
 	});
 });
 

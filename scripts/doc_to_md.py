@@ -102,7 +102,7 @@ OCR_BUDGET_RESERVE_MS, OCR_EST_INITIAL_MS, PAGE_EST_INITIAL_MS = 5000, 4000, 250
 
 def new_ocr(lang):
     return {"status": "off", "lang": lang, "textless": [], "pages": [], "noText": [], "ocrFailed": [],
-            "budgetStopped": [], "reason": None, "tesseract": None}
+            "budgetStopped": [], "ceilingStopped": [], "reason": None, "tesseract": None}
 
 
 def apply_status(info, st):
@@ -585,7 +585,8 @@ def mode_pdf_primary(o):
     native_images = []
     worker = RasterWorker(o["path"], doc)
     stats = []
-    lang, budget = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000)
+    lang, budget, max_pages = o.get("ocrLanguage", "eng"), o.get("ocrBudgetMs", 60000), o.get("ocrMaxPages", 10)
+    ocr_count = 0
     info = new_ocr(lang)
     status = ocr_status(True, lang) if o.get("ocr") else None
     ocr_ms, plain_ms = [], []
@@ -604,12 +605,16 @@ def mode_pdf_primary(o):
                         status = ocr_status(False, lang)
                 kw = page_ocr_kwargs(textless, lang) if status and status["status"] == "ready" else {"use_ocr": False}
                 if kw["use_ocr"]:
-                    elapsed = (time.monotonic() - start) * 1000
-                    est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
-                    est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
-                    if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
-                        info["budgetStopped"].append(n)
+                    if ocr_count >= max_pages:
+                        info["ceilingStopped"].append(n)
                         kw = {"use_ocr": False}
+                    else:
+                        elapsed = (time.monotonic() - start) * 1000
+                        est_ocr = max(ocr_ms) if ocr_ms else OCR_EST_INITIAL_MS
+                        est_page = sum(plain_ms) / len(plain_ms) if plain_ms else PAGE_EST_INITIAL_MS
+                        if not ocr_admit(elapsed, est_ocr, len(pages) - i - 1, est_page, budget):
+                            info["budgetStopped"].append(n)
+                            kw = {"use_ocr": False}
                 text, meta = "", {}
                 ocr_words = None
                 if textless:
@@ -623,6 +628,7 @@ def mode_pdf_primary(o):
                         else:
                             ocr_dpi = clamped_dpi(page.rect.width, page.rect.height, OCR_DPI)
                             words_snapshot = os.path.join(staging, f".ocr-words-p{n}.pdf") if o.get("words") else None
+                            ocr_count += 1
                             try:
                                 r = worker.run({"kind": "ocr", "page": n, "lang": lang, "ocrDpi": ocr_dpi, **({"wordsSnapshot": words_snapshot} if words_snapshot else {})}, min(raster_budget(OCR_JOB_BUDGET_S), remaining)) if ocr_dpi is not None else {"ok": False}
                                 if words_snapshot and r["ok"]:

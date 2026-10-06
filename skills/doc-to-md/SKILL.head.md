@@ -29,6 +29,8 @@ Outline:
 
 Then `read` the `Saved-To` file (offset/limit); images live under `Images-Dir` when the handle reports it.
 
+Convert without OCR first and read `Page-Stats` to pick the pages that need OCR. Keep each OCR call within `quiver.docToMd.ocrMaxPages` (default 10, settings-only; no tool parameter or CLI flag). For forced OCR, use `ocrMode: "all"` (`--ocr-mode all`) with an explicit distinct-page selection within the ceiling; a larger selection is rejected before any work. In textless mode, expect OCR on only the first `ocrMaxPages` textless pages, and read the `OCR:` line for the remaining pages and the selection to rerun.
+
 Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` usage error.
 
 `npx -y pi-quiver@{{VERSION}} doc-to-md --help` lists every flag.
