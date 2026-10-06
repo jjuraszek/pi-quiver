@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.12.0 - 2026-10-06
 
 - `/rebase-worktree [base]` prompt template (pi only, `prompts/`): rebases the current worktree onto `origin/<base>` (default `main`), resolves conflicts inline, runs only the tests covering the resolved files, never pushes.
 
