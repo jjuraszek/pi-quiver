@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchUrl, type FetchOptions } from "../lib/fetch-core.ts";
-import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
+import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, exitOnSignalKillingChildren, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
 
 const USAGE =
 	"Usage: pi-quiver fetch <url> [--method GET|HEAD|POST] [--header \"K: V\"]... [--body <str>] [--raw] [--timeout-ms <n>]\n" +
@@ -177,4 +177,7 @@ function isMainEntry(): boolean {
 	}
 }
 
-if (isMainEntry()) main().then((code) => { process.exitCode = code; });
+if (isMainEntry()) {
+	exitOnSignalKillingChildren();
+	main().then((code) => { process.exitCode = code; });
+}

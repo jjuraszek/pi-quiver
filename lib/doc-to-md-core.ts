@@ -81,6 +81,16 @@ function killTree(child: ChildProcess): void {
 
 process.on("exit", () => { for (const c of LIVE) killTree(c); });
 
+// Children run detached (own process group) so killTree can take out python + raster
+// worker + soffice at once; the flip side is that a signal that kills this process never
+// reaches them, and the "exit" hook does not run on a signal death. The CLI opts in to
+// turning TERM/INT/HUP into a normal exit so the hook fires; pi's own host keeps its handlers.
+const SIGNAL_EXIT_CODES = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as const;
+export function exitOnSignalKillingChildren(): void {
+	if (process.platform === "win32") return;
+	for (const [sig, num] of Object.entries(SIGNAL_EXIT_CODES)) process.on(sig as NodeJS.Signals, () => process.exit(128 + num));
+}
+
 export async function runCapped(
 	cmd: string,
 	args: string[],

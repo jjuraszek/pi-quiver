@@ -275,3 +275,37 @@ test("CLI subprocess: --help lists the settings-only ceiling under Tunables and 
 	assert.ok(!stdout.includes("--ocr-max-pages"));
 	assert.ok(stdout.includes("4. OCR is capped at quiver.docToMd.ocrMaxPages pages per call"));
 });
+
+// A detached child outlives a signal-killed parent unless the parent turns the signal into
+// a normal exit; the CLI does, the raw library (pi's host) does not.
+const CORE = fileURLToPath(new URL("../lib/doc-to-md-core.ts", import.meta.url));
+async function sigtermParent(installHandler: boolean): Promise<{ childPid: number; exitCode: number | null; signal: string | null }> {
+	const program = [
+		`import { runCapped, exitOnSignalKillingChildren } from ${JSON.stringify(CORE)};`,
+		installHandler ? "exitOnSignalKillingChildren();" : "",
+		"const p = runCapped('sleep', ['30'], { timeoutMs: 60_000, capBytes: 1000 });",
+		"setTimeout(() => {}, 60_000);",
+	].join("\n");
+	const { spawn } = await import("node:child_process");
+	const parent = spawn(process.execPath, ["--input-type=module", "-e", program]);
+	await new Promise((r) => setTimeout(r, 1500));
+	const ps = await execFileAsync("pgrep", ["-P", String(parent.pid), "sleep"]);
+	const childPid = Number(ps.stdout.trim());
+	assert.ok(childPid > 0, "sleep child should be running under the parent");
+	parent.kill("SIGTERM");
+	const [exitCode, signal] = await new Promise<[number | null, string | null]>((r) => parent.on("exit", (c, s) => r([c, s])));
+	await new Promise((r) => setTimeout(r, 300));
+	return { childPid, exitCode, signal };
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("SIGTERM to the CLI kills the detached converter child; without the handler it is orphaned", { skip: process.platform === "win32" }, async () => {
+	const bare = await sigtermParent(false);
+	assert.strictEqual(bare.signal, "SIGTERM");
+	assert.ok(alive(bare.childPid), "control: without the handler the sleep child survives");
+	process.kill(bare.childPid, "SIGKILL");
+
+	const handled = await sigtermParent(true);
+	assert.strictEqual(handled.exitCode, 143);
+	assert.ok(!alive(handled.childPid), "with the handler the sleep child is dead");
+});
