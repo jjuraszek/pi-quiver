@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.13.1 - 2026-10-08
 
 - `pi-quiver` CLI: SIGTERM/SIGINT/SIGHUP now kill the detached doc-to-md converter group (python, raster worker, soffice) before exiting with 128+signo; before, a signal-killed CLI orphaned the converter because the `exit` hook does not run on signal death. Library behavior inside pi is unchanged.
 
