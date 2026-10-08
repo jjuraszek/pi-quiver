@@ -8,12 +8,12 @@ description: Convert a local supported document or email to a Markdown bundle on
 Supported formats: .pdf .docx .pptx .xlsx .xls .xlsm .doc .msg .eml .html .htm .png .jpg .jpeg .tif .tiff .bmp .gif.
 
 ```bash
-npx -y pi-quiver@6.13.1 doc-to-md --info <path>                       # page count, TOC or sheet inventory first
-npx -y pi-quiver@6.13.1 doc-to-md <path>                              # whole document
-npx -y pi-quiver@6.13.1 doc-to-md --pages 12-15 --output-dir ./out <path>
-npx -y pi-quiver@6.13.1 doc-to-md <workbook.xlsx>                     # sheet inventory, per-sheet CSV, preview, rendered charts (soffice optional)
-npx -y pi-quiver@6.13.1 doc-to-md --primary-timeout 180000 <path>     # stubborn PDF
-npx -y pi-quiver@6.13.1 doc-to-md --page-images --json <path>          # rendered pages and a JSON handle
+npx -y pi-quiver@6.13.2 doc-to-md --info <path>                       # page count, TOC or sheet inventory first
+npx -y pi-quiver@6.13.2 doc-to-md <path>                              # whole document
+npx -y pi-quiver@6.13.2 doc-to-md --pages 12-15 --output-dir ./out <path>
+npx -y pi-quiver@6.13.2 doc-to-md <workbook.xlsx>                     # sheet inventory, per-sheet CSV, preview, rendered charts (soffice optional)
+npx -y pi-quiver@6.13.2 doc-to-md --primary-timeout 180000 <path>     # stubborn PDF
+npx -y pi-quiver@6.13.2 doc-to-md --page-images --json <path>          # rendered pages and a JSON handle
 ```
 
 A handle looks like:
@@ -33,7 +33,7 @@ Convert without OCR first and read `Page-Stats` to pick the pages that need OCR.
 
 Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` usage error.
 
-`npx -y pi-quiver@6.13.1 doc-to-md --help` lists every flag.
+`npx -y pi-quiver@6.13.2 doc-to-md --help` lists every flag.
 
 ## Flags
 
@@ -80,10 +80,10 @@ Exit codes: `0` success (including degraded fallback), `1` runtime error, `2` us
 
 ```text
 Two-pass OCR (PDF, PPTX, DOC):
-  1. npx -y pi-quiver@6.13.1 doc-to-md report.pdf --output-dir out --json
+  1. npx -y pi-quiver@6.13.2 doc-to-md report.pdf --output-dir out --json
        -> "pageStatsPath" points at out/report.pages.json; pages with few
           chars and high imageCoverage are scans. "savedTo" is the Markdown.
-  2. npx -y pi-quiver@6.13.1 doc-to-md report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json
+  2. npx -y pi-quiver@6.13.2 doc-to-md report.pdf --output-dir out --ocr --ocr-mode all --pages 2,7 --json
        -> "ocr"."sidecars" maps 2 and 7 to out/ocr/report-2-p002.md and
           ...-p007.md (a second run in the same dir gets stem report-2);
           the Markdown of this run holds pages 2 and 7 only and equals what
