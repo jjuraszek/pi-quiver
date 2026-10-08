@@ -377,7 +377,14 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			timers.recovery = runtime.setTimeout(run("recovery", thresholds.recoveryMs), thresholds.recoveryMs);
 		};
 
+		// Pi's prompt-cache warmer re-sends the captured request (with its onPayload hook) while a long
+		// tool call is still running; that request never produces a message_start, so arming on it
+		// would abort the run and kill the tool's children. No real provider request starts mid-tool.
+		let toolsExecuting = 0;
+		pi.on("tool_execution_start", () => { toolsExecuting++; });
+		pi.on("tool_execution_end", () => { toolsExecuting = Math.max(0, toolsExecuting - 1); });
 		pi.on("before_provider_request", (_event, ctx) => {
+			if (toolsExecuting > 0) return;
 			if (redriveTimer !== undefined) resetRunState();
 			if (redriveInFlight) {
 				redriveInFlight = false;
@@ -493,7 +500,7 @@ export function createProviderStallWatchdog(runtime: WatchdogRuntime = defaultRu
 			});
 			tick();
 		};
-		pi.on("agent_end", () => disarm());
+		pi.on("agent_end", () => { toolsExecuting = 0; disarm(); });
 		pi.on("agent_settled", async (_event, ctx) => {
 			if (exhaustedAbortGeneration !== undefined && exhaustedAbortGeneration === watchdogAbortedGeneration) { announce(DEGRADATION_NOTICE); resetRunState(); return; }
 			if (convertedTimeout && continuationStarted) { resetRunState(); return; }

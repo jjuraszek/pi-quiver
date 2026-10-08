@@ -1360,3 +1360,20 @@ test("both synthetic timeout errors satisfy Pi's own retry predicate", () => {
 		);
 	}
 });
+
+test("a provider request during tool execution (pi's cache warmer) never arms the first-event deadline", () => {
+	withEnabledWatchdog((cwd) => {
+		const h = watchdogHarness("tui", cwd);
+		h.emit("before_provider_request");
+		h.emit("message_start", messageStart());
+		h.emit("message_end", { message: { role: "assistant" } });
+		h.emit("agent_end");
+		assert.equal(h.timers.size, 0);
+		h.emit("tool_execution_start", { toolCallId: "1", toolName: "subagent", args: {} });
+		h.emit("before_provider_request");
+		assert.equal(h.timers.size, 0, "cache-warm request mid-tool must not arm");
+		h.emit("tool_execution_end", { toolCallId: "1", toolName: "subagent", result: {}, isError: false });
+		h.emit("before_provider_request");
+		assert.equal(h.timers.size, 1, "the real follow-up request arms again");
+	});
+});

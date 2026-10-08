@@ -1,6 +1,6 @@
 # provider-stall-watchdog
 
-Opt-in recovery from provider requests that stall: no first stream event within `firstEventMs` (every mode), or no parsed semantic progress for `recoveryMs` mid-stream (TUI only). Settings live under `quiver.providerStallWatchdog` in `settings.json`; the key table and recommended values are in [`README.md`](../README.md#opt-in-extension-config). This guide covers what happens after the watchdog aborts.
+Opt-in recovery from provider requests that stall: no first stream event within `firstEventMs` (every mode), or no parsed semantic progress for `recoveryMs` mid-stream (TUI only). Settings live under `quiver.providerStallWatchdog` in `settings.json`; the key table and recommended values are in [`README.md`](../README.md#opt-in-extension-config). A `before_provider_request` arriving while a tool is executing (pi's prompt-cache warmer re-sending the captured request) is ignored: it never yields a `message_start`, and no real provider request starts mid-tool. This guide covers what happens after the watchdog aborts.
 
 ## Why the watchdog re-drives the request itself
 

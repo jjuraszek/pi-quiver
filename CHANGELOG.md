@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `provider-stall-watchdog`: a `before_provider_request` that arrives while a tool is executing no longer arms the first-event deadline. Pi >= 0.86 prompt-cache warming (`cacheWarming: "streaming"`, the default) re-sends the captured request about 270s into a long tool call with the extension hooks attached; that request emits no `message_start`, so the watchdog aborted the run `firstEventMs` later and SIGTERMed every running subagent (exit 143). Real provider requests never start mid-tool.
+
 ## v6.13.1 - 2026-10-08
 
 - `pi-quiver` CLI: SIGTERM/SIGINT/SIGHUP now kill the detached doc-to-md converter group (python, raster worker, soffice) before exiting with 128+signo; before, a signal-killed CLI orphaned the converter because the `exit` hook does not run on signal death. Library behavior inside pi is unchanged.
