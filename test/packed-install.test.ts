@@ -21,6 +21,38 @@ test("packed tarball installs and the bin runs", { timeout: 400_000 }, () => {
 			cwd: workDir, stdio: "pipe", shell: process.platform === "win32", timeout: 60_000,
 		});
 		const bin = join(workDir, "node_modules", ".bin", process.platform === "win32" ? "pi-quiver.cmd" : "pi-quiver");
+		const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(workDir, "home"), USERPROFILE: join(workDir, "home"), PI_CODING_AGENT_DIR: join(workDir, "agent") };
+		for (const key of Object.keys(env)) {
+			if (key.startsWith("SLACK_") || key.startsWith("PI_QUIVER_SLACK_")) delete env[key];
+		}
+		const help = spawnSync(bin, ["slack", "--help"], {
+			cwd: workDir, env, encoding: "utf8", shell: process.platform === "win32", timeout: 60_000,
+		});
+		assert.strictEqual(help.status, 0, String(help.error ?? help.stderr));
+		assert.strictEqual(help.stderr, "");
+		for (const [subcommand, flags] of [
+			["post", ["--channel", "--text", "--detail", "--detail-file", "--blocks-file", "--no-unfurl", "--as"]],
+			["reply", ["--channel", "--thread-ts", "--text", "--text-file", "--no-unfurl", "--as"]],
+			["dm", ["--user", "--text", "--text-file", "--blocks-file", "--no-unfurl", "--as"]],
+			["canvas", ["--id", "--markdown-file", "--as"]],
+		] as const) {
+			const line = help.stdout.split("\n").find((line) => line.startsWith(`pi-quiver slack ${subcommand} `));
+			assert.ok(line, `help lists ${subcommand}`);
+			for (const flag of [...flags, "--token-from-env", "--dry-run"]) assert.ok(line.split(/[\s[\]()]/).includes(flag), `${subcommand} help lists ${flag}`);
+			assert.strictEqual(line.split(/[\s[\]()]/).includes("--no-unfurl"), subcommand !== "canvas", `${subcommand} help limits --no-unfurl to messages`);
+		}
+		const version = spawnSync(bin, ["--version"], {
+			cwd: workDir, env, encoding: "utf8", shell: process.platform === "win32", timeout: 60_000,
+		});
+		assert.strictEqual(version.status, 0, String(version.error ?? version.stderr));
+		assert.strictEqual(version.stderr, "");
+		assert.strictEqual(version.stdout.trim(), JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version);
+		const dryRun = spawnSync(bin, ["slack", "post", "--channel", "C123456", "--text", "probe", "--token-from-env", "--dry-run"], {
+			cwd: workDir, env: { ...env, SLACK_USER_TOKEN: "xoxp-synthetic-packed-install" }, encoding: "utf8", shell: process.platform === "win32", timeout: 60_000,
+		});
+		assert.strictEqual(dryRun.status, 0, String(dryRun.error ?? dryRun.stderr));
+		assert.strictEqual(dryRun.stdout, "");
+		assert.strictEqual(dryRun.stderr, "");
 		// usage error is exit 2 — proves the bin resolves, parses, and runs without type-stripping
 		try {
 			execFileSync(bin, ["fetch"], { stdio: "pipe", shell: process.platform === "win32", timeout: 60_000 });

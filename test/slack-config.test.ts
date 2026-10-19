@@ -47,16 +47,16 @@ const NO_ENV: Record<string, string | undefined> = {};
 // --- 1: no settings anywhere -> defaults ---
 
 test("no settings anywhere resolves to DEFAULT_SLACK_CONFIG", () => {
-	withSettings({}, {}, (cwd) => {
-		assert.deepEqual(resolveSlackConfig(cwd, NO_ENV), DEFAULT_SLACK_CONFIG);
+	withSettings({}, {}, (cwd, { globalFile }) => {
+		assert.deepEqual(resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile)), DEFAULT_SLACK_CONFIG);
 	});
 });
 
 // --- 2: per-field merge across layers ---
 
 test("pi-home enabled + repo cachePath merge per field", () => {
-	withSettings({ quiver: { slack: { enabled: true } } }, { quiver: { slack: { cachePath: "x.json" } } }, (cwd) => {
-		const cfg = resolveSlackConfig(cwd, NO_ENV);
+	withSettings({ quiver: { slack: { enabled: true } } }, { quiver: { slack: { cachePath: "x.json" } } }, (cwd, { globalFile }) => {
+		const cfg = resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile));
 		assert.equal(cfg.enabled, true);
 		assert.equal(cfg.cachePath, "x.json");
 	});
@@ -68,8 +68,8 @@ test("repo uploadThresholdChars beats pi-home", () => {
 	withSettings(
 		{ quiver: { slack: { uploadThresholdChars: 2000 } } },
 		{ quiver: { slack: { uploadThresholdChars: 3000 } } },
-		(cwd) => {
-			assert.equal(resolveSlackConfig(cwd, NO_ENV).uploadThresholdChars, 3000);
+		(cwd, { globalFile }) => {
+			assert.equal(resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile)).uploadThresholdChars, 3000);
 		},
 	);
 });
@@ -77,8 +77,8 @@ test("repo uploadThresholdChars beats pi-home", () => {
 // --- 4: boolean shorthand ---
 
 test("boolean shorthand quiver.slack = true sets enabled, defaults elsewhere", () => {
-	withSettings({}, { quiver: { slack: true } }, (cwd) => {
-		const cfg = resolveSlackConfig(cwd, NO_ENV);
+	withSettings({}, { quiver: { slack: true } }, (cwd, { globalFile }) => {
+		const cfg = resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile));
 		assert.equal(cfg.enabled, true);
 		assert.equal(cfg.userTokenEnv, DEFAULT_SLACK_CONFIG.userTokenEnv);
 		assert.equal(cfg.botTokenEnv, DEFAULT_SLACK_CONFIG.botTokenEnv);
@@ -90,37 +90,37 @@ test("boolean shorthand quiver.slack = true sets enabled, defaults elsewhere", (
 // --- 5: flat top-level "slack" is ignored (nested-only) ---
 
 test("flat top-level slack key is ignored", () => {
-	withSettings({}, { slack: { enabled: true } }, (cwd) => {
-		assert.equal(resolveSlackConfig(cwd, NO_ENV).enabled, false);
+	withSettings({}, { slack: { enabled: true } }, (cwd, { globalFile }) => {
+		assert.equal(resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile)).enabled, false);
 	});
 });
 
 // --- 6: env rung beats repo ---
 
 test("PI_QUIVER_SLACK_ENABLED beats repo enabled:true", () => {
-	withSettings({}, { quiver: { slack: { enabled: true } } }, (cwd) => {
-		const cfg = resolveSlackConfig(cwd, { PI_QUIVER_SLACK_ENABLED: "false" });
+	withSettings({}, { quiver: { slack: { enabled: true } } }, (cwd, { globalFile }) => {
+		const cfg = resolveSlackConfig(cwd, { PI_QUIVER_SLACK_ENABLED: "false" }, undefined, dirname(globalFile));
 		assert.equal(cfg.enabled, false);
 	});
 });
 
 test("PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS overrides", () => {
-	withSettings({}, {}, (cwd) => {
-		const cfg = resolveSlackConfig(cwd, { PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS: "2500" });
+	withSettings({}, {}, (cwd, { globalFile }) => {
+		const cfg = resolveSlackConfig(cwd, { PI_QUIVER_SLACK_UPLOAD_THRESHOLD_CHARS: "2500" }, undefined, dirname(globalFile));
 		assert.equal(cfg.uploadThresholdChars, 2500);
 	});
 });
 
 test("userTokenCommand config accepts a non-empty argv array", () => {
-	withSettings({}, { quiver: { slack: { userTokenCommand: ["credential-helper", "get"] } } }, (cwd) => {
-		assert.deepEqual(resolveSlackConfig(cwd, NO_ENV).userTokenCommand, ["credential-helper", "get"]);
+	withSettings({}, { quiver: { slack: { userTokenCommand: ["credential-helper", "get"] } } }, (cwd, { globalFile }) => {
+		assert.deepEqual(resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile)).userTokenCommand, ["credential-helper", "get"]);
 	});
 });
 
 test("userTokenCommandTimeoutSeconds defaults to 10 and accepts positive finite seconds", () => {
 	assert.equal(DEFAULT_SLACK_CONFIG.userTokenCommandTimeoutSeconds, 10);
-	withSettings({}, { quiver: { slack: { userTokenCommandTimeoutSeconds: 60 } } }, (cwd) => {
-		assert.equal(resolveSlackConfig(cwd, NO_ENV).userTokenCommandTimeoutSeconds, 60);
+	withSettings({}, { quiver: { slack: { userTokenCommandTimeoutSeconds: 60 } } }, (cwd, { globalFile }) => {
+		assert.equal(resolveSlackConfig(cwd, NO_ENV, undefined, dirname(globalFile)).userTokenCommandTimeoutSeconds, 60);
 	});
 });
 
@@ -140,12 +140,12 @@ test("userTokenCommand config rejects shell strings and empty argv arrays", () =
 });
 
 test("PI_QUIVER_SLACK_CACHE_PATH / USER_TOKEN_ENV / BOT_TOKEN_ENV override", () => {
-	withSettings({}, {}, (cwd) => {
+	withSettings({}, {}, (cwd, { globalFile }) => {
 		const cfg = resolveSlackConfig(cwd, {
 			PI_QUIVER_SLACK_CACHE_PATH: "/tmp/cache.json",
 			PI_QUIVER_SLACK_USER_TOKEN_ENV: "MY_USER_TOKEN",
 			PI_QUIVER_SLACK_BOT_TOKEN_ENV: "MY_BOT_TOKEN",
-		});
+		}, undefined, dirname(globalFile));
 		assert.equal(cfg.cachePath, "/tmp/cache.json");
 		assert.equal(cfg.userTokenEnv, "MY_USER_TOKEN");
 		assert.equal(cfg.botTokenEnv, "MY_BOT_TOKEN");
@@ -190,9 +190,9 @@ test("malformed number env warns once, rung skipped", () => {
 // --- 9: unknown subkey dropped silently ---
 
 test("unknown subkey is dropped from the config and reported by the settings lint", () => {
-	withSettings({}, { quiver: { slack: { enabled: true, bogus: 1 } } }, (cwd) => {
+	withSettings({}, { quiver: { slack: { enabled: true, bogus: 1 } } }, (cwd, { globalFile }) => {
 		const warnings: string[] = [];
-		const cfg = resolveSlackConfig(cwd, NO_ENV, (m) => warnings.push(m));
+		const cfg = resolveSlackConfig(cwd, NO_ENV, (m) => warnings.push(m), dirname(globalFile));
 		assert.equal(cfg.enabled, true);
 		assert.equal(warnings.length, 1);
 		assert.ok(warnings[0].includes(`"quiver.slack.bogus" - unknown; accepted: enabled, cachePath, policyPath, userTokenEnv, userTokenCommand, userTokenCommandTimeoutSeconds, botTokenEnv, uploadThresholdChars`));

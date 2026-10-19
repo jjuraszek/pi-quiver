@@ -1,7 +1,8 @@
 # slack - Slack message lifecycle tools
 
-Opt-in, default-off. Enable `quiver.slack` in `settings.json` and the next
-session registers eight `slack_*` tools (search, thread reads, post/announce,
+Pi registration is opt-in, default-off. The [CLI](#cli) instead treats an
+explicit invocation as opt-in, without enabling pi tools. Enable
+`quiver.slack` in `settings.json` and the next session registers eight `slack_*` tools (search, thread reads, post/announce,
 update, delete, pin, upload, cache refresh). Disabled - the default - means
 zero tools in the system prompt, no `.env` read, no network call, no cache
 I/O.
@@ -14,6 +15,156 @@ I/O.
 other keys. A flat top-level `"slack"` key (outside `quiver`) is ignored.
 Toggling `enabled` takes effect at the **next session** - registration
 happens once, on `session_start`.
+
+## CLI
+
+Claude Code, CI, and scripts use the shared Slack core through these forms:
+
+```text
+pi-quiver slack --help
+pi-quiver --version
+pi-quiver slack post --channel <id> --text <text> [--detail <text> | --detail-file <path>] [--blocks-file <path>] [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
+pi-quiver slack reply --channel <id> --thread-ts <ts> (--text <t> | --text-file <path>) [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
+pi-quiver slack dm --user <id> (--text <t> | --text-file <path>) [--blocks-file <path>] [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
+pi-quiver slack canvas --id <id> --markdown-file <path> [--as user|bot] [--token-from-env] [--dry-run]
+```
+
+Help and version exit 0 without reading settings or credentials or making a
+network call. Version prints the package version.
+
+| Flag | Commands | Contract |
+|---|---|---|
+| `--channel <id>` | post, reply | Required raw channel ID (`C...`, `D...`, `G...`) |
+| `--text <text>` | post, reply, dm | Required single-line headline for user post; bot post accepts multi-line text; inline body for reply/dm |
+| `--detail <text>` | post | Inline announcement detail; exclusive with `--detail-file` |
+| `--detail-file <path>` | post | Read announcement detail from a file |
+| `--blocks-file <path>` | post, dm | JSON array of Block Kit blocks, not an object wrapper |
+| `--thread-ts <ts>` | reply | Required existing thread timestamp |
+| `--text-file <path>` | reply, dm | Body from a file; exactly one of this or `--text` |
+| `--user <id>` | dm | Required raw user ID (`U...`); opens or targets that identity's DM |
+| `--id <id>` | canvas | Required existing canvas ID |
+| `--markdown-file <path>` | canvas | Required file containing the full replacement document |
+| `--as user\|bot` | all four | Acting identity; defaults to `user` |
+| `--no-unfurl` | post, reply, dm | Disable both link and media unfurls; rejected on canvas |
+| `--token-from-env` | all four | Use only the requested identity's configured process-env token key |
+| `--dry-run` | all four | Validate local inputs and resolve credentials without network calls |
+
+`--no-unfurl`, `--token-from-env`, and `--dry-run` take no value; extra
+values after them are usage errors.
+
+There is no channel/user alias lookup, cache refresh, or `@mention`
+rewriting. Text is sent as given; use raw IDs instead of `#name` or `@name`.
+Message text and markdown come only from named flags or `--*-file` paths.
+Piped stdin is ignored: it never substitutes for a missing `--text`, and
+when both are supplied the named `--text` wins.
+
+`post --as user` (also the default) runs `assertHeadline` before credentials
+or transport: non-empty, single-line, at most 4000 UTF-16 code units.
+`post --as bot` accepts non-empty multi-line text. With `--detail` or
+`--detail-file`, single-line posts use the
+[announce protocol](#announce-protocol): a plain-text headline followed by
+detail in its thread. Multi-line bot posts instead send a plain parent and
+then a threaded detail, without changing user announce recovery. Blocks
+belong to the detail, with detail text as fallback; without detail, blocks
+belong to the top-level message with `--text` as fallback. DM opens the
+conversation, then sends the exact supplied blocks array and fallback text.
+`--no-unfurl` sets both `unfurl_links` and `unfurl_media` to false on message
+routes, including both parent and detail legs; upload transport is unchanged.
+Reply sends the supplied body to `--thread-ts`;
+oversized text-only replies use the core's upload fallback. DM text over
+4000 UTF-16 code units fails with `text_too_long` after opening the DM but
+before posting. Canvas makes one `canvases.edit` call to replace the entire
+document, never creates a canvas, and requires `canvases:write` on either
+the user or bot token.
+
+Use the default `--as user` for interactive sessions; select `--as bot` to
+send as the app. Settings and token precedence match the pi tools:
+`<agentDir>/settings.json`, then `<cwd>/.pi/settings.json`, then the
+[environment overrides](#resolution-ladder). The agent directory defaults
+to `~/.pi/agent`; `PI_CODING_AGENT_DIR` overrides it. The CLI does not consult
+`quiver.slack.enabled`: the invocation is the opt-in. Token env names,
+upload threshold, and credential-command settings still apply. A configured
+`userTokenCommand` is the sole user-token source, with its configured timeout
+(default 10 seconds), never falling back on failure. Otherwise the
+[token ladder](#tokens) is process env, repo `.env`, primary checkout `.env`,
+then user-level `.env`. Bot always uses that ladder, never the command;
+identities never fall back to one another.
+
+`--token-from-env` resolves settings and environment overrides as usual to
+select `userTokenEnv` or `botTokenEnv`, then reads only that process-env key.
+Missing or empty means exit 3, even if the opposite identity, a credential
+command, or a `.env` file could supply a token. This path runs no credential
+command, repo discovery for credentials, or `.env` lookup. Normal invocations
+remain the source of truth for the full token ladder.
+
+`--dry-run` performs the same parser, file-read, blocks-array, identity-text,
+and local size checks and selected credential resolution, then exits 0 with
+empty stdout. Without `--token-from-env`, it exercises the full normal ladder,
+including a configured credential command. It stops before any Slack API,
+DM open, authentication probe, permalink lookup, upload, or detail/pending
+persistence. Usage errors exit 2 before credentials, missing credentials exit
+3, and other local runtime failures exit 1. Oversize threaded text that can
+use upload fallback remains valid; over-limit plain bot post or DM text is
+exit 2 in dry-run versus exit 4 on an actual send. Dry-run adds no canvas or
+blocks content restrictions and cannot guarantee remote acceptance, valid
+authentication, IDs, blocks, or scopes.
+
+### Results and retry safety
+
+Stdout is one line of space-separated `key=value` tokens. Parse fields by
+presence: absent values are omitted, not printed as empty assignments.
+
+| Result | Example stdout |
+|---|---|
+| Plain post, reply, or DM | `ts=100.1 permalink=https://example.test/p/1001` |
+| Announcement | `ts=100.1 permalink=https://example.test/p/1001 detail_ts=100.2` |
+| Oversized reply delivered as an upload | `ts=100.1 detail_ts=100.2` |
+| Canvas replacement | `canvas=F123456` |
+
+On upload fallback, `detail_ts` is the `Detail attached.` intro reply's
+timestamp, not an uploaded file ID. For an uploaded reply, `ts` is the
+existing thread timestamp.
+A failed permalink lookup still means a successful send: exit 0, a warning
+on stderr, and `ts=100.1` without `permalink`. Settings lint warnings also go
+to stderr and are nonfatal.
+
+| Exit | Meaning | Stdout |
+|---|---|---|
+| 0 | Sent, or dry-run validation and credential resolution succeeded; help/version also succeed | Result line for sends; empty for dry-run (or help/version output) |
+| 1 | Runtime error before a mutating request, such as an unreadable `.env` | Empty |
+| 2 | Usage error: missing/unknown flags, exclusive inputs, invalid identity/headline, unreadable files, invalid blocks JSON/shape, empty message text, or invalid dry-run plain-text size | Empty |
+| 3 | No token for the requested identity, including credential-command failure | Empty |
+| 4 | Definitive failure: Slack rejection, local `text_too_long`, exhausted rate-limit retry, HTTP error, or `detail_failed` | `error=<code>`, preceded by `ts=<parent ts>` when a parent landed |
+| 5 | Outcome unknown: `outcome_unknown`, mutating `transport`/`unexpected_response`, non-Slack throws after mutation starts, or canvas `internal_error`/`fatal_error` | Empty |
+
+A failed DM open (`conversations.open` transport failure, rejection, or
+missing `channel.id`) is definitive, exit 4: no message was posted. A reply
+upload's `detail_failed` carries only `thread_ts`, not a newly landed
+headline `ts`, so stdout is `error=detail_failed`; stderr names the persisted
+detail path. A landed announcement whose detail fails prints
+`ts=100.1 error=detail_failed`, never a permalink or detail timestamp on that
+failure path. A rejected multi-line bot detail retains the parent timestamp,
+for example `ts=100.1 error=invalid_blocks`.
+
+Every exit 4 includes `error=` from the structured Slack error code, not
+parsed human text: `error=invalid_auth` lets callers distinguish auth-class
+failures from other definitive failures. Exits 1, 2, 3, and 5 always have
+empty stdout, even when an unknown bot detail outcome has a known parent.
+
+Usage errors print `usage: <reason>` plus usage on stderr. Slack failures
+print `SlackError.message`, its `code` if not already present, and the
+core's `ERROR_HINTS` hint. Only allowlisted `ts` (stdout on exit 4) and
+`channel` (stderr) are extracted from error data; raw `err.data` is never
+dumped. The resolved credential is replaced with `<redacted>` throughout
+stdout and stderr, including warnings.
+
+Exit 5 always says `Check the channel before retrying.` A mutating
+`transport` failure is exit 5, not proof that nothing landed. Inspect the
+channel before retrying to avoid duplicate posts. Core hints retain pi
+wording such as `run slack_cache_refresh` and `re-invoking slack_post`;
+CLI callers instead pass raw channel IDs and inspect the channel before
+re-running the command. Follow the announce recovery guidance for saved
+detail rather than posting a second headline.
 
 ## Configuration
 
@@ -416,6 +567,8 @@ threaded reply, in one call. The headline is text-only `text`; original
 
 ## Migrating from hand-rolled Slack scripts
 
+### Pi sessions
+
 1. Enable `quiver.slack` in the repo's `settings.json`.
 2. Keep existing token env var names, or remap them via `userTokenEnv`/
    `botTokenEnv`.
@@ -443,6 +596,35 @@ threaded reply, in one call. The headline is text-only `text`; original
    text: "Released {version}"; thread_body: full changelog
    -> call slack_post with the above
    ```
+
+### Claude Code, CI, and scripts
+
+Replace the hand-rolled sender with the CLI, using raw IDs and files for
+long detail:
+
+```bash
+npx -y pi-quiver@latest slack post --channel C123456 --text "Released 1.2.3" --detail-file changelog.md --as user
+```
+
+For multi-line scheduled reports, use bot identity; an env-only dry-run can
+guard the same invocation before sending:
+
+```bash
+report=$(printf 'Audit complete\nNo changes required')
+npx -y pi-quiver@latest slack post --channel C123456 --text "$report" --as bot --no-unfurl --token-from-env --dry-run
+# After successful local validation, send explicitly without --dry-run.
+npx -y pi-quiver@latest slack post --channel C123456 --text "$report" --as bot --no-unfurl --token-from-env
+```
+
+Pin `pi-quiver@<version>` instead of `@latest` for reproducible automation.
+The minimum pin is the first release containing all six contracts: multi-line
+bot posts, `--no-unfurl`, DM blocks, `--token-from-env`, `--dry-run`, and
+exit-4 `error=` output. Use `--as bot` when app identity is intended. Keep
+existing token env names or remap them through `userTokenEnv`/`botTokenEnv` as in the pi lane. CLI
+callers do not need to enable pi registration. Inline the invocation in the
+consumer's command files: no Slack plugin skill ships by design. Pi uses
+native `slack_*` tools; Claude Code and CI use the [CLI contract](#cli),
+including its exit codes and check-before-retry rule.
 
 ## Manual smoke checklist (not CI)
 

@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `pi-quiver slack`: adds `post`, `reply`, `dm`, and full-document `canvas` replacement through the shared Slack core, with user/bot credentials, headline-plus-thread detail, multi-line bot posts, `--no-unfurl`, DM `--blocks-file`, env-only `--token-from-env`, network-free `--dry-run`, and one-line results including structured exit-4 `error=` codes for retry safety. Claude Code and CI use the CLI directly; no Slack plugin skill ships. (#30)
+
 ## v6.13.2 - 2026-10-08
 
 - `provider-stall-watchdog`: a `before_provider_request` that arrives while a tool is executing no longer arms the first-event deadline. Pi >= 0.86 prompt-cache warming (`cacheWarming: "streaming"`, the default) re-sends the captured request about 270s into a long tool call with the extension hooks attached; that request emits no `message_start`, so the watchdog aborted the run `firstEventMs` later and SIGTERMed every running subagent (exit 143). Real provider requests never start mid-tool.

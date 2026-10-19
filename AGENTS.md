@@ -99,12 +99,13 @@ One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** 
 ```
 extensions/                 # one top-level file = one extension entry point; nothing else at top level
 prompts/                    # shipped pi prompt templates (/rebase-worktree), listed one by one in package.json pi.prompts; .pi/prompts/ holds repo-local ones (/release)
-lib/extension-config.ts     # getAgentDir()-based settings.json resolution + QUIVER_CONFIG_KEYS registry + lint
+lib/settings-core.ts        # pi-free settings.json resolution + QUIVER_CONFIG_KEYS registry + lint
+lib/extension-config.ts     # getAgentDir()-based compatibility wrapper; re-exports registry/readSettings
 lib/fetch-core.ts           # fetch data plane; extensions/fetch.ts and bin/pi-quiver.ts are thin adapters
 lib/doc-to-md-*.ts          # doc_to_md core, options, bundle protocol, handle shapes; lib/unpdf-worker.ts
 lib/slack-core.ts           # slack config/token resolution, transport, mutations, announce protocol
 lib/slack-cache.ts          # workspace-keyed channel/user name->ID cache
-bin/pi-quiver.ts            # CLI (fetch + doc-to-md); published as esbuild-built dist/, not committed
+bin/pi-quiver.ts            # CLI (fetch + doc-to-md + slack); published as esbuild-built dist/, not committed
 scripts/doc_to_md.py, docx_numbering.py # doc_to_md Python child and its spawned raster worker, and DOCX numbering labels
 scripts/gen-skill.mjs       # renders skills/doc-to-md/SKILL.md from the option schema
 skills/, .claude-plugin/    # Claude Code plugin surface; skills/doc-to-md/SKILL.head.md is hand-written; invisible to pi, excluded from the npm tarball
@@ -114,7 +115,7 @@ test/                       # node --test suites, one per extension, + layout.te
 ## Rules
 
 - **Only extension entry points at the top level of `extensions/`.** Pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have run. `test/layout.test.ts` enforces it.
-- **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
+- **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/settings-core.ts`, re-exported by `lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
 - **Opt-in extensions check `enabled` per hook and do nothing when off**; `slack` additionally gates registration at `session_start` (zero tools, hooks, or I/O when disabled). Toggling takes effect next session.
 - **`skills/doc-to-md/SKILL.md` is generated** - edit `skills/doc-to-md/SKILL.head.md` or the descriptors, then run `node scripts/gen-skill.mjs`; `test/skill-generation.test.ts` fails on drift.
 - **A new extension or prompt template** is documented in `README.md` and gets a `CHANGELOG.md` `## Unreleased` bullet in the same commit.
@@ -137,7 +138,7 @@ test/                       # node --test suites, one per extension, + layout.te
 | `fetch` routing and size gate | [`doc/fetch.md`](doc/fetch.md) |
 | `doc_to_md` backend ladder, bundle protocol, child contract, CLI | [`doc/doc-to-md.md`](doc/doc-to-md.md) |
 | `provider-stall-watchdog` recovery flow, retry budget, TUI/RPC wait, manual repro | [`doc/provider-stall-watchdog.md`](doc/provider-stall-watchdog.md) |
-| `slack` config, tokens, cache, announce protocol, smoke checklist | [`doc/slack.md`](doc/slack.md) |
+| `slack` CLI, config, tokens, cache, announce protocol, migration, smoke checklist | [`doc/slack.md`](doc/slack.md) |
 | pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
 | Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |

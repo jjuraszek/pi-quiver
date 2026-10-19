@@ -70,7 +70,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"` + `anthropic-beta: fast-mode-2026-02-01`) into every Claude Opus 4.8 / Opus 5 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
 | `extensions/provider-stall-watchdog.ts` | - | Opt-in provider-stall recovery, in two tiers: a pre-first-event deadline (`firstEventMs`, 20s) on every provider request in every mode, and the mid-stream pair (warn at 2 min, recover at 4 min) in TUI runs only. Each stall is aborted; while pi's `retry.enabled` is true and the stall retry budget (`maxStallRetries`, default = `retry.maxRetries`) remains, its aborted attempt is hidden from the model and re-driven by the watchdog after pi's backoff; behavior guide: [doc/provider-stall-watchdog.md](doc/provider-stall-watchdog.md). OFF by default. |
-| `extensions/slack.ts` | `slack_search`, `slack_thread`, `slack_post`, `slack_update`, `slack_delete`, `slack_pin`, `slack_upload`, `slack_cache_refresh` | Context-safe Slack search/threads/posting with dual `user`/`bot` token identities, Block Kit flattening and optional raw JSON output for threads, a workspace-keyed channel/user name->ID cache, DM targets by `@name` / user ID, fetch-style output size gating, and a transactional headline+detail-thread announce protocol with a documented recovery path. OFF by default. Behavior lives in `lib/slack-core.ts` and `lib/slack-cache.ts`. |
+| `extensions/slack.ts` | `slack_search`, `slack_thread`, `slack_post`, `slack_update`, `slack_delete`, `slack_pin`, `slack_upload`, `slack_cache_refresh` | Context-safe Slack search/threads/posting with dual `user`/`bot` token identities, Block Kit flattening and optional raw JSON output for threads, a workspace-keyed channel/user name->ID cache, DM targets by `@name` / user ID, fetch-style output size gating, and a transactional headline+detail-thread announce protocol with a documented recovery path. Pi registration is OFF by default. Behavior lives in `lib/slack-core.ts` and `lib/slack-cache.ts`; the [Slack CLI](doc/slack.md#cli) exposes `post`, `reply`, `dm`, and `canvas` without enabling pi registration. |
 | `prompts/rebase-worktree.md` | `/rebase-worktree [base]` | Prompt template, pi only. Rebases the current worktree onto `origin/<base>` (default `main`), resolves conflicts inline with the authorization stated in the prompt, runs only the tests that cover the resolved files, and reports the resolutions and fix commits. Never pushes; it syncs the branch so a later CI run or `/skill:gatekeep-pr` sees current `main`. |
 
 Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md), [doc/doc-to-md.md](doc/doc-to-md.md), [doc/slack.md](doc/slack.md).
@@ -182,8 +182,9 @@ chat; headless: stderr) listing every flat legacy key in use, every unknown
 accepted names inline. Unknown keys fall back to their defaults. Each distinct
 message fires once per pi process; a clean file emits nothing. A wrong value
 type (`"fastMode": "yes"`) is a separate per-key `unrecognized value` warning.
-The accepted names live in `QUIVER_CONFIG_KEYS` in `lib/extension-config.ts` -
-a new setting is registered there or it warns as unknown.
+The accepted names live in `QUIVER_CONFIG_KEYS` in `lib/settings-core.ts`,
+with a compatibility re-export from `lib/extension-config.ts` - a new
+setting is registered in the core or it warns as unknown.
 
 ```text
 Warning: pi-quiver settings (/Users/x/.pi/agent/settings.json): unknown or misplaced keys - unknown ones fall back to defaults
@@ -346,11 +347,11 @@ to, and a flat `slack` block is ignored without a warning.
 
 ## Claude Code support
 
-`fetch` and `doc_to_md` cores are also published through the CLI, so Claude Code can use the same routing or bundle-and-handle behavior as pi's native tools - without pi ever seeing Claude-only files.
+`fetch`, `doc_to_md`, and Slack cores are also published through the CLI, so Claude Code and CI can use the same behavior as pi's native tools - without pi ever seeing Claude-only files. Slack is CLI-only in this lane: pi uses native `slack_*` tools, while Claude Code/CI command files inline `npx -y pi-quiver@latest slack post ...` (or a pinned version). The CLI supports multi-line bot posts, `--no-unfurl`, DM `--blocks-file`, env-only credentials via `--token-from-env`, network-free `--dry-run`, and structured exit-4 `error=` output. No Slack plugin skill ships by design; see the [Slack CLI contract and migration](doc/slack.md#cli).
 
 **Exposed:** the `quiver` plugin, served from this repo's `.claude-plugin/marketplace.json`, with two skills: `fetch` (invoked as `quiver:fetch` / `/quiver:fetch`) and `doc-to-md` (invoked as `quiver:doc-to-md` / `/quiver:doc-to-md`). The `fetch` skill runs `npx -y pi-quiver@latest fetch <url> [flags]` via Bash - full parameter parity with the pi tool (`--method`, `--header`, `--body`, `--raw`, `--timeout-ms`), same GitHub `gh` routing (including failed-step logs on failed runs/jobs), same size gate, same binary-to-temp-file handling. See [doc/fetch.md](doc/fetch.md#claude-code-cli-pi-quiver-fetch) for exit codes and flags. The `doc-to-md` skill is generated at release from its hand-written intro and option schema; it runs `npx -y pi-quiver@<release version> doc-to-md [flags] <path>` with full flag parity and the same handle output. See [doc/doc-to-md.md](doc/doc-to-md.md#cli-pi-quiver-doc-to-md) for exit codes and flags, and [install channels](doc/doc-to-md.md#install-channels) for npm versus marketplace updates.
 
-**Not exposed:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`) - the marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
+**Not exposed as plugin skills:** the other pi extensions in this package (`session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`); Slack is available through the CLI instead. The marketplace allowlists only `./skills/fetch` and `./skills/doc-to-md`, and the npm tarball never ships `skills/` or `.claude-plugin/` (pi's own `files` allowlist excludes them, and pi's explicit `pi.extensions` manifest makes them invisible to pi's convention-directory auto-discovery either way).
 
 Add the marketplace and enable the plugin in `.claude/settings.json`:
 

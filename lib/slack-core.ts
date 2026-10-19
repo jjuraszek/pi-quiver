@@ -4,7 +4,7 @@
  * parameters, so callers (extensions/slack.ts, tests) control everything
  * this module reads.
  *
- * Config ladder: `resolveConfig` (shared, `lib/extension-config.ts`) for the
+ * Config ladder: `resolveConfigFrom` (shared, `lib/settings-core.ts`) for the
  * settings.json layers (pi-home, repo `.pi/settings.json`), then a
  * slack-local `PI_QUIVER_SLACK_*` env-var overlay applied on top.
  */
@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveConfig } from "./extension-config.ts";
+import { resolveConfigFrom, settingsPathsFor } from "./settings-core.ts";
 
 export interface SlackConfig {
 	enabled: boolean;
@@ -146,8 +146,8 @@ export function applyEnvOverrides(
 	return result;
 }
 
-export function resolveSlackConfig(cwd: string, env: Record<string, string | undefined>, warn?: (message: string) => void): SlackConfig {
-	return applyEnvOverrides(resolveConfig(cwd, "slack", DEFAULT_SLACK_CONFIG, coerce, warn), env, warn);
+export function resolveSlackConfig(cwd: string, env: Record<string, string | undefined>, warn: ((message: string) => void) | undefined, agentDir: string): SlackConfig {
+	return applyEnvOverrides(resolveConfigFrom(settingsPathsFor(agentDir, cwd), "slack", DEFAULT_SLACK_CONFIG, coerce, warn), env, warn);
 }
 
 export function discoverRepoRoot(cwd: string): string {
@@ -306,7 +306,7 @@ export type ApiCall = (
 
 export type UploadBytes = (url: string, bytes: Uint8Array, opts?: { signal?: AbortSignal }) => Promise<void>;
 
-const JSON_METHODS = new Set(["chat.postMessage", "chat.update"]);
+const JSON_METHODS = new Set(["chat.postMessage", "chat.update", "canvases.edit"]);
 
 export const ERROR_HINTS: Record<string, string> = {
 	channel_not_found: "check the name or run slack_cache_refresh",
@@ -762,7 +762,7 @@ export interface MutationResult {
 // configurable cutoff that only gates thread_body -> upload in the announce protocol.
 export const MAX_TEXT_LENGTH = 4_000;
 
-function assertTextWithinLimit(text: string | undefined): void {
+export function assertTextWithinLimit(text: string | undefined): void {
 	if (text !== undefined && text.length > MAX_TEXT_LENGTH) {
 		throw new SlackError(
 			"text_too_long",
@@ -958,7 +958,7 @@ export function persistDetail(body: string, format: "md" | "json" = "md"): strin
 	return path;
 }
 
-function assertHeadline(text: string): void {
+export function assertHeadline(text: string): void {
 	if (text.length === 0) {
 		throw new SlackError("invalid_headline", "text is empty; announce requires a non-empty single-line headline.");
 	}

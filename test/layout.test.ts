@@ -48,6 +48,14 @@ test("doc-to-md core imports no @earendil-works packages", () => {
 	assert.ok(!src.includes("@earendil-works"));
 });
 
+for (const file of ["slack-core", "settings-core"]) {
+	test(`${file} imports no pi runtime or pi-aware settings wrapper`, () => {
+		const src = readFileSync(new URL(`../lib/${file}.ts`, import.meta.url), "utf8");
+		assert.ok(!src.includes("@earendil-works"));
+		assert.ok(!src.includes('from "./extension-config.ts"'));
+	});
+}
+
 test("herdr-tab core imports no @earendil-works packages", () => {
 	const src = readFileSync(new URL("../lib/herdr-tab.ts", import.meta.url), "utf8");
 	assert.ok(!src.includes("@earendil-works"));

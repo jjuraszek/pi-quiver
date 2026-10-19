@@ -8,7 +8,7 @@
  * convention as the other opt-in extensions).
  */
 
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { readFileSync } from "node:fs";
@@ -216,7 +216,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 	let registered = false;
 
 	pi.on("session_start", async (_event, ctx) => {
-		const cfg = resolveSlackConfig(ctx.cwd, process.env, (m) => ctx.hasUI ? ctx.ui.notify(m, "warning") : console.warn(m));
+		const cfg = resolveSlackConfig(ctx.cwd, process.env, (m) => ctx.hasUI ? ctx.ui.notify(m, "warning") : console.warn(m), getAgentDir());
 		if (cfg.enabled !== true) return;
 		if (registered) return;
 		registered = true;
