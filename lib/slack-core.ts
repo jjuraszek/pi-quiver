@@ -757,16 +757,15 @@ export interface MutationResult {
 	detailTs?: string;
 }
 
-// Deliberately separate from SlackConfig.uploadThresholdChars (doc/specs/2026-08-29-gh-7-slack-extension.md
-// Announce protocol): this is a fixed hard error for plain text/headline; uploadThresholdChars is a
-// configurable cutoff that only gates thread_body -> upload in the announce protocol.
+// Headline discipline is separate from Slack's hard ceiling and the configurable upload threshold.
 export const MAX_TEXT_LENGTH = 4_000;
+export const SLACK_TEXT_HARD_LIMIT = 40_000;
 
-export function assertTextWithinLimit(text: string | undefined): void {
-	if (text !== undefined && text.length > MAX_TEXT_LENGTH) {
+export function assertTextWithinLimit(text: string | undefined, limit = MAX_TEXT_LENGTH): void {
+	if (text !== undefined && text.length > limit) {
 		throw new SlackError(
 			"text_too_long",
-			`text is ${text.length} UTF-16 code units, over the ${MAX_TEXT_LENGTH} limit; use thread_body for announcements or slack_upload for documents.`,
+			`text is ${text.length} UTF-16 code units, over the ${limit} limit; use thread_body for announcements or slack_upload for documents.`,
 		);
 	}
 }
@@ -798,9 +797,10 @@ export async function postPlain(
 		unfurl_links?: boolean;
 		unfurl_media?: boolean;
 	},
-	deps: CoreDeps,
+	deps: CoreDeps & { identity?: "user" | "bot" },
 ): Promise<MutationResult> {
-	if (!(args.blocks && args.thread_ts !== undefined)) assertTextWithinLimit(args.text);
+	if (deps.identity === "bot") assertTextWithinLimit(args.text, SLACK_TEXT_HARD_LIMIT);
+	else if (!(args.blocks && args.thread_ts !== undefined)) assertTextWithinLimit(args.text);
 
 	const params: Record<string, unknown> = { channel: args.channel };
 	if (args.text !== undefined) params.text = args.text;
@@ -1194,8 +1194,10 @@ export async function postMessage(
 		unfurl_links?: boolean;
 		unfurl_media?: boolean;
 	},
-	deps: CoreDeps & { uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string, format?: "md" | "json") => string },
+	deps: CoreDeps & { identity?: "user" | "bot"; uploadBytes: UploadBytes; thresholdChars: number; persist?: (body: string, format?: "md" | "json") => string },
 ): Promise<MutationResult | AnnounceResult> {
+	if (deps.identity === "bot" && args.thread_body === undefined) return postPlain(args, deps);
+
 	if (args.thread_body !== undefined && args.thread_ts === undefined) {
 		return announce(
 			{ channel: args.channel, text: args.text ?? "", thread_body: args.thread_body, blocks: args.blocks },

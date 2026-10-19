@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- Bot-identity `pi-quiver slack post|dm|reply` accepts text up to Slack's 40,000-unit hard limit; the 4000 headline limit stays for user announce posts. (#30)
+
 ## v6.14.0 - 2026-10-19
 
 - `pi-quiver slack`: adds `post`, `reply`, `dm`, and full-document `canvas` replacement through the shared Slack core, with user/bot credentials, headline-plus-thread detail, multi-line bot posts, `--no-unfurl`, DM `--blocks-file`, env-only `--token-from-env`, network-free `--dry-run`, and one-line results including structured exit-4 `error=` codes for retry safety. Claude Code and CI use the CLI directly; no Slack plugin skill ships. (#30)

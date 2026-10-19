@@ -60,7 +60,9 @@ when both are supplied the named `--text` wins.
 
 `post --as user` (also the default) runs `assertHeadline` before credentials
 or transport: non-empty, single-line, at most 4000 UTF-16 code units.
-`post --as bot` accepts non-empty multi-line text. With `--detail` or
+`post --as bot` accepts non-empty plain or multi-line text up to 40,000
+UTF-16 code units, sent whole without truncation, splitting, or upload fallback.
+With `--detail` or
 `--detail-file`, single-line posts use the
 [announce protocol](#announce-protocol): a plain-text headline followed by
 detail in its thread. Multi-line bot posts instead send a plain parent and
@@ -71,9 +73,10 @@ conversation, then sends the exact supplied blocks array and fallback text.
 `--no-unfurl` sets both `unfurl_links` and `unfurl_media` to false on message
 routes, including both parent and detail legs; upload transport is unchanged.
 Reply sends the supplied body to `--thread-ts`;
-oversized text-only replies use the core's upload fallback. DM text over
-4000 UTF-16 code units fails with `text_too_long` after opening the DM but
-before posting. Canvas makes one `canvases.edit` call to replace the entire
+oversized user-identity text-only replies use the core's upload fallback.
+Bot-identity replies and DMs accept up to 40,000 UTF-16 code units as messages.
+DM text above the identity's limit (4000 for user, 40,000 for bot) fails with
+`text_too_long` after opening the DM but before posting. Canvas makes one `canvases.edit` call to replace the entire
 document, never creates a canvas, and requires `canvases:write` on either
 the user or bot token.
 
@@ -104,8 +107,9 @@ including a configured credential command. It stops before any Slack API,
 DM open, authentication probe, permalink lookup, upload, or detail/pending
 persistence. Usage errors exit 2 before credentials, missing credentials exit
 3, and other local runtime failures exit 1. Oversize threaded text that can
-use upload fallback remains valid; over-limit plain bot post or DM text is
-exit 2 in dry-run versus exit 4 on an actual send. Dry-run adds no canvas or
+use upload fallback remains valid for user replies; bot post, DM, and reply
+text over 40,000 UTF-16 code units is exit 2 in dry-run versus exit 4 with
+`error=text_too_long` on an actual send. User DM text retains its 4000-unit limit. Dry-run adds no canvas or
 blocks content restrictions and cannot guarantee remote acceptance, valid
 authentication, IDs, blocks, or scopes.
 
@@ -136,6 +140,10 @@ to stderr and are nonfatal.
 | 3 | No token for the requested identity, including credential-command failure | Empty |
 | 4 | Definitive failure: Slack rejection, local `text_too_long`, exhausted rate-limit retry, HTTP error, or `detail_failed` | `error=<code>`, preceded by `ts=<parent ts>` when a parent landed |
 | 5 | Outcome unknown: `outcome_unknown`, mutating `transport`/`unexpected_response`, non-Slack throws after mutation starts, or canvas `internal_error`/`fatal_error` | Empty |
+
+Local text limits use UTF-16 code units: bot post/DM/reply has a 40,000-unit
+ceiling; user post headlines and DMs retain 4000. Announce headlines remain
+limited to 4000 regardless of identity.
 
 A failed DM open (`conversations.open` transport failure, rejection, or
 missing `channel.id`) is definitive, exit 4: no message was posted. A reply

@@ -19,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchUrl, type FetchOptions } from "../lib/fetch-core.ts";
 import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, exitOnSignalKillingChildren, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
-import { assertTextWithinLimit, assertHeadline, defaultApiCall, defaultUploadBytes, discoverRepoRoot, ERROR_HINTS, postMessage, resolveCredential, resolveSlackConfig, SlackError, type ApiCall, type UploadBytes } from "../lib/slack-core.ts";
+import { SLACK_TEXT_HARD_LIMIT, MAX_TEXT_LENGTH, assertTextWithinLimit, assertHeadline, defaultApiCall, defaultUploadBytes, discoverRepoRoot, ERROR_HINTS, postMessage, resolveCredential, resolveSlackConfig, SlackError, type ApiCall, type UploadBytes } from "../lib/slack-core.ts";
 
 const SLACK_HELP = `pi-quiver slack post --channel <id> --text <text> [--detail <text> | --detail-file <path>] [--blocks-file <path>] [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
 pi-quiver slack reply --channel <id> --thread-ts <ts> (--text <t> | --text-file <path>) [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
@@ -245,7 +245,9 @@ export async function runSlack(parsed: Extract<ParsedArgs, { ok: true; cmd: "sla
 		}
 		if (parsed.sub === "post" && parsed.as === "user") assertHeadline(text ?? "");
 		if (parsed.sub !== "canvas" && !text) throw new Error("text must not be empty");
-		if (parsed.dryRun && (parsed.sub === "post" || parsed.sub === "dm")) assertTextWithinLimit(text!);
+		if (parsed.dryRun && (parsed.sub === "post" || parsed.sub === "dm" || (parsed.sub === "reply" && parsed.as === "bot"))) {
+			assertTextWithinLimit(text!, parsed.as === "bot" ? SLACK_TEXT_HARD_LIMIT : MAX_TEXT_LENGTH);
+		}
 	} catch (err) {
 		stderr(`usage: ${err instanceof Error ? err.message : String(err)}\n${USAGE}\n`);
 		return 2;
@@ -288,7 +290,7 @@ export async function runSlack(parsed: Extract<ParsedArgs, { ok: true; cmd: "sla
 			channel = id;
 		}
 		const unfurl = parsed.noUnfurl ? { unfurl_links: false, unfurl_media: false } : {};
-		const coreDeps = { apiCall: trackedApiCall, uploadBytes: deps.uploadBytes, token, thresholdChars: cfg.uploadThresholdChars };
+		const coreDeps = { apiCall: trackedApiCall, uploadBytes: deps.uploadBytes, token, identity: parsed.as, thresholdChars: cfg.uploadThresholdChars };
 		let result;
 		if (parsed.sub === "post" && parsed.as === "bot" && /\r?\n/.test(text!) && detail !== undefined) {
 			const parent = await postMessage({ channel: channel!, text, ...unfurl }, coreDeps);
@@ -306,7 +308,8 @@ export async function runSlack(parsed: Extract<ParsedArgs, { ok: true; cmd: "sla
 			};
 			let child;
 			try {
-				child = await postMessage({ channel: parent.channel, text: detail, thread_ts: parent.ts, ...(blocks !== undefined ? { blocks } : {}), ...unfurl }, { ...coreDeps, apiCall: detailApiCall, uploadBytes: detailUploadBytes });
+				// Composed detail retains the announce upload policy, not the direct bot-text limit.
+				child = await postMessage({ channel: parent.channel, text: detail, thread_ts: parent.ts, ...(blocks !== undefined ? { blocks } : {}), ...unfurl }, { ...coreDeps, identity: undefined, apiCall: detailApiCall, uploadBytes: detailUploadBytes });
 			} catch (error) {
 				throw error instanceof SlackError && error.code === "detail_failed" && detailFailure ? detailFailure.error : error;
 			}

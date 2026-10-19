@@ -186,7 +186,7 @@ test("multiline bot detail failures keep only acknowledged parent and structured
 	const redacted = fixture(t);
 	const partial = await redacted.run(post, [{ method: "chat.postMessage", error: new SlackError("detail_failed", "detail failed", { ts: "synthetic-user" }) }]);
 	assert.equal(partial.code, 4); assert.equal(partial.stdout, "ts=<redacted> error=detail_failed\n");
-	const oversized = await redacted.run(["post", "--channel", "C1", "--text", "x".repeat(4001), "--as", "bot"], []);
+	const oversized = await redacted.run(["post", "--channel", "C1", "--text", "x".repeat(40001), "--as", "bot"], []);
 	assert.equal(oversized.code, 4); assert.equal(oversized.stdout, "error=text_too_long\n");
 	for (const code of ["invalid_auth", "missing_scope", "channel_not_found", "synthetic-user"]) {
 		const f = fixture(t);
@@ -234,7 +234,7 @@ test("dry-run validates plain sizes but permits upload candidates before credent
 		{ args: [...post, "--as", "user"], code: 0 },
 		{ args: ["post", "--channel", "C1", "--text", "two\nlines"], code: 2 },
 		{ args: ["post", "--channel", "C1", "--text", "", "--as", "bot"], code: 2 },
-		{ args: ["post", "--channel", "C1", "--text", "x".repeat(4001), "--as", "bot"], code: 2 },
+		{ args: ["post", "--channel", "C1", "--text", "x".repeat(4001), "--as", "bot"], code: 0 },
 		{ args: ["dm", "--user", "U1", "--text", "x".repeat(4001)], code: 2 },
 		{ args: ["reply", "--channel", "C1", "--thread-ts", "100.1", "--text", "x".repeat(4001)], code: 0 },
 		{ args: [...post, "--detail", "x".repeat(4001)], code: 0 },
@@ -493,4 +493,27 @@ test("all result fields pass through literal token redaction", async (t) => {
 	assert.equal(r.code, 0);
 	assert.equal(r.stdout, "ts=<redacted> permalink=https://example.test/<redacted>\n");
 	assert.equal(r.stderr, "");
+});
+
+for (const sub of ["post", "dm", "reply"]) test(`bot ${sub} sends full text through the hard limit and rejects above it`, async (t) => {
+	const f = fixture(t);
+	const target = sub === "dm" ? ["--user", "U1"] : ["--channel", "C1", ...(sub === "reply" ? ["--thread-ts", "99.1"] : [])];
+	for (const text of ["x".repeat(4001), "\n" + "x".repeat(39999), "\uD83D\uDE00".repeat(20000) + "x"]) {
+		const args = [sub, ...target, "--text", text, "--as", "bot"];
+		const oversized = text.length > 40000;
+		const dry = await f.run([...args, "--dry-run"], []);
+		assert.equal(dry.code, oversized ? 2 : 0, dry.stderr);
+		const script: ScriptEntry[] = sub === "dm" ? [{ method: "conversations.open", result: { channel: { id: "D1" } } }] : [];
+		if (!oversized) script.push({ ...sent }, { ...link });
+		const live = await f.run(args, script, { uploadBytes: async () => { assert.fail("bot text must not upload"); } });
+		assert.equal(live.code, oversized ? 4 : 0, live.stderr);
+		if (oversized) {
+			assert.equal(live.stdout, "error=text_too_long\n");
+			assert.match(live.stderr, /40000 limit/);
+			assert.match(dry.stderr, /40000 limit/);
+		} else {
+			assert.equal(live.calls.find((c) => c.method === "chat.postMessage")?.params.text, text);
+			assert.equal(live.calls[0].token, "synthetic-bot");
+		}
+	}
 });
