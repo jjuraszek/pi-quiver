@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `session-name`: the default naming prompt asks for a PR's referenced ticket in both the session name and tab label, for example `PR#123 for A-123`; user naming rules still override the built-ins.
+
 ## v6.14.1 - 2026-10-19
 
 - Bot-identity `pi-quiver slack post|dm|reply` accepts text up to Slack's 40,000-unit hard limit; the 4000 headline limit stays for user announce posts. (#30)

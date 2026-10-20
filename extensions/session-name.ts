@@ -341,7 +341,7 @@ export function buildNamingPrompt(conversation: string, opts: PromptOptions = {}
 		"- Describe the actual task, NOT the tool/skill/command used to start it.",
 		"- Lead with an action verb (e.g. refine, fix, add, rework).",
 		"- Preserve ticket/issue IDs (e.g. ABC-123, PROJ-42, #99) verbatim.",
-		"- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Never reply with digits only.",
+		"- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Include the PR's referenced ticket in SESSION and TAB: PR#123 for A-123. Never reply with digits only.",
 		"- No quotes, no trailing punctuation, plain ASCII.",
 		...rules.map((r) => `- ${r}`),
 		"Example -> SESSION: Refine Linear Ticket ABC-123 / TAB: Refine ABC-123",

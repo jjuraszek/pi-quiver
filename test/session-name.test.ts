@@ -71,6 +71,7 @@ test("toTabLabel: strips control chars and collapses whitespace", () => {
 test("toTabLabel: a digits-only label becomes #<digits>, typed and prefixed IDs are untouched", () => {
 	assert.equal(toTabLabel("1234"), "#1234");
 	assert.equal(toTabLabel("PR 1234"), "PR 1234");
+	assert.equal(toTabLabel("PR#123 for A-123"), "PR#123 for A-123");
 	assert.equal(toTabLabel("#1234"), "#1234");
 	assert.equal(toTabLabel("Refine ABC-123"), "Refine ABC-123");
 });
@@ -215,7 +216,7 @@ test("buildNamingPrompt: user rules land after the built-ins so they win", () =>
 test("buildNamingPrompt: typed-ID rule follows the preserve-IDs rule and precedes user rules", () => {
 	const prompt = buildNamingPrompt("User: hi", { rules: ["Never lead with a verb"] });
 	const preserve = prompt.indexOf("- Preserve ticket/issue IDs");
-	const typed = prompt.indexOf("- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Never reply with digits only.");
+	const typed = prompt.indexOf("- If the whole TAB would be just an ID, say what it is: PR 1234, issue 123, ticket ABC-123. Include the PR's referenced ticket in SESSION and TAB: PR#123 for A-123. Never reply with digits only.");
 	const custom = prompt.indexOf("- Never lead with a verb");
 	assert.ok(preserve > -1 && typed > preserve && custom > typed, "order: preserve-IDs, typed-ID, user rule");
 });
