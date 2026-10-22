@@ -1,0 +1,13 @@
+# Fixtures without NUL bytes (small PDFs) otherwise pass git's text heuristic and get CRLF-converted on Windows checkouts.
+*.pdf binary
+*.docx binary
+*.doc binary
+*.xlsx binary
+*.xlsm binary
+*.xls binary
+*.pptx binary
+*.msg binary
+*.png binary
+*.jpg binary
+*.tif binary
+*.tiff binary

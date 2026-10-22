@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const extensionFiles = readdirSync(new URL("../extensions", import.meta.url)).filter(
 	(f) => f.endsWith(".ts") || f.endsWith(".js"),
@@ -68,4 +69,13 @@ test("marketplace allowlist entries exist and contain SKILL.md", () => {
 		const skill = readFileSync(new URL(`../${rel}/SKILL.md`, import.meta.url), "utf8");
 		assert.match(skill.replace(/\r\n/g, "\n"), /^---\nname: /);
 	}
+});
+
+// git's text heuristic (no NUL bytes) misclassifies small PDFs; without a binary attribute Windows checkouts CRLF-convert them.
+test("every binary fixture is marked binary in .gitattributes", () => {
+	const fixtures = readdirSync(new URL("../test/fixtures", import.meta.url)).filter((f) => /\.(pdf|docx?|xlsx?|xlsm|pptx|msg|png|jpe?g|tiff?)$/i.test(f));
+	assert.ok(fixtures.length > 20);
+	const out = execFileSync("git", ["check-attr", "text", "--", ...fixtures.map((f) => `test/fixtures/${f}`)], { cwd: new URL("..", import.meta.url), encoding: "utf8" });
+	const notBinary = out.split("\n").filter((l) => l && !l.endsWith(": text: unset"));
+	assert.deepEqual(notBinary, []);
 });
