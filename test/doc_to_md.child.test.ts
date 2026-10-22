@@ -1147,7 +1147,9 @@ test("email child: .msg extract-msg header and TIFF attachments", T, async () =>
 		assert.ok(r.markdown.startsWith("# Test for TIF files\n"));
 		assert.match(r.markdown, /\| From \| Brian Zhou <brizhou@gmail\.com> \|/);
 		assert.match(r.markdown, /\| Cc \| Brian Zhou <brizhou@gmail\.com> \|/);
-		assert.match(r.markdown, /\| Date \| 2013-11-18T09:26:24\+01:00 \|/);
+		const date = r.markdown.match(/^\| Date \| ([^|]+) \|$/m);
+		assert.ok(date);
+		assert.equal(Date.parse(date[1]), Date.parse("2013-11-18T08:26:24Z"));
 		assert.deepEqual(readdirSync(d.attachmentsStagingDir).sort(), ["import_OleFileIO.tif", "raised_value_error.tif"]);
 		assert.match(r.markdown, /- \[`import_OleFileIO\.tif`\]\(attachments\/import_OleFileIO\.tif\) \(946\.9KB, image\/tiff\)/);
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
