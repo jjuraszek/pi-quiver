@@ -178,6 +178,7 @@ export async function resolveChannel(input: string, ctx: CacheCtx): Promise<stri
 interface SlackUser {
 	id: string;
 	name: string;
+	deleted?: boolean;
 	profile?: { display_name?: string; real_name?: string; email?: string };
 	real_name?: string;
 }
@@ -238,6 +239,7 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 		);
 		const members = (data.members as SlackUser[]) ?? [];
 		for (const u of members) {
+			if (u.deleted === true) continue;
 			if (u.name === name) {
 				mergeAndWrite(ctx.filePath, cached?.team_id ?? (await teamIdFor(ctx.token, ctx.apiCall, ctx.signal)), (base) => {
 					base.users[name] = toUserEntry(u);
@@ -403,6 +405,7 @@ export async function resolveMentions(
 					{ retry: false, signal: ctx.signal },
 				);
 				for (const u of (data.members as SlackUser[]) ?? []) {
+					if (u.deleted === true) continue;
 					for (const name of outstanding) {
 						if (u.name === name) found.set(name, u);
 						else if (u.profile?.display_name === name || (u.profile?.real_name ?? u.real_name) === name) {
@@ -525,6 +528,7 @@ export async function refreshCache(ctx: CacheCtx): Promise<{ channels: number; u
 		const data = await ctx.apiCall("users.list", ctx.token, { limit: 1000, ...(cursor ? { cursor } : {}) }, { retry: false, signal: ctx.signal });
 		const members = (data.members as SlackUser[]) ?? [];
 		for (const u of members) {
+			if (u.deleted === true) continue;
 			users[u.name] = toUserEntry(u);
 		}
 		const meta = data.response_metadata as { next_cursor?: string } | undefined;
