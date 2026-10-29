@@ -335,16 +335,20 @@ workspace (keyed by team ID from `auth.test`):
   for an unused identity.
 - **Miss path**: a cache miss triggers a live, paginated `conversations.list`
   / `users.list` scan (the list APIs have no name filter) up to 100 pages;
-  exhaustion without a match errors `name_not_found`. A hit is written back
+  the `users.list` scan skips members Slack flags `deleted` (deactivated), so
+  exhaustion without an active match errors `name_not_found` and writes nothing.
+  A hit is written back
   with an atomic re-read + merge + tmp-write + rename, so concurrent misses
   don't clobber each other's entries (a true simultaneous race is
   last-writer-wins - accepted for an append-mostly map).
 - **`slack_cache_refresh`**: regenerates the whole file from a full
   `conversations.list` + `users.list` scan and atomically replaces it,
-  setting `snapshot_at` to the same timestamp as `refreshed_at`. Uses
+  omitting deactivated users and setting `snapshot_at` to the same timestamp
+  as `refreshed_at`. Uses
   the user token when one is configured, else falls back to the bot token.
-- **Staleness**: a renamed channel/user resolves to its old ID silently until
-  the next `slack_cache_refresh` - this is a known limitation, not a bug.
+- **Staleness**: a renamed channel/user or a user deactivated after being cached
+  resolves to its old ID silently until the next `slack_cache_refresh` - this
+  is a known limitation, not a bug.
 
 ## Tools
 
