@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `slack`: exclude deactivated users from cache refreshes and live name lookups so matching names resolve only to active users.
+
 ## v6.14.2 - 2026-10-20
 
 - `session-name`: the default naming prompt asks for a PR's referenced ticket in both the session name and tab label, for example `PR#123 for A-123`; user naming rules still override the built-ins.
