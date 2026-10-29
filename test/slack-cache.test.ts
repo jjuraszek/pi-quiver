@@ -1130,3 +1130,33 @@ for (const alias of ["name", "display_name", "real_name"] as const) {
 		});
 	}
 }
+
+for (const path of ["resolveUser", "resolveMentions"] as const) {
+	test(`${path}: an only-deleted match leaves the user unresolved and cache unchanged`, async () => {
+		const dir = tmpDir("quiver-slack-deleted-miss-");
+		const filePath = join(dir, "cache.json");
+		try {
+			writeCacheFile(filePath, { team_id: "T1", channels: {}, users: {}, refreshed_at: "x" });
+			const { apiCall } = scriptedApiCall([
+				{ method: "users.list", result: { members: [
+					{ id: "U000002", name: "Alex", deleted: true, profile: {} },
+				] } },
+			]);
+			const ctx = { apiCall, token: "tok", filePath };
+			if (path === "resolveUser") {
+				await assert.rejects(
+					() => resolveUser("@Alex", ctx),
+					(err: unknown) => err instanceof SlackError && err.code === "name_not_found",
+				);
+			} else {
+				const result = await resolveMentions([{ field: "text", value: "Hi @Alex" }], ctx);
+				assert.deepEqual(result.values, ["Hi @Alex"]);
+				assert.deepEqual(result.unresolved, [{ field: "text", name: "@Alex" }]);
+			}
+			const cache = JSON.parse(readFileSync(filePath, "utf8")) as SlackCacheFile;
+			assert.deepEqual(cache.users, {});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+}
