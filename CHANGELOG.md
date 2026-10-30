@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- Add the pi `/elevator` prompt and user-invoked Claude Code `/quiver:elevator` skill for outcome-first explanations and frank judgment, with optional free-text input that defaults to the prior discussion when omitted. (#32)
+
 ## v6.14.3 - 2026-10-29
 
 - `slack`: exclude deactivated users from cache refreshes and live name lookups so matching names resolve only to active users.

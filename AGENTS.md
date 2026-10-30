@@ -1,6 +1,6 @@
 # pi-quiver
 
-Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`, plus the `/rebase-worktree` prompt template (`prompts/`, listed in `pi.prompts`); everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
+Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`, plus the `/rebase-worktree` and `/elevator` prompt templates (`prompts/`, listed in `pi.prompts`); everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
 
 <!-- agents-core:begin v9 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning
@@ -98,7 +98,7 @@ One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** 
 
 ```
 extensions/                 # one top-level file = one extension entry point; nothing else at top level
-prompts/                    # shipped pi prompt templates (/rebase-worktree), listed one by one in package.json pi.prompts; .pi/prompts/ holds repo-local ones (/release)
+prompts/                    # shipped pi prompt templates (/rebase-worktree, /elevator), listed one by one in package.json pi.prompts; .pi/prompts/ holds repo-local ones (/release)
 lib/settings-core.ts        # pi-free settings.json resolution + QUIVER_CONFIG_KEYS registry + lint
 lib/extension-config.ts     # getAgentDir()-based compatibility wrapper; re-exports registry/readSettings
 lib/fetch-core.ts           # fetch data plane; extensions/fetch.ts and bin/pi-quiver.ts are thin adapters
