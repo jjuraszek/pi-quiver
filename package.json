@@ -56,7 +56,8 @@
       "./extensions"
     ],
     "prompts": [
-      "./prompts/rebase-worktree.md"
+      "./prompts/rebase-worktree.md",
+      "./prompts/elevator.md"
     ],
     "image": "https://raw.githubusercontent.com/jjuraszek/pi-quiver/main/pi-quiver.png"
   },

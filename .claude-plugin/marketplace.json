@@ -12,7 +12,8 @@
 			"strict": false,
 			"skills": [
 				"./skills/fetch",
-				"./skills/doc-to-md"
+				"./skills/doc-to-md",
+				"./skills/elevator"
 			]
 		}
 	]
