@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.15.0 - 2026-10-30
 
 - Add the pi `/elevator` prompt and user-invoked Claude Code `/quiver:elevator` skill for outcome-first explanations and frank judgment, with optional free-text input that defaults to the prior discussion when omitted. (#32)
 
