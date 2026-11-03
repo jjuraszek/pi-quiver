@@ -31,8 +31,20 @@ HTML_IMAGE_RE = re.compile(
 
 def image_source_map(source, target, filename):
     real = os.path.realpath(source)
-    return {source: target, source.replace("\\", "/"): target,
-            real: target, real.replace("\\", "/"): target, filename: target}
+    m = {source: target, source.replace("\\", "/"): target,
+         real: target, real.replace("\\", "/"): target, filename: target}
+    # pymupdf4llm's md_path() resolves image_path and emits it relative to the
+    # cwd whenever the resolved directory sits under the cwd; otherwise it emits
+    # the absolute POSIX path, which the "real" key above already covers. Key the
+    # relative form on the resolved path as well, so a temp dir reached through a
+    # symlink (macOS /var -> /private/var, Windows 8.3 RUNNER~1) still matches.
+    try:
+        rel = os.path.relpath(real, os.getcwd())
+    except ValueError:  # different drive on Windows
+        return m
+    m[rel] = target
+    m[rel.replace("\\", "/")] = target
+    return m
 
 
 def rewrite_image_destinations(md, sources):
@@ -506,7 +518,9 @@ def primary_page_markdown(doc, n, d, o, kw, write_images):
             dest = f"img{i}{os.path.splitext(f)[1].lower()}"
             source = os.path.join(tmp, f)
             sources.update(image_source_map(source, f"p{n}/{dest}", f))
-            os.replace(source, os.path.join(d, dest))
+            # shutil.move: rename, falling back to copy+unlink across volumes
+            # (os.replace alone raises WinError 17 there and costs the whole page).
+            shutil.move(source, os.path.join(d, dest))
         return rewrite_image_destinations(md, sources)
 
 
