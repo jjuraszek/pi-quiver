@@ -488,6 +488,48 @@ test("OCR off: text-only PDF does not probe status or analyze", T, async () => {
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
 
+test("pdf-primary: pictures link rewritten when the temp dir sits under the cwd", T, async () => {
+	const d = dirs();
+	try {
+		// md_path() resolves image_path and emits it relative to the cwd only when
+		// the resolved directory is under the cwd; TMPDIR beneath cwd forces that
+		// branch, which used to leave the link unrewritten and fail the page.
+		const tmp = join(d.root, "_tmp");
+		mkdirSync(tmp, { recursive: true });
+		const env = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
+		const out = await py([
+			`r = m.mode_pdf_primary({"path": ${JSON.stringify(fx("mixed-images.pdf"))}, "pages": [1], "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 72, "ocr": False, "ocrLanguage": "eng", "ocrBudgetMs": 60000, "pymupdfVersion": ${JSON.stringify(CFG.pymupdfVersion)}})`,
+			"OUT = [r['markdown'], r['failedPages'], r['emptyPages']]",
+		].join("\n"), env);
+		const [md, failed, empty]: [string, unknown[], unknown[]] = out;
+		assert.deepEqual(failed, []);
+		assert.deepEqual(empty, []);
+		const links = [...md.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]);
+		assert.deepEqual(links.sort(), ["p1/img1.png", "p1/img2.png"]);
+		for (const name of ["img1.png", "img2.png"]) assert.ok(existsSync(join(d.stagingDir, "p1", name)), name);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
+test("pdf-primary: a move that cannot rename across volumes still keeps the page", T, async () => {
+	const d = dirs();
+	try {
+		const out = await py([
+			"import errno, shutil as _sh, os as _os",
+			"real = _os.replace",
+			"def fake(src, dst, *a, **k): raise OSError(errno.EXDEV, 'cross-device link')",
+			"_os.replace = fake",
+			`r = m.mode_pdf_primary({"path": ${JSON.stringify(fx("mixed-images.pdf"))}, "pages": [1], "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 72, "ocr": False, "ocrLanguage": "eng", "ocrBudgetMs": 60000, "pymupdfVersion": ${JSON.stringify(CFG.pymupdfVersion)}})`,
+			"_os.replace = real",
+			"OUT = [r['markdown'], r['failedPages'], r['emptyPages']]",
+		].join("\n"));
+		const [md, failed, empty]: [string, unknown[], unknown[]] = out;
+		assert.deepEqual(failed, []);
+		assert.deepEqual(empty, []);
+		assert.ok(md.includes("p1/img1.png"), md);
+		for (const name of ["img1.png", "img2.png"]) assert.ok(existsSync(join(d.stagingDir, "p1", name)), name);
+	} finally { rmSync(d.root, { recursive: true, force: true }); }
+});
+
 test("textless page keeps one picture in both PDF tiers", T, async () => {
 	const d = dirs();
 	try {

@@ -33,18 +33,17 @@ def image_source_map(source, target, filename):
     real = os.path.realpath(source)
     m = {source: target, source.replace("\\", "/"): target,
          real: target, real.replace("\\", "/"): target, filename: target}
-    # pymupdf4llm links pictures relative to the cwd when image_path and the cwd
-    # share a drive, and falls back to absolute paths only when relpath() raises
-    # ValueError (different drives). Register the relative form too, otherwise the
-    # link survives rewrite_image_destinations and validateImageLinks rejects the
-    # page with "unexpected image reference in output".
+    # pymupdf4llm's md_path() resolves image_path and emits it relative to the
+    # cwd whenever the resolved directory sits under the cwd; otherwise it emits
+    # the absolute POSIX path, which the "real" key above already covers. Key the
+    # relative form on the resolved path as well, so a temp dir reached through a
+    # symlink (macOS /var -> /private/var, Windows 8.3 RUNNER~1) still matches.
     try:
-        rel = os.path.relpath(source, os.getcwd())
-    except ValueError:
-        rel = None
-    if rel:
-        m[rel] = target
-        m[rel.replace("\\", "/")] = target
+        rel = os.path.relpath(real, os.getcwd())
+    except ValueError:  # different drive on Windows
+        return m
+    m[rel] = target
+    m[rel.replace("\\", "/")] = target
     return m
 
 
@@ -506,18 +505,6 @@ def mode_info(o):
     return {"pageCount": doc.page_count, "metadata": meta, "toc": toc}
 
 
-def move_any_volume(source, dest):
-    """os.replace() cannot cross volumes (WinError 17 on Windows), which used to
-    fail the entire page. Copy and unlink instead so the bundle may live on a
-    different drive than TEMP."""
-    try:
-        os.replace(source, dest)
-    except OSError:
-        shutil.copyfile(source, dest)
-        with contextlib.suppress(OSError):
-            os.remove(source)
-
-
 def primary_page_markdown(doc, n, d, o, kw, write_images):
     import pymupdf4llm
     if not write_images:
@@ -531,7 +518,9 @@ def primary_page_markdown(doc, n, d, o, kw, write_images):
             dest = f"img{i}{os.path.splitext(f)[1].lower()}"
             source = os.path.join(tmp, f)
             sources.update(image_source_map(source, f"p{n}/{dest}", f))
-            move_any_volume(source, os.path.join(d, dest))
+            # shutil.move: rename, falling back to copy+unlink across volumes
+            # (os.replace alone raises WinError 17 there and costs the whole page).
+            shutil.move(source, os.path.join(d, dest))
         return rewrite_image_destinations(md, sources)
 
 
