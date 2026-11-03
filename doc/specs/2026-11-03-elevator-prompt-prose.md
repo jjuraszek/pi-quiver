@@ -47,7 +47,7 @@ contract:
 - home: .worktrees/<name>
 - spec-dir: doc/specs
 - plan-dir: doc/plans
-- verification: env -u PI_CODING_AGENT_DIR npm run test:all; npm pack --dry-run; PI_GAUNTLET=../../../pi-gauntlet node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . elevator
+- verification: env -u PI_CODING_AGENT_DIR npm run test:all; npm pack --dry-run; PI_GAUNTLET=../../../pi-gauntlet node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator
 Rules: AGENTS.md
 Rules: AGENTS.core.md
 Rules: README.md
@@ -117,7 +117,7 @@ Shared facts in every `expected.md`, verbatim (the harness grammar is `- <id>: j
 
 `no-numbered-list` fails when three numbered item-start lines (`<digits>.` or `<digits>)` followed by a space, at line start) appear anywhere in the reply - compact, blank-separated, or wrapped items all count; it holds for ordinary prose and for one or two numbered lines. Before trusting the reported list rate, check the predicate against those four shapes with a `node -e` one-liner (compact, blank-separated, wrapped: `fails`; prose: `holds`). `plain-words` and `grounded` make the Design's plain-words and factual-claim requirements observable; each `case.md` carries enough context (the names, numbers, and behavior the reply may cite) for the judge to tell a supported example from an invented one. All case text is synthetic: no customer, internal system, credential, `/Users/<name>` path, or private-repo content (AGENTS.md hygiene rule; gauntlet's scan enforces it).
 
-Run: `node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . elevator`. `PI_GAUNTLET` names the sibling pi-gauntlet checkout; the default resolves beside the primary pi-quiver checkout, and a `.worktrees/<name>` home sets `PI_GAUNTLET=../../../pi-gauntlet`. The same invocation appears in the leg verification line, `eval/elevator/README.md`, and the `AGENTS.md` Testing line. First `--baseline-only` seeds `results/<sample>/baseline.json` from `prompts/elevator.md` at `git merge-base HEAD origin/main` (today's five-question body); those first baseline records are committed and never rerolled, so the full run is the before/after measurement against a fixed baseline. Hand-run before shipping a wording change; not in CI.
+Run: `node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator`. `PI_GAUNTLET` names the sibling pi-gauntlet checkout; the default resolves beside the primary pi-quiver checkout, and a `.worktrees/<name>` home sets `PI_GAUNTLET=../../../pi-gauntlet`. The same invocation appears in the leg verification line, `eval/elevator/README.md`, and the `AGENTS.md` Testing line. First `--baseline-only` seeds `results/<sample>/baseline.json` from `prompts/elevator.md` at the pinned `--base` commit `637f166` (today's five-question body; without `--base` the harness uses `git merge-base HEAD origin/main`, which rerolls the baseline once this body is on main); those first baseline records are committed and never rerolled, so the full run is the before/after measurement against a fixed baseline. Hand-run before shipping a wording change; not in CI.
 
 ### pi-gauntlet dependency (not owned here)
 

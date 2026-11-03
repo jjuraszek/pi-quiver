@@ -10,11 +10,11 @@ Run from the pi-quiver checkout. For a `.worktrees/<name>` home, set the path be
 
 ```bash
 export PI_GAUNTLET=../../../pi-gauntlet
-node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . elevator --baseline-only
-node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . elevator
+node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator --baseline-only
+node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator
 ```
 
-The default `../pi-gauntlet` applies to sibling primary checkouts. Seed the baseline once from `git merge-base HEAD origin/main`. Retain the first `results/*/baseline.json` records, including errors; never reroll them for shorter or more favorable replies. A baseline error blocks the comparison: resolve its assessment contract before invoking the runner again, because the harness retries error cells. Keep the candidate cap at 220 words.
+The default `../pi-gauntlet` applies to sibling primary checkouts. Seed the baseline once from the pinned `--base` commit (`637f166`, the five-question body); without `--base` the harness falls back to `git merge-base HEAD origin/main`, which rerolls the baseline once this body is on main. Retain the first `results/*/baseline.json` records, including errors; never reroll them for shorter or more favorable replies. A baseline error blocks the comparison: resolve its assessment contract before invoking the runner again, because the harness retries error cells. Keep the candidate cap at 220 words.
 
 Bind `intent.md`'s `for:` to the candidate assembly SHA printed by a stale-intent refusal. Declare a `no-numbered-list` fails-to-holds move for each sample whose retained baseline lists. Rebind after a wording edit; keep the cases and first baseline fixed.
 
