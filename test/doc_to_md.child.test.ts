@@ -517,17 +517,18 @@ test("pdf-primary: a move that cannot rename across volumes still keeps the page
 	try {
 		const out = await py([
 			"import errno, shutil as _sh, os as _os",
-			"real = _os.replace",
+			"real = _os.rename",
 			"def fake(src, dst, *a, **k): raise OSError(errno.EXDEV, 'cross-device link')",
-			"_os.replace = fake",
+			"_os.rename = fake",
 			`r = m.mode_pdf_primary({"path": ${JSON.stringify(fx("mixed-images.pdf"))}, "pages": [1], "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 72, "ocr": False, "ocrLanguage": "eng", "ocrBudgetMs": 60000, "pymupdfVersion": ${JSON.stringify(CFG.pymupdfVersion)}})`,
-			"_os.replace = real",
+			"_os.rename = real",
 			"OUT = [r['markdown'], r['failedPages'], r['emptyPages']]",
 		].join("\n"));
 		const [md, failed, empty]: [string, unknown[], unknown[]] = out;
 		assert.deepEqual(failed, []);
 		assert.deepEqual(empty, []);
-		assert.ok(md.includes("p1/img1.png"), md);
+		const links = [...md.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((m) => m[1]);
+		assert.deepEqual(links.sort(), ["p1/img1.png", "p1/img2.png"]);
 		for (const name of ["img1.png", "img2.png"]) assert.ok(existsSync(join(d.stagingDir, "p1", name)), name);
 	} finally { rmSync(d.root, { recursive: true, force: true }); }
 });
