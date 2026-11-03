@@ -491,13 +491,15 @@ test("OCR off: text-only PDF does not probe status or analyze", T, async () => {
 test("pdf-primary: pictures link rewritten when the temp dir sits under the cwd", T, async () => {
 	const d = dirs();
 	try {
-		// md_path() resolves image_path and emits it relative to the cwd only when
-		// the resolved directory is under the cwd; TMPDIR beneath cwd forces that
-		// branch, which used to leave the link unrewritten and fail the page.
+		// md_path() emits the link relative to the cwd only when the resolved temp
+		// dir sits under the cwd; chdir into d.root with TMPDIR beneath it forces
+		// that branch, which used to leave the link unrewritten and fail the page.
 		const tmp = join(d.root, "_tmp");
 		mkdirSync(tmp, { recursive: true });
 		const env = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
 		const out = await py([
+			"import os as _os",
+			`_os.chdir(${JSON.stringify(d.root)})`,
 			`r = m.mode_pdf_primary({"path": ${JSON.stringify(fx("mixed-images.pdf"))}, "pages": [1], "stagingDir": ${JSON.stringify(d.stagingDir)}, "imageFormat": "png", "imageDpi": 72, "ocr": False, "ocrLanguage": "eng", "ocrBudgetMs": 60000, "pymupdfVersion": ${JSON.stringify(CFG.pymupdfVersion)}})`,
 			"OUT = [r['markdown'], r['failedPages'], r['emptyPages']]",
 		].join("\n"), env);
