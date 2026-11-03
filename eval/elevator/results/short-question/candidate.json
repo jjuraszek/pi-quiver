@@ -1,0 +1,134 @@
+{
+  "sample": "short-question",
+  "arm": "candidate",
+  "skillSha": "8b3560284efd0f70691122fdd431c10911603f96701faecd56d9182ffbbbd466",
+  "inputSha": "eeb76f2d07dabcbcb12db9b0843cd1ce579667cf759926adfd3086fb2210c8fd",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "No, the fix doesn't cover renames during deactivation; it only clears a deactivated user's entry in the name cache (the saved list linking names to accounts) at the next refresh, and it never watches for name changes. For example, if Morgan is renamed to River while deactivated, the saved list still shows Morgan until the next refresh deletes that entry.\n",
+      "words": 60,
+      "wallMs": 3343,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "No. The fix removes a deactivated user’s entry from the name cache—the saved list linking names to accounts—at the next refresh; it does not track name changes. If Morgan is renamed to River while deactivated, the saved entry still says Morgan until that refresh removes it.\n",
+      "words": 46,
+      "wallMs": 2548,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "judge": {
+    "anthropic/claude-opus-5-5": {
+      "factsSha": "07888d841bee5b73d145933c72eb61e3c8c0e29ce33465d66aca3e9d0affcf0e",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "048ab11584385a01f90b92b8ff23ec50451f88dbbe69de80e9a35e54c7f76192",
+      "candidateOutputSha": "cfe1dd591da123e65398c24646aed82e342ab5ababdd94a56a251c42144eb702",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "grounded": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "two-or-three-sentences": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-numbered-list": {
+          "before": "fails",
+          "after": "holds",
+          "label": "intended change"
+        }
+      },
+      "feedback": "After keeps everything Before kept (the outcome leads, and 'name cache' is glossed as 'the saved list linking names to accounts') while fixing the regressions: the five numbered slots are gone, the reply is two sentences, and every example (Morgan renamed to River while deactivated, the entry surviving until the next refresh) is lifted straight from the case. Before failed grounded and example-per-claim because the slot form pushed it to invent material the case never gave it — a 'wrong assumption' narrative, a materiality verdict, and a River-reactivation path — and those invented claims had no case example. The one thing to watch in the After wording is that a single Morgan/River example is doing duty for all three claims (no rename coverage, cleanup only on refresh, no name-change listener); that works here because the case supplies only one scenario, but for richer cases the instruction 'a case example for each claim' should be read as attaching the example to each claim explicitly rather than relying on one illustration to cover the paragraph.",
+      "wallMs": 15458,
+      "verdict": "improved"
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "factsSha": "07888d841bee5b73d145933c72eb61e3c8c0e29ce33465d66aca3e9d0affcf0e",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "d0407bcc1655f82bcc4391c31122b81ea790b0c9bc1d20929f05ca88f82a79a1",
+      "candidateOutputSha": "cd685d4fb156e2a8b89db008bb59fc19d9fd7a055c1a1011613385a743d94b6e",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "grounded": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "two-or-three-sentences": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-numbered-list": {
+          "before": "holds",
+          "after": "holds",
+          "label": "intended but unchanged"
+        }
+      },
+      "feedback": "After keeps every fact Before kept and fixes the two Before missed: Before's 'The root cause is…' / 'The stale assumption is…' openers are the five-question slots in disguise, and they pushed the reply to four sentences; After drops those labels, glosses 'name cache' inline as 'the saved list linking names to accounts', and lands in three sentences with the Morgan→River example attached to the only two claims it makes. Nothing in After regressed. If you want to guard this further, the wording that worked here—'A short question gets a short answer' plus the explicit ban on fixed-slot replies—should stay; consider adding 'do not open sentences with slot labels like root cause / stale assumption' so the slot structure cannot return as prose headings.",
+      "wallMs": 13970,
+      "verdict": "improved"
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

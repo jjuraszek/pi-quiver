@@ -1,0 +1,38 @@
+{
+  "sample": "bug-fix",
+  "arm": "baseline",
+  "skillSha": "697508517051f5a2815b2cb90b5ca4ff7ac941f0431263984f22048911931693",
+  "inputSha": "725e336ad19a7c25fd77bdab30059de24367766ba2f9ee316827deeee6e8f843",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "**Outcome:** departed people stop resolving to their old accounts once the name cache refreshes.\n\n1. **Root cause:** the refresh assumed that skipping deactivated users was the same as removing them. It wasn't, so their old entries stayed saved. Morgan left and was marked deactivated, but searching \"Morgan\" still returned Morgan's account.\n2. **Right change:** yes. It fixes the existing refresh loop and adds no second cache or new layer. It also leaves live directory lookup unchanged. Riley, who is active, still resolves exactly as before.\n3. **Worth it:** yes. The blast radius is one loop, and the gain is that names no longer point to departed accounts. One limit remains: until the next refresh runs, a just-departed person can still resolve.\n4. **Wrong assumption:** the code treated the cache as add-only, so it assumed a refresh made the saved list match the directory. It didn't. Morgan's leftover entry is the proof.\n5. **Left to decide:** nothing. The fix removes the stale entries instead of hiding the failed lookup, which addresses the actual cause.\n",
+      "words": 173,
+      "wallMs": 7454,
+      "mechanical": {
+        "no-numbered-list": "fails"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "The fix stops name lookups from returning deactivated accounts after a cache refresh—for example, Morgan no longer resolves after leaving.\nThe root cause was that refresh skipped deactivated users but kept their saved entries; Morgan’s departure exposed that stale-data bug.\nThis is the right-sized change: it removes those entries in the existing refresh loop, then saves active users as before—for example, Riley still resolves.\nThe gain is meaningful with a narrow blast radius: saved accounts stay current without adding another cache or changing live directory lookup.\nThe old code’s assumption was wrong: skipping an inactive account does not delete its cached entry. Morgan’s saved account survived until removal was explicit.\nNo decision remains; keep this fix because it corrects the stale data at its source.\n",
+      "words": 125,
+      "wallMs": 5960,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

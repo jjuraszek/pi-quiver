@@ -1,0 +1,134 @@
+{
+  "sample": "ticket-ask",
+  "arm": "candidate",
+  "skillSha": "8b3560284efd0f70691122fdd431c10911603f96701faecd56d9182ffbbbd466",
+  "inputSha": "f58588cf4aad21c36f67f054091a30eeb8c0997221109d3258313e9fea8c6d90",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "**After a cache refresh, failed name lookups dropped from 12 to 2 in our fixed 100-lookup test.** The cache is the saved list linking names to user accounts, and a \"miss\" is a lookup that finds no saved account. The change rebuilds that list from the current directory and clears stale entries through the project's existing refresh step, so a small change bought a large gain. The two remaining misses, Alex and Sam, were users added after the last refresh. That exposes a flaw in the ticket: no cache can deliver its required zero misses, because anyone added after a refresh stays missing until the next one. The proposed replacement allows at most 2 misses in this same test and states that gap openly. It is a benchmark, not a promise for all future traffic. You need to decide whether to ship with that rewritten bound or send the ticket back. I'd ship, because the original target can never be met, so pushing back only delays a fix that already removes most misses.\n",
+      "words": 173,
+      "wallMs": 9453,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "The change cut failed name lookups from 12 to 2 in the fixed 100-lookup trial by rebuilding the saved name-to-account list from the current directory and removing stale entries through the existing refresh path, so it fits the project’s current approach without introducing a separate one. The ticket’s zero-miss requirement is unattainable: Alex and Sam were added after the refresh and cannot appear in the saved list until another refresh; my pick is to ship with the rewritten limit of at most 2 misses in this fixed trial, explicitly noting that between-refresh gap and that this is not a promise for future traffic, because the trial demonstrates a reduction from 12 misses to 2 using the existing refresh path.\n",
+      "words": 119,
+      "wallMs": 4141,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "judge": {
+    "anthropic/claude-opus-5-5": {
+      "factsSha": "b25600831557038841b15267b5018df135c938e5dec914785b10d1d2147db048",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "7110c85784212271ad1925ff165f73d9375a860087d621cbb9b60c220891b802",
+      "candidateOutputSha": "f19c0f18b00ed8e40435fa3a2b28f532ea118c4ec0fa2292db00bc7af638d45c",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "grounded": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "ends-with-pick": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-numbered-list": {
+          "before": "fails",
+          "after": "holds",
+          "label": "intended change"
+        }
+      },
+      "feedback": "After moves exactly the intended fact: the five bolded numbered slots in Before become one connected paragraph, and every other fact Before kept is still kept. The outcome leads, cache and miss are glossed in plain words, each claim is tied to a case detail (12 to 2, Alex and Sam, the existing refresh step, the 2-miss bound), and the reply closes on a single pick with one reason. Two small risks to watch as the wording spreads to other cases: the phrase 'a small change bought a large gain' is an editorial characterization not stated in the case (the case never calls the change small), so a stricter grounding read could flag it; and the sentence 'You need to decide whether to ship with that rewritten bound or send the ticket back' restates the question rather than answering it, which pads the elevator talk. Keeping the current structure but replacing the 'small change' line with the case's own wording ('reuses the existing refresh path rather than adding a new mechanism') and cutting the restated question would deliver the Change with no residual exposure.",
+      "wallMs": 23745,
+      "verdict": "improved"
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "factsSha": "b25600831557038841b15267b5018df135c938e5dec914785b10d1d2147db048",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "94829b9ffedaf0c63b472690751d985ce75106b0cc10608fa07d82dfdcab49dd",
+      "candidateOutputSha": "c55ee832a5d82d505b1d1f41643b41e434e660a3227f3eb73ea32e4b74eb2512",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "grounded": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "ends-with-pick": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-numbered-list": {
+          "before": "holds",
+          "after": "holds",
+          "label": "intended but unchanged"
+        }
+      },
+      "feedback": "After moved no-slot-structure from fails to holds: Before was five bullets mirroring the question list (what changed / fits design / gain / ticket problem / pick), while After is two connected prose sentences that open with the 12-to-2 outcome, cite Alex and Sam for the impossible zero-miss criterion, and close on the ship pick. Nothing else regressed: every number (12, 2, 100) and name comes from the case, the cache is glossed as the saved name-to-account list, and the reply ends with one pick and one reason. Two things to tighten so the wording keeps delivering this reliably: the second After sentence is very long and fuses the criterion critique with the pick via a semicolon, which is fine for the facts but close to a run-on, and the stated reason ('because the trial demonstrates a reduction from 12 to 2') restates the outcome rather than justifying the rewritten bound—Before's reason ('accepts the demonstrated improvement without claiming refresh can cover users added afterward') is sharper. Consider instructing the model to end with a short standalone pick sentence whose reason names why the bounded criterion is honest, not just that misses fell.",
+      "wallMs": 19312,
+      "verdict": "improved"
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

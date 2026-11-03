@@ -1,0 +1,134 @@
+{
+  "sample": "design-proposal",
+  "arm": "candidate",
+  "skillSha": "8b3560284efd0f70691122fdd431c10911603f96701faecd56d9182ffbbbd466",
+  "inputSha": "73dbb5a5a617c17b587d8c98588c0588b3d733506a140db77fe07c356f10b8e1",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "Recommendation: drop the proposal, because the problem it solves does not exist. It adds a second way to read settings next to the existing resolver, the small helper that opens settings.json and picks the value each time the app asks for a setting. The proposal assumes settings are read only once at startup, so edits made during a session would go unnoticed. That assumption is wrong. The resolver re-reads settings.json on every call, so switching the display setting from compact to expanded already takes effect on the very next call, with no restart. Because the proposal runs both readers on every lookup, each request would read the settings file twice and still return the same updated value, adding work without changing what users see. It also does not fit how the project handles settings, since there would be two readers doing one job, and only one caller would use the new helper. Your decision is whether to add the second path or keep the existing resolver. My pick is to keep the existing resolver, because it already picks up edits immediately with half the file reads.\n",
+      "words": 186,
+      "wallMs": 4522,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "Keep the existing settings resolver, the helper that reads the settings file and picks the value for each call. The proposal adds a second reader to notice edits during a session, but its startup-only assumption is wrong: changing the display setting from compact to expanded already takes effect on the next call without restarting, so the new path would make two file reads instead of one for the same result and serve only one caller. The decision is whether to add the second path or keep the existing resolver; my pick is to keep the resolver because it already delivers the proposed benefit without the extra read or duplicate path.\n",
+      "words": 110,
+      "wallMs": 4272,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "judge": {
+    "anthropic/claude-opus-5-5": {
+      "factsSha": "0b7c9bd8ebc6cec6113c9f0f66dabae817f3a8ca2d85a0921e53b795e3018f0a",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "ad17c1ef6879068e35d1d495b6b695b8f629f25c7edf7ec8200605a8a9413a7d",
+      "candidateOutputSha": "76834b558162331593a73e3e4aeac29501ee11626fba3240d52645604c6ef8a4",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "grounded": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "names-stale-assumption": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-numbered-list": {
+          "before": "fails",
+          "after": "holds",
+          "label": "intended change"
+        }
+      },
+      "feedback": "After delivers the Change cleanly: the five numbered slots became connected prose, the outcome still leads, and the resolver and settings.json get a plain-words gloss on first use, which fixes the plain-words fail Before had from naming the resolver and the file path bare. After also drops the two invented bits that sank Before on grounded and example-per-claim — the 'repo rule' about waiting for a second caller and the 'nobody checked' accusation — and instead ties the fit concern to case facts (two readers doing one job, one caller). The one soft spot is 'does not fit how the project handles settings,' which edges toward an unstated project norm; phrasing it as 'would leave two readers doing the job one already does, with only one caller for the new one' keeps the same point strictly on case text. Otherwise the wording holds every fact Before held and adds the four it missed.",
+      "wallMs": 18029,
+      "verdict": "improved"
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "factsSha": "0b7c9bd8ebc6cec6113c9f0f66dabae817f3a8ca2d85a0921e53b795e3018f0a",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "bfc5fd17f14cb8126df4901b572f3bbb2ae3a14878d656c2b64fa7f91f913248",
+      "candidateOutputSha": "975179cdb24b2d14f7545bbeca99dc3c9643935e2123030b6eeec871fddfb249",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "grounded": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "names-stale-assumption": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-numbered-list": {
+          "before": "holds",
+          "after": "holds",
+          "label": "intended but unchanged"
+        }
+      },
+      "feedback": "After moved two facts in the intended direction and lost none. Before, while unnumbered, was five one-sentence lines each answering one implicit slot (outcome, premise, need, cost, decision), and it used 'resolver', 'settings.json', 'per-call reads', and 'machinery' with no gloss; After folds the same points into connected sentences and opens by glossing the resolver as 'the helper that reads the settings file and picks the value for each call', which both removes the slot shape and makes the PM-readable gloss the first thing seen. The compact-to-expanded example, the two-reads-instead-of-one cost, and the single caller all survive and stay tied to the claims they support, and the decision is stated explicitly. One thing to keep an eye on: After only implies the per-call re-read via the opening gloss; a wording like 'the existing resolver already re-reads the file on every call, so...' would make names-stale-assumption unambiguous rather than inferred, without adding any jargon or structure.",
+      "wallMs": 23316,
+      "verdict": "improved"
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}
