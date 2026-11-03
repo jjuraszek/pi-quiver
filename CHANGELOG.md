@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.15.2 - 2026-11-03
 
 - `/elevator` and `/quiver:elevator` ask for a PM elevator talk in prose instead of five numbered answers, with a short-answer release valve. The checkout-only `eval/elevator/` target replays the body through pi-gauntlet at commit `d0a2cadacf20cd4b530ae651fcd2b536cbea07ad` (`--root` support and runner-owned judge).
 
