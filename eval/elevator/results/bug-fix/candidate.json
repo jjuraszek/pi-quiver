@@ -1,0 +1,124 @@
+{
+  "sample": "bug-fix",
+  "arm": "candidate",
+  "skillSha": "8b3560284efd0f70691122fdd431c10911603f96701faecd56d9182ffbbbd466",
+  "inputSha": "725e336ad19a7c25fd77bdab30059de24367766ba2f9ee316827deeee6e8f843",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "After a refresh, the name lookup no longer returns accounts for people who have left. Morgan's name now finds nothing, while active users like Riley still resolve. The bug was in the name cache, a saved list that translates people's names into user accounts so the system doesn't have to ask the live directory every time. When the cache refreshed, it skipped deactivated users but never deleted their old saved entries. Morgan's departure exposed this: the live directory correctly marked Morgan deactivated, yet the leftover entry kept pointing Morgan's name at the old account. The refresh now deletes saved entries for deactivated users, then saves active users through the same refresh path as before. This fixes the root cause, the stale saved entry, rather than just masking the bad lookup result. The change is small and fits the existing design: it touches only that refresh loop, adds no second cache, and leaves live directory lookups unchanged. That keeps the risk low and the benefit clear, since a departed person's name can no longer reach their account.\n",
+      "words": 176,
+      "wallMs": 4876,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "Name lookups now stop returning deactivated accounts after the saved name-to-account list refreshes. Morgan’s departure exposed the cause: refresh skipped deactivated users but left their old saved entries intact. The fix removes those entries before saving active users through the existing refresh process, so Morgan no longer resolves while active user Riley still does. It fits the current design and keeps the change focused on the refresh loop, with no second saved list or changes to live directory lookup.\n",
+      "words": 79,
+      "wallMs": 4137,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "judge": {
+    "anthropic/claude-opus-5-5": {
+      "factsSha": "088089f678ddf8da76a9b43b308b662fd10fdc4212995d3d80d66453ebbd6fbc",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "8bf81a340100a371e444395bb2c8d78f660592f61f7ed0a99d633a26ea96b197",
+      "candidateOutputSha": "95f1ae0693f49ed843d8aaee571661bf531a2041db0f5dc3c980938772a2866b",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "grounded": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "no-numbered-list": {
+          "before": "fails",
+          "after": "holds",
+          "label": "intended change"
+        }
+      },
+      "feedback": "After moved the no-slot-structure fact as intended: the five numbered headings became connected prose that opens with the outcome and ties every claim to Morgan or Riley. It also quietly fixed three things Before got wrong - Before's 'Worth it' and 'Left to decide' slots carried no case example, 'blast radius' appeared with no gloss, and the 'until the next refresh a just-departed person can still resolve' and 'treated the cache as add-only' points were inferences not present in the case. After avoids those by sticking to case details and glossing 'name cache' inline. One soft spot to watch in the wording: the gloss 'so the system doesn't have to ask the live directory every time' adds a rationale the case never states; the prompt should tell the writer that glosses, like examples, must be drawn from the case ('explain each term using only what the case says about it') so that the plain-words requirement does not tempt invented background. Otherwise the After wording keeps every fact Before kept and delivers the Change.",
+      "wallMs": 18358,
+      "verdict": "improved"
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "factsSha": "088089f678ddf8da76a9b43b308b662fd10fdc4212995d3d80d66453ebbd6fbc",
+      "judgePromptSha": "98afd04762bd79e1e708f1220d6bbafdccf404d3884351cad193ff5e490009b9",
+      "intentSha": "617da224163a3bbab55371a7f2cacdae03c7bb718e56613a778cf012de15d25c",
+      "baselineOutputSha": "6e2cbe76162138d6ddda1837ba7ad6cb1f43c630a48c80f0c1917bee7c2c069e",
+      "candidateOutputSha": "ea11e23ad4d3583163c3a2b0818c30fc4af05548349d3d7f5f8b8a6f7f0ef515",
+      "facts": {
+        "outcome-first": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "example-per-claim": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-slot-structure": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "plain-words": {
+          "before": "fails",
+          "after": "holds",
+          "label": "unplanned improvement"
+        },
+        "grounded": {
+          "before": "holds",
+          "after": "holds",
+          "label": "held"
+        },
+        "no-numbered-list": {
+          "before": "holds",
+          "after": "holds",
+          "label": "intended but unchanged"
+        }
+      },
+      "feedback": "After moved no-slot-structure from fails to holds: Before was six one-line answers each filling a slot (outcome, root cause, right-sized, gain/blast radius, assumption, decision), while After is one connected paragraph that still opens with the outcome and attaches Morgan and Riley to each claim. After also improved plain-words by glossing the cache as 'the saved name-to-account list' and dropping Before's unglossed 'blast radius' and bare 'cache'; keep that gloss in the wording. One thing After dropped that Before had: an explicit statement that no decision remains. That is not among the graded facts here, but the Change calls a missed decision a regression, so the prompt wording should ask for the decision status to be stated even when the answer is 'none' — e.g. end with a single sentence like 'Nothing is left to decide; the fix is complete.'",
+      "wallMs": 20533,
+      "verdict": "improved"
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

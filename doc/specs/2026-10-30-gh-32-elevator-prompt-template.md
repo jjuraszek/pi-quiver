@@ -1,5 +1,7 @@
 # Elevator prompt template for pi and Claude Code
 
+> **Superseded by:** [doc/specs/2026-11-03-elevator-prompt-prose.md](./2026-11-03-elevator-prompt-prose.md) - Design shared body and drift guard; Out of scope committed eval harness
+
 **Ticket:** jjuraszek/pi-quiver#32
 **Goal:** Ship `/elevator` as a pi prompt template and a user-invoked Claude Code skill that take one free-text subject and answer like for a PM during an elevator talk - outcome first, under ~8 lines, with a frank verdict.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.

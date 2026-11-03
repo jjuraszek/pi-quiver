@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- `/elevator` and `/quiver:elevator` ask for a PM elevator talk in prose instead of five numbered answers, with a short-answer release valve. The checkout-only `eval/elevator/` target replays the body through pi-gauntlet at commit `d0a2cadacf20cd4b530ae651fcd2b536cbea07ad` (`--root` support and runner-owned judge).
+
 ## v6.15.1 - 2026-11-03
 
 - `doc_to_md`: keep the pages that carry pictures when the bundle and the child's temp directory sit on different volumes. `os.replace()` cannot cross volumes (Windows `WinError 17`), which failed the whole page and reported it as both failed and empty; the move now falls back to copy-and-unlink. The image-link rewrite also registers the cwd-relative form pymupdf4llm emits, so a temp dir under the cwd no longer fails the call with "unexpected image reference in output". (#34)

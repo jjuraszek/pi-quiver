@@ -1,0 +1,38 @@
+{
+  "sample": "ticket-ask",
+  "arm": "baseline",
+  "skillSha": "697508517051f5a2815b2cb90b5ca4ff7ac941f0431263984f22048911931693",
+  "inputSha": "f58588cf4aad21c36f67f054091a30eeb8c0997221109d3258313e9fea8c6d90",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "**Outcome:** after a refresh, failed name lookups fell from 12 to 2 in our fixed 100-lookup trial. Both remaining misses were users added after the last refresh.\n\n1. **What and why:** the cache is the saved list linking names to user accounts. Lookups failed because it held stale entries and was missing current users. The change rebuilds it from the current directory on each refresh and drops stale entries.\n2. **Right change:** yes. It reuses the existing refresh path instead of adding a new mechanism.\n3. **Worth it:** yes. Misses dropped by 10 of 100 lookups, and the change only touches what refresh writes.\n4. **Wrong assumption:** the ticket requires zero misses, which no refreshed cache can deliver. For example, Alex joined after the refresh, so Alex is absent until the next one. The ticket treats an inherent gap as a bug.\n5. **Your call: ship, and rewrite the criterion** to \"at most 2 misses in this fixed 100-lookup trial, plus a stated gap for users added between refreshes.\" The fix works, and the zero-miss bar can never be met, so pushing it back gains nothing. Treat the bound as a result for this trial, not a guarantee for all future traffic.\n",
+      "words": 202,
+      "wallMs": 6453,
+      "mechanical": {
+        "no-numbered-list": "fails"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "- The change reduces failed name lookups by rebuilding the saved name-to-account list from the current directory and removing stale entries. The old list was out of date; misses fell from 12 to 2 in the fixed 100-lookup trial.\n- It fits the existing design: both updates and removals use the established refresh path, with no new abstraction.\n- The gain is material—10 fewer misses in that trial—with the change confined to refresh behavior.\n- The ticket’s zero-miss requirement is impossible for a refresh-only cache: Alex and Sam were added between refreshes, so neither had a saved account yet.\n- **My pick: ship with the rewritten criterion** of at most 2 misses in this fixed trial, explicitly documenting the between-refresh gap—not promising that rate for future traffic. The reason: it accepts the demonstrated improvement without claiming refresh can cover users added afterward.\n",
+      "words": 137,
+      "wallMs": 6161,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

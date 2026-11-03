@@ -110,6 +110,7 @@ scripts/doc_to_md.py, docx_numbering.py # doc_to_md Python child and its spawned
 scripts/gen-skill.mjs       # renders skills/doc-to-md/SKILL.md from the option schema
 skills/, .claude-plugin/    # Claude Code plugin surface; skills/doc-to-md/SKILL.head.md is hand-written; invisible to pi, excluded from the npm tarball
 test/                       # node --test suites, one per extension, + layout.test.ts; fixtures/ generated
+eval/                       # checkout-only prompt replay targets and committed results; elevator/README.md owns the run contract
 ```
 
 ## Rules
@@ -124,6 +125,8 @@ test/                       # node --test suites, one per extension, + layout.te
 ## Testing
 
 `npm run test:all` = `node scripts/check-agents-core.mjs` + `node --test test/*.test.ts` + `npx -y tsc --noEmit` (flags in `tsconfig.json`); the same command CI runs on ubuntu + windows (`.github/workflows/test.yml`). Run with `env -u PI_CODING_AGENT_DIR` in a pi harness shell. Smoke-test with `pi -e ./extensions/fetch.ts -p "fetch https://example.com"`.
+
+Run the elevator eval by hand against the sibling pi-gauntlet checkout pinned in [`eval/elevator/README.md`](eval/elevator/README.md): `node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator`. Set `PI_GAUNTLET=../../../pi-gauntlet` in a separate shell assignment or export from a `.worktrees/<name>` home; commit `results/` and `report.md` with the prompt change. Keep model calls out of CI.
 
 ## Release
 

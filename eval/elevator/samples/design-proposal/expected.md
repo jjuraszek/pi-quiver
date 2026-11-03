@@ -1,0 +1,7 @@
+- no-numbered-list: mechanical: matches /^(?![\s\S]*?(?:^|\n)[ \t]*\d{1,2}[.)][ \t][\s\S]*?(?:^|\n)[ \t]*\d{1,2}[.)][ \t][\s\S]*?(?:^|\n)[ \t]*\d{1,2}[.)][ \t])/
+- outcome-first: judged: The first sentence states the outcome.
+- example-per-claim: judged: Each claim carries one concrete example taken from the case.
+- no-slot-structure: judged: The reply is prose with no fixed-slot structure mirroring a question list.
+- plain-words: judged: A PM without the code open can follow every sentence; no identifier, path, or jargon term appears without a plain-words gloss.
+- grounded: judged: Every example and number in the reply comes from the case text; nothing is invented.
+- names-stale-assumption: judged: The reply says the proposal's once-at-startup assumption is wrong because the resolver re-reads settings on every call.

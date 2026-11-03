@@ -2,33 +2,26 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const SHARED_BODY = `Format: outcome first, plain words, one concrete example per claim, max ~8 lines.
-No code, SHAs, file paths, or commit refs unless the reader needs them to act.
-Skip "tests pass" and other mandatory baseline.
-
-Answer, in order, only what applies:
-1. What it is about and why it surfaced now (the root cause, not the symptom).
-2. Is it the right change - idiomatic for this repo, follows existing conventions
-   and machinery, no new abstraction without a second caller?
-3. Is it worth it - gain vs blast radius, is it material?
-4. Which assumption is wrong or stale, in the ticket, the spec, or the code?
-   Roast it: facts only, no diplomacy, no performed agreement.
-5. What is left for me to decide, with your pick and one reason.
-`;
-
 const surfaces = ["../prompts/elevator.md", "../skills/elevator/SKILL.md"];
 
-test("elevator surfaces preserve the literal shared body", () => {
-	for (const path of surfaces) {
-		const source = readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
-		const frontmatter = source.match(/^---\n[\s\S]*?\n---\n/);
-		assert.ok(frontmatter, path);
-		const content = source.slice(frontmatter[0].length);
-		const paragraphEnd = content.indexOf("\n\n");
-		assert.notEqual(paragraphEnd, -1, path);
-		assert.strictEqual(content.slice(paragraphEnd + 2), SHARED_BODY, path);
-	}
-});
+for (const scenario of ["checkout", "CRLF simulation"]) {
+	test(`elevator surfaces share a prose body without ordered slots (${scenario})`, () => {
+		const bodies = surfaces.map((path) => {
+			const raw = readFileSync(new URL(path, import.meta.url), "utf8");
+			const source = scenario === "CRLF simulation" ? raw.replace(/\r?\n/g, "\r\n") : raw;
+			const frontmatter = source.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
+			assert.ok(frontmatter, path);
+			const content = source.slice(frontmatter[0].length);
+			const paragraphEnd = /\r?\n\r?\n/.exec(content);
+			assert.ok(paragraphEnd, path);
+			return content.slice(paragraphEnd.index + paragraphEnd[0].length);
+		});
+		assert.strictEqual(bodies[0], bodies[1]);
+		assert.doesNotMatch(bodies[0], /^\s*\d[.)]\s/m);
+		assert.doesNotMatch(bodies[0], /in order/i);
+		assert.match(bodies[0], /short answer gets a short\s+answer/);
+	});
+}
 
 test("elevator is registered as a pi prompt", () => {
 	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

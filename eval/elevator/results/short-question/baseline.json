@@ -1,0 +1,38 @@
+{
+  "sample": "short-question",
+  "arm": "baseline",
+  "skillSha": "697508517051f5a2815b2cb90b5ca4ff7ac941f0431263984f22048911931693",
+  "inputSha": "eeb76f2d07dabcbcb12db9b0843cd1ce579667cf759926adfd3086fb2210c8fd",
+  "kind": "text",
+  "assembly": "concat",
+  "thinking": "medium",
+  "models": {
+    "replay": [
+      "anthropic/claude-opus-5-5",
+      "github-copilot/gpt-6.1-sol"
+    ],
+    "judge": "anthropic-fable/claude-fable-5-1",
+    "thinking": "medium"
+  },
+  "outputs": {
+    "anthropic/claude-opus-5-5": {
+      "status": "ok",
+      "text": "**No, the fix doesn't cover renames. It only clears deactivated users at the next refresh.**\n\n1. **What it is:** The name cache is the saved list that links names to accounts. The fix makes the next refresh drop entries for deactivated users. It never listens for name changes, so a rename isn't what triggers the cleanup.\n2. **The gap:** If Morgan is deactivated and then renamed to River, the cache still says \"Morgan\" until the next refresh. That refresh removes the entry because the account is deactivated, not because of the rename.\n3. **Is it material:** Probably not. The stale \"Morgan\" lasts exactly as long as any stale deactivated entry already does: until the next refresh. The rename doesn't widen that window.\n4. **Wrong assumption:** \"Fixed the name cache\" was read as \"the cache now tracks names.\" It doesn't. It tracks active status at refresh time. Anyone expecting renames to show up immediately is relying on behavior that was never built.\n5. **Your call:** Should a name change trigger an immediate cache update? My pick is no, for now. The leftover entry expires on the next refresh anyway. The open question is what happens if River is reactivated before then. I haven't checked that path, so it's worth confirming before closing the ticket.\n",
+      "words": 213,
+      "wallMs": 9105,
+      "mechanical": {
+        "no-numbered-list": "fails"
+      }
+    },
+    "github-copilot/gpt-6.1-sol": {
+      "status": "ok",
+      "text": "No—the fix cleans up deactivated users at the next refresh; it does not track their name changes.\nThe root cause is that the cache is a saved name-to-account list, not a live view: rename deactivated Morgan to River, and it still holds Morgan until refresh removes the entry.\nThe stale assumption is that removing an entry also keeps it current. It doesn’t: this fix deletes Morgan later; it never updates Morgan to River.\n",
+      "words": 73,
+      "wallMs": 10469,
+      "mechanical": {
+        "no-numbered-list": "holds"
+      }
+    }
+  },
+  "repoSha": "84100708caf40303b2e72392a6175a2a9cd6ea35"
+}

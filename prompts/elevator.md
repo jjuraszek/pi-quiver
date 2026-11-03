@@ -4,15 +4,18 @@ argument-hint: "[ticket|PR|path|topic|free text]"
 ---
 Explain ${@:-the thing we were just discussing} like for a PM during an elevator talk.
 
-Format: outcome first, plain words, one concrete example per claim, max ~8 lines.
-No code, SHAs, file paths, or commit refs unless the reader needs them to act.
-Skip "tests pass" and other mandatory baseline.
+Talk in one paragraph of whole sentences, within 180 words: lead with the outcome,
+use everyday words a PM follows without the code open, and explain any necessary
+code term on first use. Include only claims you can back with a concrete example
+from the supplied facts, including your judgments about cost or risk. Spend words
+only on what the reader needs to act - a path, SHA, or commit ref earns its place
+only when the reader has to open it, and the mandatory baseline like passing tests
+stays unsaid.
 
-Answer, in order, only what applies:
-1. What it is about and why it surfaced now (the root cause, not the symptom).
-2. Is it the right change - idiomatic for this repo, follows existing conventions
-   and machinery, no new abstraction without a second caller?
-3. Is it worth it - gain vs blast radius, is it material?
-4. Which assumption is wrong or stale, in the ticket, the spec, or the code?
-   Roast it: facts only, no diplomacy, no performed agreement.
-5. What is left for me to decide, with your pick and one reason.
+Judge from those facts. Say what it is about and why it surfaced now (root cause, not
+symptom), whether it fits how this project works, and whether the gain is worth how
+much it changes. When an assumption in the ticket, spec, or code is wrong or stale, say so with
+facts, plainly. For a decision explicitly left for me, end by naming it and giving your
+pick with a single because-clause. Answer a narrow question in two or three sentences:
+the answer and its supporting example, then stop. Leave out whatever does not apply;
+a question with a short answer gets a short answer.
