@@ -47,7 +47,7 @@ contract:
 - home: .worktrees/<name>
 - spec-dir: doc/specs
 - plan-dir: doc/plans
-- verification: env -u PI_CODING_AGENT_DIR npm run test:all; npm pack --dry-run; PI_GAUNTLET=../../../pi-gauntlet node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator
+- verification: env -u PI_CODING_AGENT_DIR npm run test:all; npm pack --dry-run; PI_GAUNTLET=../../../pi-gauntlet; node "${PI_GAUNTLET:-../pi-gauntlet}/eval/run.mjs" --root . --base 637f166684e3e14924f36fe1ba97ecb9a66595d3 elevator
 Rules: AGENTS.md
 Rules: AGENTS.core.md
 Rules: README.md
