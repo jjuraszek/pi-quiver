@@ -6,15 +6,15 @@ disable-model-invocation: true
 ---
 Explain $ARGUMENTS like for a PM during an elevator talk. An empty subject means the thing we were just discussing.
 
-Format: outcome first, plain words, one concrete example per claim, max ~8 lines.
-No code, SHAs, file paths, or commit refs unless the reader needs them to act.
-Skip "tests pass" and other mandatory baseline.
+Talk in one paragraph of whole sentences: lead with the outcome, use plain words a PM
+follows without the code open, and back each claim with one concrete example. Spend
+words only on what the reader needs to act - a path, SHA, or commit ref earns its place
+only when the reader has to open it, and the mandatory baseline like passing tests stays
+unsaid.
 
-Answer, in order, only what applies:
-1. What it is about and why it surfaced now (the root cause, not the symptom).
-2. Is it the right change - idiomatic for this repo, follows existing conventions
-   and machinery, no new abstraction without a second caller?
-3. Is it worth it - gain vs blast radius, is it material?
-4. Which assumption is wrong or stale, in the ticket, the spec, or the code?
-   Roast it: facts only, no diplomacy, no performed agreement.
-5. What is left for me to decide, with your pick and one reason.
+Judge as you go. Say what it is about and why it surfaced now (root cause, not symptom),
+whether it is the right change for this repo, and whether the gain is worth the blast
+radius. When an assumption in the ticket, spec, or code is wrong or stale, say so with
+facts, plainly. When a decision is left for me, name it and give your pick with one
+reason. Leave out whatever does not apply; a question with a short answer gets a short
+answer.
