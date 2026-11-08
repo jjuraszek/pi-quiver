@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type TObject, type TSchema } from "@sinclair/typebox";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { resolveConfig } from "../lib/extension-config.ts";
 import {
 	DOC_TO_MD_OPTIONS, type DocToMdDetails, type OptionDescriptor, type PerCallInput, type Tunables,
@@ -95,7 +96,7 @@ export default function docToMdExtension(pi: ExtensionAPI) {
 			const r = o.info ? await inspectDocument(o, signal) : await convertDocument(o, signal);
 			return {
 				content: [{ type: "text" as const, text: r.output }], details: r.details,
-				structuredContent: o.info ? r.details : publicHandle(r.details as DocToMdDetails),
+				structuredContent: (o.info ? r.details : publicHandle(r.details as DocToMdDetails)) as unknown as JsonObject,
 			};
 		},
 

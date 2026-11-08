@@ -985,7 +985,7 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 		const post = defs.find((d) => d.name === "slack_post")!;
 		const update = defs.find((d) => d.name === "slack_update")!;
 		assert.ok(post.promptGuidelines?.length);
-		assert.strictEqual(post.promptGuidelines, update.promptGuidelines);
+		assert.deepEqual(post.promptGuidelines, update.promptGuidelines);
 		const deliveryRule = post.promptGuidelines.find((rule) => rule.includes("MAX_TEXT_LENGTH"));
 		assert.ok(deliveryRule);
 		assert.match(deliveryRule, /never use threshold-based or msg_too_long upload fallback/);
@@ -993,10 +993,15 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 		assert.match(post.description, /Recovery: re-invoke with `thread_ts` set/);
 		assert.match(post.description, /the returned error supplies recovery-artifact details/);
 		for (const tool of [post, update]) {
-			for (const rule of tool.promptGuidelines!) {
+			const guidelines = tool.promptGuidelines!;
+			const rules = guidelines.slice(0, -1);
+			assert.equal(rules.length, 7);
+			for (const rule of rules) {
 				assert.match(rule, /^For slack_post and slack_update, /);
-				assert.ok(tool.description.includes(rule));
+				assert.ok(!tool.description.includes(rule));
 			}
+			const guidance = guidelines.join("\n");
+			assert.doesNotMatch(tool.description, /For slack_post and slack_update, |Native list example:/);
 			for (const fragment of [
 				"calling skill", "Keep otherwise plain content plain", 'style: "bullet"', 'style: "ordered"',
 				"rich_text_section", "rich_text_quote", "attribution", "bold", "italic", "strike", "code",
@@ -1004,9 +1009,10 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 				"backticks", "quoted lines", "code alone", "echo \\@alice", "echo @alice",
 				"text and thread_body", "@name in blocks", "item boundaries", "commentary",
 				"thread_body ?? text", "without thread_ts", "MAX_TEXT_LENGTH", "msg_too_long",
-			]) assert.ok(tool.description.includes(fragment), `${tool.name} missing ${fragment}`);
-			assert.equal(tool.description.split("Native list example:").length, 2);
-			const example = JSON.parse(tool.description.split("Native list example: ")[1]);
+			]) assert.ok(guidance.includes(fragment), `${tool.name} missing ${fragment}`);
+			assert.equal(guidance.split("Native list example:").length, 2);
+			assert.match(guidelines.at(-1)!, /^Native list example: /);
+			const example = JSON.parse(guidelines.at(-1)!.slice("Native list example: ".length));
 			assert.equal(example.text, "- First\n- Second");
 			assert.deepEqual(example.blocks, [{ type: "rich_text", elements: [{
 				type: "rich_text_list", style: "bullet", elements: ["First", "Second"].map((text) => ({
@@ -1014,6 +1020,7 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 				})),
 			}] }]);
 			assert.doesNotMatch(tool.description, /when useful|when appropriate|thread_blocks/);
+			assert.doesNotMatch(guidance, /when useful|when appropriate|thread_blocks/);
 		}
 		assert.equal(handlers.before_agent_start, undefined);
 	});

@@ -14,6 +14,7 @@ import type { OcrInfo } from "../lib/doc-to-md-handle.ts";
 import docToMdExtension from "../extensions/doc_to_md.ts";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Value } from "@sinclair/typebox/value";
+import type { TObject, TSchema } from "@sinclair/typebox";
 import * as handle from "../lib/doc-to-md-handle.ts";
 import { build } from "esbuild";
 
@@ -66,7 +67,7 @@ test("doc_to_md structured conversion and info equal CLI JSON without changing t
 });
 
 test("doc_to_md output schema types every public field and nested member", async () => {
-	const schema = registeredDocTool().outputSchema;
+	const schema = registeredDocTool().outputSchema as TSchema | undefined;
 	assert.ok(schema, "doc_to_md must declare outputSchema");
 	const r = await convertDocument(opts({ pages: "2,5", ocr: true }), undefined, seamsWith(async () => ({ ok: true, json: {
 		markdown: "# Heading\n\n--- end of page.page_number=2 ---\n", pageCount: 6, pages: [2, 5],
@@ -1676,7 +1677,7 @@ test("same stem twice without overwrite renames and notes", async () => {
 });
 
 test("tool schema uses concise option help without changing shared help", () => {
-	const props = registeredDocTool().parameters.properties;
+	const props = (registeredDocTool().parameters as TObject).properties;
 	const overrides = ["pages", "outputDir", "words", "ocrMode", "hideAnnotations"];
 	assert.deepEqual(core.DOC_TO_MD_OPTIONS.filter((d) => d.toolHelp !== undefined).map((d) => d.key).sort(), [...overrides].sort());
 	for (const d of core.DOC_TO_MD_OPTIONS) {
