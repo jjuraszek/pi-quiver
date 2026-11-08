@@ -592,6 +592,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name: "slack_cache_refresh",
+			exposure: "codemode",
 			label: "Slack Cache Refresh",
 			promptSnippet: "Rebuild the Slack channel/user name->ID cache",
 			description:
