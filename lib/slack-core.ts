@@ -507,6 +507,7 @@ export const THREAD_PAGE_CAP = 50;
 export const THREAD_MESSAGE_CAP = 5_000;
 
 export interface SearchResult {
+	matches: Record<string, unknown>[];
 	output: string;
 	spilled: boolean;
 	path?: string;
@@ -565,7 +566,7 @@ export async function searchMessages(
 
 	const rendered = matches.map(renderSearchLine).join("\n");
 	const gated = gateOutput(rendered, "search");
-	return { ...gated, total, page, pageCount };
+	return { ...gated, matches, total, page, pageCount };
 }
 
 function inlineElementText(element: unknown): string {

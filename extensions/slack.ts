@@ -70,6 +70,12 @@ const SlackMessage = Type.Object({
 	permalink: Type.Optional(Type.String()),
 }, { additionalProperties: true });
 
+const searchFields = {
+	total: Type.Number(),
+	page: Type.Number(),
+	page_count: Type.Number(),
+};
+
 const threadFields = {
 	complete: Type.Boolean(),
 	next_cursor: Type.Optional(Type.String()),
@@ -208,7 +214,7 @@ function mentionAwareResult(
 	};
 }
 
-export function searchResultText(result: SearchResult): string {
+export function searchResultText(result: Omit<SearchResult, "matches">): string {
 	return `${result.output}\n\ntotal: ${result.total} | page: ${result.page} of ${result.pageCount}`;
 }
 
@@ -295,6 +301,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			name: "slack_search",
 			label: "Slack Search",
 			promptSnippet: "Search Slack messages with Slack's search operator grammar",
+			outputSchema: Type.Union([
+				Type.Object({ matches: Type.Array(SlackMessage), ...searchFields }),
+				Type.Object({ file: Type.String(), ...searchFields }),
+			]),
 			description:
 				'Search Slack messages via search.messages. Always uses the "user" identity (search.messages accepts only user tokens - no `as` param). `query` uses Slack\'s documented operator grammar (e.g. `in:#channel-name`, `from:@display-name`); channel/user names in the query are passed through as-is, never rewritten to IDs. `count` (default 20, max 100) and optional `page` control a single page of Slack\'s offset-paginated results. Output is compact (author, channel, ts, permalink, text) and size-gated: over 32KB/1000 lines it is written to a temp file with a 60-line preview.',
 			parameters: Type.Object({
@@ -306,8 +316,15 @@ export default function slackExtension(pi: ExtensionAPI) {
 				return guarded(async () => {
 					const { deps } = await resolveCall("user", cfg, ctx, signal, repoRoot);
 					const result = await searchMessages(params, deps);
+					const structured = structuredMessages(result.matches, "search");
 					return {
 						content: [{ type: "text" as const, text: searchResultText(result) }],
+						structuredContent: {
+							...("messages" in structured ? { matches: structured.messages } : structured),
+							total: result.total,
+							page: result.page,
+							page_count: result.pageCount,
+						},
 						details: result,
 					};
 				}, "user");

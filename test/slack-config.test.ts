@@ -1378,6 +1378,75 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 	});
 });
 
+test("slack_search structured results preserve matches, paging and independent spill gates", async () => {
+	const small = { ts: "1.1", text: "hello", user: "U1", channel: { name: "general", future: true },
+		permalink: "https://example.test/p/11", blocks: [{ type: "divider" }], evolving: { nested: [1, true] } };
+	const scenarios = [
+		{ name: "inline", matches: [small], textSpilled: false, spilled: false },
+		{ name: "empty", matches: [], textSpilled: false, spilled: false },
+		{ name: "structured only", matches: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true },
+		{ name: "text only", matches: Array.from({ length: 1001 }, () => ({ ts: "", text: "" })), textSpilled: true, spilled: false },
+		{ name: "both", matches: [{ ...small, text: "x".repeat(33000) }], textSpilled: true, spilled: true },
+	];
+	await withEnvToken("SLACK_USER_TOKEN", "dummy-typed-search", async () => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+			const { api, defs, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(cwd));
+			const tool = defs.find((d) => d.name === "slack_search")!;
+			assert.ok(tool.outputSchema, "search must declare outputSchema");
+			for (const scenario of scenarios) {
+				let calls = 0;
+				const total = scenario.matches.length === 0 ? 0 : 2042;
+				await withFakeFetch({
+					"auth.test": () => ({ ok: true, team_id: "T-typed-search" }),
+					"search.messages": (params) => {
+						calls++;
+						assert.deepEqual(params, { query: "hello in:#general", count: "100", page: "2" });
+						return { ok: true, messages: { matches: scenario.matches, paging: { total, page: 2, pages: 21 } } };
+					},
+				}, async () => {
+					const result = await tool.execute("typed", { query: "hello in:#general", count: 100, page: 2 }, undefined, () => {}, undefined as never);
+					const data = result.structuredContent as Record<string, any>;
+					assert.ok(Value.Check(tool.outputSchema!, data), scenario.name);
+					assert.deepEqual([data.total, data.page, data.page_count], [total, 2, 21]);
+					assert.deepEqual(result.details.matches, scenario.matches);
+					assert.equal(Object.hasOwn(data, "messages"), false);
+					if (scenario.spilled) {
+						assert.equal(Object.hasOwn(data, "matches"), false);
+						assert.match(data.file, /pi-slack[/\\].*-search\.json$/);
+						assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), scenario.matches);
+						assert.notEqual(data.file, result.details.path);
+					} else {
+						assert.deepEqual(data.matches, scenario.matches);
+						assert.equal(Object.hasOwn(data, "file"), false);
+					}
+					assert.equal(result.details.spilled, scenario.textSpilled, scenario.name);
+					const rendered = scenario.matches.map((m) =>
+						`${"user" in m ? m.user : "unknown"} | #${"channel" in m ? m.channel.name : "unknown"} | ${m.ts} | ${"permalink" in m ? m.permalink : ""} | ${m.text}`).join("\n");
+					assert.equal(result.content[0].type, "text");
+					if (result.content[0].type !== "text") throw new Error("expected text content");
+					if (scenario.textSpilled) {
+						assert.match(result.details.path, /\.md$/);
+						assert.equal(readFileSync(result.details.path, "utf8"), rendered);
+						assert.match(result.content[0].text, /\[truncated - full output written to /);
+					} else {
+						assert.equal(result.content[0].text, `${rendered}\n\ntotal: ${total} | page: 2 of 21`);
+					}
+				});
+				assert.equal(calls, 1, "search fetches exactly one page");
+			}
+			for (const match of [{ ts: "1" }, { text: "missing ts" }]) {
+				assert.equal(Value.Check(tool.outputSchema, { matches: [match], total: 1, page: 1, page_count: 1 }), false);
+			}
+			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed-search" }),
+				"search.messages": () => ({ ok: false, error: "invalid_auth" }) }, async () => {
+				await assert.rejects(tool.execute("error", { query: "hello" }, undefined, () => {}, undefined as never), /invalid_auth/);
+			});
+		});
+	});
+});
+
 type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown> | Response>;
 
 async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): Promise<void> {
