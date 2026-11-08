@@ -3,7 +3,7 @@
 base: 620091bd35d15945dc0ac5dc0207b43a9d4d1832
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 0
+iterations: 1
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -13,10 +13,11 @@ allowance: 10
 | 3 | open | 0 | |
 | 4 | open | 0 | |
 | 5 | open | 0 | |
-| 6 | open | 0 | |
+| 6 | open | 0 | timeout -k 30 30 node -e 'require("node:assert/strict").deepEqual(((d) => [!d.includes("JSON.parse"), ...["messages", "file", "complete", "next_cursor", "message_count", "caveat", "cursor"].map(f => d.includes(f))])(require("node:fs").readFileSync("extensions/slack.ts", "utf8").match(/name: "slack_thread",[\s\S]*?description:([\s\S]*?)parameters:/)[1]), Array(8).fill(true), "slack_thread must name structured fields without JSON.parse")'; failed: description still contains JSON.parse and omits message_count; no paid or external actions launched |
 | 7 | open | 0 | |
 | 8 | open | 0 | |
 | 9 | open | 0 | |
 | 10 | open | 0 | |
 
 ## Decisions
+row 0 done | seeded 1 rows, closed 0 on baseline | row 6
