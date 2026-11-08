@@ -101,7 +101,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 
 ## Install
 
-Published to npm as the unscoped `pi-quiver` package.
+Published to npm as the unscoped `pi-quiver` package. Requires Node `^24.15.0 || >=26.0.0` (the floor `jsdom` 31 and `unpdf` 2 declare).
 
 **User scope** (all repos under your pi profile):
 
@@ -258,7 +258,7 @@ not a pi-quiver setting and is never nested):
 
 **Leave pi's own `httpIdleTimeoutMs` (default `300000`) at its default.** It is the transport backstop, and a single value drives undici's `headersTimeout` *and* `bodyTimeout` - lowering it to get fast pre-stream failure also truncates legitimate mid-stream gaps. `firstEventMs` is the knob for pre-stream silence.
 
-Verified with Pi 0.87.1: each eligible stall is aborted, its message omitted from the model's context, and the request re-driven by the watchdog after pi's backoff (`retry.baseDelayMs`, capped at `retry.maxAgentDelayMs`) until `maxStallRetries` conversions are used; further stalls stop for manual resubmission. Both tiers draw on that one budget. `maxStallRetries` defaults to the layered `retry.maxRetries` (Pi default 3, an explicit `0` honoured); `0` is valid and means "detect and stop, never auto-retry". A successful assistant turn resets the stall counter (mirroring Pi's own retry counter). pi's `retry.enabled: false` disables the re-drive and degrades to manual resubmission without omitting the aborted message. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed. Print/json await pi's backoff before re-driving; TUI/RPC show a timer-path countdown that a new prompt cancels. Why the watchdog re-drives instead of pi, the hidden re-drive message, and the wait behavior: [doc/provider-stall-watchdog.md](doc/provider-stall-watchdog.md).
+Verified with Pi 1.5.0: each eligible stall is aborted, its message omitted from the model's context, and the request re-driven by the watchdog after pi's backoff (`retry.baseDelayMs`, capped at `retry.maxAgentDelayMs`) until `maxStallRetries` conversions are used; further stalls stop for manual resubmission. Both tiers draw on that one budget. `maxStallRetries` defaults to the layered `retry.maxRetries` (Pi default 3, an explicit `0` honoured); `0` is valid and means "detect and stop, never auto-retry". A successful assistant turn resets the stall counter (mirroring Pi's own retry counter). pi's `retry.enabled: false` disables the re-drive and degrades to manual resubmission without omitting the aborted message. Pending steering or follow-ups return to the editor and are excluded from automatic continuation. Invalid merged watchdog config fails closed. Print/json await pi's backoff before re-driving; TUI/RPC show a timer-path countdown that a new prompt cancels. Why the watchdog re-drives instead of pi, the hidden re-drive message, and the wait behavior: [doc/provider-stall-watchdog.md](doc/provider-stall-watchdog.md).
 
 Operational notes:
 

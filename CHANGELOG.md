@@ -8,6 +8,10 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
+## Unreleased
+
+- Dependencies move to current: `jsdom` ^31, `unpdf` ^2.1, `turndown` ^7.2.5 at runtime; `@earendil-works/pi-*` ^1.5.0, TypeScript ^7, `@types/jsdom` ^30, `@types/node` ^26.6 for development. `engines.node` is `^24.15.0 || >=26.0.0` (the intersection of `unpdf` 2's `>=24` and `jsdom` 31's `^22.22.2 || ^24.15.0 || >=26`); the README install section states the floor; the README watchdog section is verified against Pi 1.5.0.
+
 ## v6.15.2 - 2026-11-03
 
 - `/elevator` and `/quiver:elevator` ask for a PM elevator talk in prose instead of five numbered answers, with a short-answer release valve. The checkout-only `eval/elevator/` target replays the body through pi-gauntlet at commit `d0a2cadacf20cd4b530ae651fcd2b536cbea07ad` (`--root` support and runner-owned judge).

@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Type, createAssistantMessageEventStream, isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai";
+import { Type } from "@sinclair/typebox";
 import {
 	DefaultResourceLoader,
 	ModelRuntime,
