@@ -116,6 +116,7 @@ eval/                       # checkout-only prompt replay targets and committed 
 ## Rules
 
 - **Only extension entry points at the top level of `extensions/`.** Pi imports every top-level `.ts`/`.js` there and silently drops a non-function default after the import's side effects have run. `test/layout.test.ts` enforces it.
+- **`lib/*` never imports `@sinclair/typebox`.** `bin/pi-quiver.ts` is bundled with `--packages=external` and TypeBox is a devDependency, so importing it would make the packed CLI fail at runtime; `test/layout.test.ts` enforces this boundary.
 - **Every settings key is registered in `QUIVER_CONFIG_KEYS`** (`lib/settings-core.ts`, re-exported by `lib/extension-config.ts`) or the lint reports it unknown; `test/extension-config.test.ts` pins the registry against each extension's exported default config.
 - **Opt-in extensions check `enabled` per hook and do nothing when off**; `slack` additionally gates registration at `session_start` (zero tools, hooks, or I/O when disabled). Toggling takes effect next session.
 - **`skills/doc-to-md/SKILL.md` is generated** - edit `skills/doc-to-md/SKILL.head.md` or the descriptors, then run `node scripts/gen-skill.mjs`; `test/skill-generation.test.ts` fails on drift.

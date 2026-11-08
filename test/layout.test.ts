@@ -39,6 +39,16 @@ test("packaging isolates Claude artifacts from pi and npm", () => {
 	assert.deepStrictEqual(pkg.bin, { "pi-quiver": "dist/bin/pi-quiver.js" });
 });
 
+test("lib/*.ts or *.js imports no @sinclair/typebox packages", () => {
+	const files = readdirSync(new URL("../lib", import.meta.url)).filter(
+		(f) => f.endsWith(".ts") || f.endsWith(".js"),
+	);
+	for (const file of files) {
+		const src = readFileSync(new URL(`../lib/${file}`, import.meta.url), "utf8");
+		assert.ok(!src.includes("@sinclair/typebox"), `lib/${file} must not import @sinclair/typebox`);
+	}
+});
+
 test("fetch core imports no @earendil-works packages", () => {
 	const src = readFileSync(new URL("../lib/fetch-core.ts", import.meta.url), "utf8");
 	assert.ok(!src.includes("@earendil-works"));
