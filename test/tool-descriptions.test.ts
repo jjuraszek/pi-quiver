@@ -10,9 +10,13 @@ import fetchExtension from "../extensions/fetch.ts";
 import slackExtension from "../extensions/slack.ts";
 
 // The host's catalog builder is internal, so resolve it beside its public SDK entry point.
-const { createCodemodeDescription, toCodemodeDeclaration } = await import(new URL(
+const { createCodemodeDescription, getCodemodeCallableTools, toCodemodeDeclaration } = await import(new URL(
 	"./extensions/codemode/tool.js", import.meta.resolve("@earendil-works/pi-coding-agent"),
 ).href);
+
+// Post-diet measurements plus ~10% headroom; growth past these ceilings fails.
+const CEILINGS = { doc_to_md: 8200, slack_post: 5550, slack_update: 4100 };
+const DEFAULT_CEILING = 2500;
 
 const expectedNames = [
 	"doc_to_md", "fetch", "slack_search", "slack_thread", "slack_post", "slack_update",
@@ -62,17 +66,37 @@ test("production tool descriptions", async (t) => {
 			for (const guideline of guidelines.get(tool.name)!) assert.ok(declaration.description.includes(guideline));
 			const sample = renderToolSample(declaration);
 			assert.ok(sample.includes(`${tool.name}(args:`));
-			// Ceilings remain a user decision; record the full production render, not a reduced schema.
 			t.diagnostic(`${tool.name}: production declaration ${sample.length} characters`);
+			const ceiling = CEILINGS[tool.name as keyof typeof CEILINGS] ?? DEFAULT_CEILING;
+			assert.ok(sample.length <= ceiling, `${tool.name}: ${sample.length} characters exceeds ceiling ${ceiling}`);
 		}
 	});
 
-	await t.test("mode-only catalog includes every tool at inlineBudget 3000", () => {
-		// Mode only passes every callable tool, including direct tools, to this production builder.
-		const catalog = createCodemodeDescription(tools, { guidelines, inlineBudget: 3000 });
+	await t.test("default-mode catalog lists every non-direct tool at inlineBudget 3000", () => {
+		const nonDirect = tools.filter((tool) => tool.exposure !== undefined && tool.exposure !== "direct");
+		assert.deepEqual(nonDirect.map((tool) => tool.name), ["slack_cache_refresh"]);
+		const catalog = createCodemodeDescription(nonDirect, { guidelines, inlineBudget: 3000 });
 		const listed = [...catalog.matchAll(/^### `([^`]+)`$/gm)].map((match) => match[1]);
+		for (const tool of nonDirect) assert.ok(listed.includes(tool.name), `${tool.name} is not listed`);
+	});
+
+	await t.test("mode-only catalog stays within inlineBudget and omits only the sections that do not fit", (t) => {
+		const catalog: string = createCodemodeDescription(tools, { guidelines, inlineBudget: 3000 });
+		const listed = [...catalog.matchAll(/^### `([^`]+)`$/gm)].map((match) => match[1]);
+		// The host charges each heading plus trimmed sample, not the preamble or section separators.
+		const cost = catalog.split(/(?=^### `)/m).slice(1)
+			.reduce((total, section) => total + Math.ceil(section.trimEnd().length / 4), 0);
+		assert.ok(cost <= 3000, `listed sections cost ${cost} tokens exceeds inlineBudget 3000`);
+		for (const name of ["fetch", "slack_thread", "slack_search", "slack_cache_refresh"]) {
+			assert.ok(listed.includes(name), `${name} is not listed`);
+		}
 		const missing = expectedNames.filter((name) => !listed.includes(name));
-		assert.deepEqual(missing, [], `production catalog omitted: ${missing.join(", ")}`);
+		const callable = getCodemodeCallableTools(tools).map((tool: ToolDefinition) => tool.name);
+		for (const name of missing) {
+			assert.ok(["doc_to_md", "slack_post", "slack_update"].includes(name), `unexpected omission: ${name}`);
+			assert.ok(callable.includes(name), `${name} is not callable`);
+		}
+		t.diagnostic(`listed sections: ${cost} tokens; production catalog omitted: ${missing.join(", ")}`);
 	});
 
 	for (const { name, patterns } of [
