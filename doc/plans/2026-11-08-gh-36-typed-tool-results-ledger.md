@@ -3,7 +3,7 @@
 base: 620091bd35d15945dc0ac5dc0207b43a9d4d1832
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 8
+iterations: 9
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -16,7 +16,7 @@ allowance: 10
 | 6 | done | 0 | timeout -k 30 30 node -e 'require("node:assert/strict").deepEqual(((d) => [!d.includes("JSON.parse"), ...["messages", "file", "complete", "next_cursor", "message_count", "caveat", "cursor"].map(f => d.includes(f))])(require("node:fs").readFileSync("extensions/slack.ts", "utf8").match(/name: "slack_thread",[\s\S]*?description:([\s\S]*?)parameters:/)[1]), Array(8).fill(true), "slack_thread must name structured fields without JSON.parse")'; passed: description names all structured fields and cursor resumption without JSON.parse; no paid or external actions launched |
 | 7 | done | 1 | timeout -k 30 60 env -u PI_CODING_AGENT_DIR node --test test/slack-codemode.test.ts; 2 passed, 0 failed; model-free SDK sessions prove default exposure and real sandbox refresh in both modes; no paid or external actions launched |
 | 8 | done | 1 | timeout -k 30 180 env -u PI_CODING_AGENT_DIR node --test test/slack-core.test.ts test/slack-config.test.ts test/slack-cli.test.ts; 237 passed, 0 failed; mapped errors prove per-surface recovery and refresh description names scripts only; no paid or external actions launched |
-| 9 | open | 0 | |
+| 9 | done | 1 | timeout -k 30 30 node -e 'require("node:assert/strict").deepEqual([require("./package.json").devDependencies["@earendil-works/pi-coding-agent"], ...["Pi 0.99.0 or later", "typed results", "codemode scripts only", "tools.slack_cache_refresh({})"].map(s => require("node:fs").readFileSync("README.md", "utf8").includes(s))], ["^1.5.0", true, true, true, true])'; passed: existing ^1.5.0 pin and README minimum host plus script-only refresh verified; no paid or external actions launched |
 | 10 | open | 0 | |
 
 ## Decisions
@@ -29,3 +29,4 @@ row 4 done | Added typed search matches and paging with independent JSON spills;
 row 5 done | Verified unchanged direct text for all four tools and doc-to-md CLI JSON with 299 passing tests; no paid or external actions launched. | nothing new to build on
 row 7 done | Made cache refresh script-only and proved SDK exposure plus sandbox execution in both modes; no paid or external actions launched. | Reuse test/slack-codemode.test.ts for model-free host sessions with a synthetic assistant call and fake Slack transport.
 row 8 done | Split channel_not_found recovery by surface and documented script-only refresh with 237 passing tests; no paid or external actions launched. | Reuse formatToolError and runSlack for surface-specific hints, and doc/slack.md for the script-only refresh contract.
+row 9 done | Documented Pi 0.99.0 minimum for typed results and script-only refresh and verified the existing ^1.5.0 dev pin; no paid or external actions launched. | Reuse README.md Install for the host-version requirement and codemode-only refresh invocation.
