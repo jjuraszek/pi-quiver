@@ -8,7 +8,7 @@ Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 via OIDC trusted publishing. The release helper at
 `.agents/skills/release/scripts/release.sh` cuts the tag; CI publishes.
 
-## Unreleased
+## v6.16.0 - 2026-11-08
 
 - Typed results: `doc_to_md`, `fetch`, `slack_thread`, and `slack_search` declare `outputSchema` and return `structuredContent` to codemode scripts, without changing direct-call text or CLI output. Slack reads keep pagination metadata alongside inline message arrays or a separate JSON spill file.
 - Script-only refresh: `slack_cache_refresh` is callable as `await tools.slack_cache_refresh({})` from codemode scripts, not as a direct model tool. Pi's `channel_not_found` hint names that call; the CLI instead asks callers to check the channel ID and token-user membership. These host APIs require Pi 0.99.0 or later.
