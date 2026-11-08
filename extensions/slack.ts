@@ -113,7 +113,10 @@ export function formatToolError(err: unknown, identity?: "user" | "bot"): Error 
 			? Object.fromEntries(Object.entries(err.data).filter(([key]) => ALLOWED_ERROR_DATA_KEYS.has(key)))
 			: undefined;
 		const data = filtered && Object.keys(filtered).length > 0 ? `\n${JSON.stringify(filtered)}` : "";
-		return new Error(`${err.code}: ${err.message}${identitySuffix}${data}`);
+		const hint = err.code === "channel_not_found"
+			? "; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache"
+			: "";
+		return new Error(`${err.code}: ${err.message}${hint}${identitySuffix}${data}`);
 	}
 	if (err instanceof Error) return err;
 	return new Error(String(err));
@@ -596,7 +599,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Cache Refresh",
 			promptSnippet: "Rebuild the Slack channel/user name->ID cache",
 			description:
-				'Rebuild the Slack channel and user name->ID cache from scratch (full conversations.list + users.list scan, atomic replace). Uses the "user" identity when a user token is configured, else falls back to "bot" (no `as` param). Run this after channels/users change or when a #name/@name lookup unexpectedly fails with name_not_found. Reports the resulting channel, user, and email counts - a low email/user ratio hints the users:read.email scope may be missing.',
+				'Refresh the channel/user name cache after channel_not_found or a rename; reachable only from codemode scripts as tools.slack_cache_refresh({}).',
 			parameters: Type.Object({}),
 			async execute(_toolCallId, _params, signal) {
 				const identity = pickCacheRefreshIdentity(cfg, process.env, repoRoot);

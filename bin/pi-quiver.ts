@@ -329,7 +329,9 @@ export async function runSlack(parsed: Extract<ParsedArgs, { ok: true; cmd: "sla
 		const code = slackFailureCode(err, mutationStarted, method);
 		if (err instanceof SlackError) {
 			let message = err.message.includes(err.code) ? err.message : `${err.code}: ${err.message}`;
-			const hint = ERROR_HINTS[err.code];
+			const hint = err.code === "channel_not_found"
+				? "check the channel ID and that the token's user is a member of it"
+				: ERROR_HINTS[err.code];
 			if (hint && !message.includes(hint)) message += `; ${hint}`;
 			if (typeof err.data?.channel === "string") message += ` channel=${err.data.channel}`;
 			stderr(`${message}\n`);

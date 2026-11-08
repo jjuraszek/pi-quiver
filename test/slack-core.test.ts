@@ -107,7 +107,7 @@ test("apiCall: ok:true round-trip, bearer header, form encoding, JSON content-ty
 	}
 });
 
-test("apiCall: ok:false channel_not_found maps to SlackError with hint, no raw dump", async () => {
+test("apiCall: ok:false channel_not_found maps to a surface-neutral SlackError, no raw dump", async () => {
 	const srv = await serve((_req, res) => {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ ok: false, error: "channel_not_found" }));
@@ -119,7 +119,7 @@ test("apiCall: ok:false channel_not_found maps to SlackError with hint, no raw d
 			(err: unknown) => {
 				assert.ok(err instanceof SlackError);
 				assert.equal(err.code, "channel_not_found");
-				assert.match(err.message, /check the name or run slack_cache_refresh/);
+				assert.equal(err.message, "channel_not_found");
 				assert.doesNotMatch(err.message, /\{"ok"/);
 				return true;
 			},

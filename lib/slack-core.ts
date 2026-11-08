@@ -309,7 +309,6 @@ export type UploadBytes = (url: string, bytes: Uint8Array, opts?: { signal?: Abo
 const JSON_METHODS = new Set(["chat.postMessage", "chat.update", "canvases.edit"]);
 
 export const ERROR_HINTS: Record<string, string> = {
-	channel_not_found: "check the name or run slack_cache_refresh",
 	not_in_channel: "invite the bot to the channel",
 	msg_too_long: "message exceeds Slack's length ceiling",
 	is_archived: "the channel is archived",

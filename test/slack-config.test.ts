@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import {
 	DEFAULT_SLACK_CONFIG,
 	SlackError,
+	makeApiCall,
 	coerce,
 	applyEnvOverrides,
 	resolveSlackConfig,
@@ -1091,15 +1092,21 @@ test("formatToolError: missing_scope without an identity omits the suffix", () =
 	assert.equal(formatted.message, 'missing_scope: the token passed to this call does not have the "chat:write" scope.');
 });
 
-test("formatToolError: raw Slack API response data is whitelisted, not dumped wholesale", () => {
-	const err = new SlackError("channel_not_found", "check the name or run slack_cache_refresh", {
+test("formatToolError: mapped channel_not_found names script recovery and whitelists raw data", async () => {
+	await withFakeFetch({ "conversations.info": () => ({
 		ok: false,
 		error: "channel_not_found",
 		channel: "C123",
 		response_metadata: { warnings: ["internal_detail"] },
+	}) }, async () => {
+		await assert.rejects(makeApiCall()("conversations.info", "synthetic-token", { channel: "C123" }), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.message, "channel_not_found");
+			const formatted = formatToolError(err);
+			assert.equal(formatted.message, 'channel_not_found: channel_not_found; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache\n{"channel":"C123"}');
+			return true;
+		});
 	});
-	const formatted = formatToolError(err);
-	assert.equal(formatted.message, 'channel_not_found: check the name or run slack_cache_refresh\n{"channel":"C123"}');
 });
 
 test("formatToolError: recovery fields (ts, channel, permalink, detailPath, thread_ts) all pass the whitelist", () => {
@@ -1372,7 +1379,9 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 			}
 			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed" }),
 				"conversations.replies": () => ({ ok: false, error: "channel_not_found" }) }, async () => {
-				await assert.rejects(tool.execute("error", { channel: "C12345678", ts: "1.1" }, undefined, () => {}, undefined as never), /channel_not_found/);
+				await assert.rejects(tool.execute("error", { channel: "C12345678", ts: "1.1" }, undefined, () => {}, undefined as never), {
+					message: "channel_not_found: channel_not_found; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache",
+				});
 			});
 		});
 	});
@@ -1960,6 +1969,10 @@ test("slack_cache_refresh execute: zero emails out of N users names the missing 
 						slackExtension(api);
 						await handlers.session_start({}, makeFakeCtx(cwd));
 						const def = defs.find((d) => d.name === "slack_cache_refresh")!;
+						assert.match(def.description, /channel_not_found/);
+						assert.match(def.description, /rename/);
+						assert.match(def.description, /only from codemode scripts/);
+						assert.ok(def.description.includes("tools.slack_cache_refresh({})"));
 						const result = (await def.execute("tc1", {}, new AbortController().signal, () => {}, undefined as never)) as {
 							content: { type: string; text: string }[];
 						};
