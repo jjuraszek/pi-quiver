@@ -59,7 +59,9 @@ export interface InfoData {
 	toc: TocEntry[]; tocTotal: number; sheets: SheetInfo[] | null; sheetsTotal: number;
 }
 
-export function publicHandle(details: DocToMdDetails): HandleData {
+export type PublicHandleData = HandleData;
+
+export function publicHandle(details: DocToMdDetails): PublicHandleData {
 	const { path, backend, pymupdfVersion, inputType, file, outputDir, ...handle } = details;
 	return handle;
 }

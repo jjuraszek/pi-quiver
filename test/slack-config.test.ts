@@ -1011,14 +1011,6 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 				"thread_body ?? text", "without thread_ts", "MAX_TEXT_LENGTH", "msg_too_long",
 			]) assert.ok(guidance.includes(fragment), `${tool.name} missing ${fragment}`);
 			assert.equal(guidance.split("Native list example:").length, 2);
-			assert.match(guidelines.at(-1)!, /^Native list example: /);
-			const example = JSON.parse(guidelines.at(-1)!.slice("Native list example: ".length));
-			assert.equal(example.text, "- First\n- Second");
-			assert.deepEqual(example.blocks, [{ type: "rich_text", elements: [{
-				type: "rich_text_list", style: "bullet", elements: ["First", "Second"].map((text) => ({
-					type: "rich_text_section", elements: [{ type: "text", text }],
-				})),
-			}] }]);
 			assert.doesNotMatch(tool.description, /when useful|when appropriate|thread_blocks/);
 			assert.doesNotMatch(guidance, /when useful|when appropriate|thread_blocks/);
 		}

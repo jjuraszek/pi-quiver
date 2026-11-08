@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { renderToolSample } from "@earendil-works/pi-codemode/declarations";
+import type { TObject } from "@sinclair/typebox";
 import docToMdExtension from "../extensions/doc_to_md.ts";
 import fetchExtension from "../extensions/fetch.ts";
 import slackExtension from "../extensions/slack.ts";
@@ -113,6 +114,13 @@ test("production tool descriptions", async (t) => {
 		await t.test(`${name} keeps call-shaping description guidance`, () => {
 			const description = byName.get(name)!.description;
 			for (const pattern of patterns) assert.match(description, pattern);
+			if (name === "doc_to_md") {
+				const pagesHelp = (byName.get(name)!.parameters as TObject).properties.pages.description!;
+				for (const pattern of [
+					/Inclusive 1-based/, /"12-15"/, /"3,7,10-12"/, /"" means all pages/,
+					/PDF\/DOCX\/DOC\/PPTX/, /DOCX.*explicit-page-break segments.*rejected when the file has none/,
+				]) assert.match(pagesHelp, pattern);
+			}
 			if (name === "slack_thread") assert.doesNotMatch(description, /JSON\.parse/);
 		});
 	}
@@ -122,9 +130,14 @@ test("production tool descriptions", async (t) => {
 			const example = guidelines.get(name)!.at(-1)!;
 			assert.match(example, /^Native list example: /);
 			const payload = JSON.parse(example.slice("Native list example: ".length));
-			assert.equal(payload.blocks[0].elements[0].type, "rich_text_list");
-			assert.equal(payload.blocks[0].elements[0].style, "bullet");
-			assert.equal(payload.text, "- First\n- Second");
+			assert.deepEqual(payload, {
+				text: "- First\n- Second",
+				blocks: [{ type: "rich_text", elements: [{
+					type: "rich_text_list", style: "bullet", elements: ["First", "Second"].map((text) => ({
+						type: "rich_text_section", elements: [{ type: "text", text }],
+					})),
+				}] }],
+			});
 		});
 	}
 });
