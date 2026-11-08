@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchUrl, type FetchOptions } from "../lib/fetch-core.ts";
 import { DOC_TO_MD_OPTIONS, type DocToMdDetails, type PerCallInput, type Tunables, UsageError, coerceDocToMdSettings, convertDocument, exitOnSignalKillingChildren, inspectDocument, renderHelp, resolveOptions } from "../lib/doc-to-md-core.ts";
+import { publicHandle } from "../lib/doc-to-md-handle.ts";
 import { SLACK_TEXT_HARD_LIMIT, MAX_TEXT_LENGTH, assertTextWithinLimit, assertHeadline, defaultApiCall, defaultUploadBytes, discoverRepoRoot, ERROR_HINTS, postMessage, resolveCredential, resolveSlackConfig, SlackError, type ApiCall, type UploadBytes } from "../lib/slack-core.ts";
 
 const SLACK_HELP = `pi-quiver slack post --channel <id> --text <text> [--detail <text> | --detail-file <path>] [--blocks-file <path>] [--no-unfurl] [--as user|bot] [--token-from-env] [--dry-run]
@@ -385,7 +386,7 @@ async function main(): Promise<number> {
 		try {
 			const r = o.info ? await inspectDocument(o) : await convertDocument(o);
 			if (parsed.json) {
-				const payload = o.info ? r.details : (({ path, backend, pymupdfVersion, inputType, file, outputDir, ...handle }) => handle)(r.details as DocToMdDetails);
+				const payload = o.info ? r.details : publicHandle(r.details as DocToMdDetails);
 				process.stdout.write(`${JSON.stringify(payload)}\n`);
 			} else process.stdout.write(`${r.output}\n`);
 			return 0;

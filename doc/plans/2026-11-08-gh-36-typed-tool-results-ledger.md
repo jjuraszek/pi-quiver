@@ -3,12 +3,12 @@
 base: 620091bd35d15945dc0ac5dc0207b43a9d4d1832
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 1
+iterations: 2
 allowance: 10
 
 | row | status | attempts | evidence |
 |---|---|---|---|
-| 1 | open | 0 | |
+| 1 | done | 1 | timeout -k 30 180 env -u PI_CODING_AGENT_DIR node --test test/doc_to_md.test.ts; 126 passed, 1 skipped, 0 failed; conversion and info match CLI JSON and bundle excludes host/TypeBox; no paid or external actions launched |
 | 2 | open | 0 | |
 | 3 | open | 0 | |
 | 4 | open | 0 | |
@@ -21,3 +21,4 @@ allowance: 10
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 6
+row 1 done | Added typed conversion/info results with unchanged text and CLI JSON; no paid or external actions launched. | Reuse publicHandle in lib/doc-to-md-handle.ts for CLI-compatible projections and test/doc_to_md.test.ts for schema/adapter checks.

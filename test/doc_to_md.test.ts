@@ -12,7 +12,99 @@ import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, script
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 import type { OcrInfo } from "../lib/doc-to-md-handle.ts";
 import docToMdExtension from "../extensions/doc_to_md.ts";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Value } from "@sinclair/typebox/value";
+import * as handle from "../lib/doc-to-md-handle.ts";
+import { build } from "esbuild";
+
+function registeredDocTool(): ToolDefinition {
+	let tool!: ToolDefinition;
+	docToMdExtension({ registerTool: (definition: ToolDefinition) => { tool = definition; } } as ExtensionAPI);
+	return tool;
+}
+
+test("doc_to_md structured conversion and info equal CLI JSON without changing text", async () => {
+	assert.ok(registeredDocTool().outputSchema, "doc_to_md must declare outputSchema");
+	const root = mkdtempSync(join(tmpdir(), "quiver-structured-doc-"));
+	try {
+		const bundle = await build({ entryPoints: [fileURLToPath(new URL("../bin/pi-quiver.ts", import.meta.url))], bundle: true, packages: "external", format: "esm", platform: "node", write: false });
+		assert.doesNotMatch(bundle.outputFiles[0].text, /@earendil-works|@sinclair\/typebox/);
+		const program = `
+			import assert from "node:assert/strict";
+			import { execFileSync } from "node:child_process";
+			import { Value } from "@sinclair/typebox/value";
+			import extension from ${JSON.stringify(new URL("../extensions/doc_to_md.ts", import.meta.url).href)};
+			import { publicHandle, formatHandle, formatInfoHandle } from ${JSON.stringify(new URL("../lib/doc-to-md-handle.ts", import.meta.url).href)};
+			let tool;
+			extension({ registerTool: t => { tool = t; } });
+			const path = ${JSON.stringify(MULTIPAGE)};
+			const outputDir = ${JSON.stringify(join(root, "bundle"))};
+			const bin = ${JSON.stringify(fileURLToPath(new URL("../bin/pi-quiver.ts", import.meta.url)))};
+			for (const info of [false, true]) {
+				const result = await tool.execute("typed", { path, info, ...(info ? {} : { outputDir, overwrite: true }) }, undefined, undefined, { cwd: ${JSON.stringify(root)} });
+				const structured = result.structuredContent;
+				assert.ok(Value.Check(tool.outputSchema, structured));
+				assert.deepEqual(structured, info ? result.details : publicHandle(result.details));
+				assert.equal(result.content[0].text, info ? formatInfoHandle(structured, ${TUNABLE_DEFAULTS.outlineMaxEntries}) : formatHandle(structured));
+				if (!info) {
+					assert.equal(structured.savedTo, result.content[0].text.split("\\n")[0].slice("Saved-To: ".length));
+					assert.equal(structured.pageCount, 6);
+					assert.ok(result.content[0].text.includes("Page-Count: 6"));
+					assert.deepEqual(structured.outline, result.details.outline);
+					for (const key of ["path", "backend", "pymupdfVersion", "inputType", "file", "outputDir"]) assert.ok(!(key in structured), key);
+				}
+				const stdout = execFileSync(process.execPath, [bin, "doc-to-md", "--json", ...(info ? ["--info"] : ["--output-dir", outputDir, "--overwrite"]), path], { encoding: "utf8", env: process.env, cwd: ${JSON.stringify(root)}, timeout: 20_000 });
+				assert.equal(stdout, JSON.stringify(structured) + "\\n");
+			}
+			await assert.rejects(tool.execute("missing", { path: "missing.pdf" }, undefined, undefined, { cwd: ${JSON.stringify(root)} }), /Not a readable file/);
+		`;
+		await promisify(execFile)(process.execPath, ["--input-type=module", "-e", program], {
+			timeout: 30_000,
+			env: { ...process.env, PATH: dirname(process.execPath), HOME: root, USERPROFILE: root, PI_CODING_AGENT_DIR: join(root, "agent"), XDG_CACHE_HOME: join(root, "xdg"), LOCALAPPDATA: join(root, "lad") },
+		});
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("doc_to_md output schema types every public field and nested member", async () => {
+	const schema = registeredDocTool().outputSchema;
+	assert.ok(schema, "doc_to_md must declare outputSchema");
+	const r = await convertDocument(opts({ pages: "2,5", ocr: true }), undefined, seamsWith(async () => ({ ok: true, json: {
+		markdown: "# Heading\n\n--- end of page.page_number=2 ---\n", pageCount: 6, pages: [2, 5],
+		ocr: { ...OCR0, status: "ran", pages: [2], sidecars: { 2: "ocr/page.md" }, wordSidecars: { 2: "ocr/page.json" }, ocrErrors: { 5: "failed" } },
+		pageStats: [{ page: 2, chars: 10, images: 1, imageCoverage: 0.5 }, { page: 5, error: "failed" }],
+	} })));
+	try {
+		const projected = handle.publicHandle(r.details);
+		assert.ok(Value.Check(schema, projected));
+		assert.equal(handle.formatHandle(projected), r.output);
+		assert.deepEqual(projected.outline, [{ line: 1, level: 1, title: "Heading", page: 2 }]);
+		for (const key of Object.keys(projected)) {
+			const partial = { ...projected } as Record<string, unknown>;
+			delete partial[key];
+			assert.ok(!Value.Check(schema, partial), `missing ${key} must fail`);
+		}
+		for (const patch of [
+			{ type: "unknown" }, { engine: "unknown" }, { tier: "unknown" },
+			{ outline: [{ line: 1, level: 1, title: "Heading", page: "2" }] },
+			{ ocr: { ...projected.ocr, mode: "unknown" } },
+			{ ocr: { ...projected.ocr, sidecars: { 2: 42 } } },
+			{ pageStats: [{ page: 2, chars: "ten", images: 1, imageCoverage: 0.5 }] },
+			{ nativeImages: [{ page: 2, file: "image.png", width: "wide", height: 10 }] },
+			{ wordsErrors: { 2: 42 } },
+		]) assert.ok(!Value.Check(schema, { ...projected, ...patch }), JSON.stringify(patch));
+		const info: handle.InfoData = { type: "xlsx", backend: "python", pageCount: null, metadata: { title: "Workbook" }, toc: [{ level: 1, title: "Heading", page: null }], tocTotal: 1, sheets: [{ index: 1, name: "Sheet", kind: "worksheet", hidden: false, rows: 2, cols: 3, hiddenRows: 0, hiddenCols: 0, charts: 0, images: 0, rendered: false, csv: null }], sheetsTotal: 1 };
+		assert.ok(Value.Check(schema, info));
+		assert.ok(Value.Check(schema, { ...info, sheets: [{ ...info.sheets![0], kind: "chartsheet", rows: null, cols: null, rendered: true, csv: "sheet.csv" }] }));
+		for (const key of Object.keys(info)) {
+			const partial = { ...info } as Record<string, unknown>;
+			delete partial[key];
+			assert.ok(!Value.Check(schema, partial), `missing info ${key} must fail`);
+		}
+		for (const patch of [{ backend: "unknown" }, { metadata: { title: 42 } }, { toc: [{ level: "one", title: "Heading", page: 1 }] }, { sheets: [{ ...info.sheets![0], kind: "unknown" }] }]) {
+			assert.ok(!Value.Check(schema, { ...info, ...patch }), JSON.stringify(patch));
+		}
+	} finally { rmSync(dirname(r.details.savedTo), { recursive: true, force: true }); }
+});
 
 test("tool description names supported formats and bundle locations", () => {
 	let description = "";

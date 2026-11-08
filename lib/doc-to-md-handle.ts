@@ -1,4 +1,5 @@
 import type { InputType, OcrMode } from "./doc-to-md-options.ts";
+import type { DocToMdDetails } from "./doc-to-md-core.ts";
 
 export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image" | "email";
 export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy" | "extract-msg" | "email";
@@ -56,6 +57,11 @@ export interface HandleData {
 export interface InfoData {
 	type: InputType; backend: BackendKind; pageCount: number | null; metadata: Record<string, string>;
 	toc: TocEntry[]; tocTotal: number; sheets: SheetInfo[] | null; sheetsTotal: number;
+}
+
+export function publicHandle(details: DocToMdDetails): HandleData {
+	const { path, backend, pymupdfVersion, inputType, file, outputDir, ...handle } = details;
+	return handle;
 }
 
 const TITLE_MAX = 80;
