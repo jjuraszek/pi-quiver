@@ -161,18 +161,21 @@ empty stdout, even when an unknown bot detail outcome has a known parent.
 
 Usage errors print `usage: <reason>` plus usage on stderr. Slack failures
 print `SlackError.message`, its `code` if not already present, and the
-core's `ERROR_HINTS` hint. Only allowlisted `ts` (stdout on exit 4) and
+core's `ERROR_HINTS` hint. For `channel_not_found`, the shared error is the bare
+code; the CLI adds "check the channel ID and that the token's user is a member
+of it" instead of naming a pi tool. Pi tool errors instead say "check the name,
+or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name
+cache". Only allowlisted `ts` (stdout on exit 4) and
 `channel` (stderr) are extracted from error data; raw `err.data` is never
 dumped. The resolved credential is replaced with `<redacted>` throughout
 stdout and stderr, including warnings.
 
 Exit 5 always says `Check the channel before retrying.` A mutating
 `transport` failure is exit 5, not proof that nothing landed. Inspect the
-channel before retrying to avoid duplicate posts. Core hints retain pi
-wording such as `run slack_cache_refresh` and `re-invoking slack_post`;
-CLI callers instead pass raw channel IDs and inspect the channel before
-re-running the command. Follow the announce recovery guidance for saved
-detail rather than posting a second headline.
+channel before retrying to avoid duplicate posts. Other core recovery messages
+retain pi wording such as `re-invoking slack_post`; CLI callers instead pass raw
+channel IDs and inspect the channel before re-running the command. Follow the
+announce recovery guidance for saved detail rather than posting a second headline.
 
 ## Configuration
 
@@ -341,8 +344,10 @@ workspace (keyed by team ID from `auth.test`):
   with an atomic re-read + merge + tmp-write + rename, so concurrent misses
   don't clobber each other's entries (a true simultaneous race is
   last-writer-wins - accepted for an append-mostly map).
-- **`slack_cache_refresh`**: regenerates the whole file from a full
-  `conversations.list` + `users.list` scan and atomically replaces it,
+- **`slack_cache_refresh`**: reachable only from codemode scripts via
+  `await tools.slack_cache_refresh({})`, not as a direct model tool. Run it after
+  `channel_not_found` or a channel/user rename. It regenerates the whole file
+  from a full `conversations.list` + `users.list` scan and atomically replaces it,
   omitting deactivated users and setting `snapshot_at` to the same timestamp
   as `refreshed_at`. Uses
   the user token when one is configured, else falls back to the bot token.
@@ -396,7 +401,7 @@ returned by `slack_post { as: "bot" }` is not readable there
 | `slack_delete` | `as` | `channel`, `ts` | `chat.delete`; same ownership constraint |
 | `slack_pin` | `as` | `channel`, `ts` | `pins.add`; maps `already_pinned`/`not_pinnable`/`too_many_pins` |
 | `slack_upload` | `as` | `channel`, `path`, optional `filename`/`title`/`thread_ts`/`initial_comment` | `files.getUploadURLExternal` -> upload -> `files.completeUploadExternal` |
-| `slack_cache_refresh` | user if configured, else bot | none | full cache regeneration; reports `channels: N, users: N` plus `\| emails: N/N` (omitted when there are zero users; a `0/N` count adds a `(users:read.email scope may be missing)` hint) |
+| `slack_cache_refresh` | user if configured, else bot | none | codemode scripts only via `tools.slack_cache_refresh({})`; full cache regeneration; reports `channels: N, users: N` plus `\| emails: N/N` (omitted when there are zero users; a `0/N` count adds a `(users:read.email scope may be missing)` hint) |
 
 By default, `slack_thread` renders one line per message. When a message has
 Block Kit blocks, `header` and `section` text and fields pass through without
@@ -406,16 +411,48 @@ spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
 
-Set `raw: true` for block extraction and `slack_update` round-trips. The
-result content is a pure JSON array of raw message objects with `blocks`
-untouched and no status trailer. Consequently, `complete: false` and
-`nextCursor` live only in result `details`: pagination caps and 429 throttles
-produce a partial array with no in-content signal, while other errors surface
-as tool errors with no content. A spill preview starts with `[` just like a
-complete array. Attempt `JSON.parse` on the content; on failure, read the file
-named in the truncation line. When completeness matters, run default (compact)
-mode first so `complete:` and `next_cursor` appear inline, then use `raw: true`
-for extraction or a round-trip.
+Set `raw: true` for block extraction and `slack_update` round-trips in text
+results. Inline raw text is a JSON array with `blocks` untouched and no
+status trailer; large text spills with a preview instead. A partial raw
+array has no in-content completeness signal. Codemode scripts use the
+structured fields below instead of parsing text or making a second call
+in compact mode.
+
+### Structured results
+
+On Pi 0.99.0 or later, `slack_thread` and `slack_search` declare an
+`outputSchema` and return `structuredContent` to codemode scripts. Their
+direct-call text stays unchanged. `raw` changes only thread text, never
+the structured messages or pagination metadata.
+
+| Call | Inline shape | Spilled shape |
+|---|---|---|
+| `await tools.slack_thread({ channel, ts })` | `messages: SlackMessage[]`, `complete: boolean`, `message_count: number`, optional `next_cursor: string`, `caveat: string` | `file: string` replaces `messages`; all metadata stays |
+| `await tools.slack_search({ query })` | `matches: SlackMessage[]`, `total: number`, `page: number`, `page_count: number` | `file: string` replaces `matches`; all metadata stays |
+
+`SlackMessage` is the raw Slack object, including `blocks` and unknown
+fields. The schema requires string `ts` and `text`; it types optional
+string `user`, `thread_ts`, and `permalink`. Optional `channel` is either
+a string or an object with optional string `id` and `name`, allowing other
+fields too. A search match with only `channel: { name }` is valid.
+
+Thread `message_count` counts the returned messages. `complete: false`
+marks a capped or throttled read; pass `next_cursor` as `cursor` to resume.
+The throttle explanation is in `caveat` when present. Optional keys are
+omitted when unavailable, not set to null. Search returns one page with
+`total`, `page`, and `page_count` for paging. Empty reads use `messages: []`
+and `message_count: 0`, or `matches: []` and `total: 0`.
+
+Text and structured arrays are gated independently at 32,000 UTF-8 bytes
+or 1,000 lines. The structured gate measures the serialized JSON array,
+not the compact text or preview. Over the gate, `file` names a `.json` file
+under the system temp directory's `pi-slack/`; it contains only the array,
+not an envelope. `messages` or `matches` is absent, not an empty array.
+A text spill uses its own `.md` file and preview. Both may be inline,
+either may spill alone, or both may spill into two distinct files. Read
+and parse the structured `file` for messages; do not parse the text spill
+as structured data. Slack errors return `isError` text without
+`structuredContent`.
 
 ### Conditional formatting (`slack_post`, `slack_update`)
 
@@ -586,8 +623,8 @@ threaded reply, in one call. The headline is text-only `text`; original
    `botTokenEnv`.
 3. Either point `cachePath` at wherever your old cache lived, or drop it and
    let the extension use its user-scope default, then run
-   `slack_cache_refresh` once - there is no importer for old cache file
-   formats.
+   `await tools.slack_cache_refresh({})` once from a codemode script - there is
+   no importer for old cache file formats.
 4. Rewrite script/skill invocations as `slack_*` tool calls.
 5. For a short standing policy (e.g. "always post as bot to
    #eng-releases", "get sign-off before deleting"), point `policyPath` at a
@@ -664,7 +701,8 @@ and model authoring samples do not verify live Slack client rendering.
 - Pin a message.
 - Search for a message.
 - Read a thread.
-- Run `slack_cache_refresh` and confirm the channel/user counts.
+- Run `await tools.slack_cache_refresh({})` from a codemode script and confirm
+  the channel/user counts.
 - Set `policyPath` to a real file and confirm the `<slack-policy>` block
   shows up in the system prompt; point it at a bad path and confirm exactly
   one warning fires and `slack_post` still succeeds.

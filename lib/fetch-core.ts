@@ -53,6 +53,7 @@ export interface FetchOptions {
 }
 
 export interface FetchResult {
+	body: string;
 	output: string;
 	details: FetchToolDetails;
 }
@@ -177,6 +178,7 @@ function renderGhResult(target: GhTarget, stdout: string, failedLogs?: string): 
 		: `Source: ${ghSourceLine(target, ref)}`;
 	if (!spill) {
 		return {
+			body,
 			output: [source, "", body].join("\n"),
 			details: { ...baseDetails, spilled: false },
 		};
@@ -184,6 +186,7 @@ function renderGhResult(target: GhTarget, stdout: string, failedLogs?: string): 
 	const spillUrl = target.kind === "repo" ? `https://github.com/${target.slug}` : target.url;
 	const file = spillToFile(spillUrl, body, "md");
 	return {
+		body: "",
 		output: [
 			source,
 			`Body: ${formatSize(bytes)} across ${lines} lines — written to file (too large to inline)`,
@@ -534,8 +537,9 @@ export async function fetchUrl(opts: FetchOptions): Promise<FetchResult> {
 		// HEAD or bodyless response: headers only.
 		if (!res.body || (opts.method ?? "GET") === "HEAD") {
 			return {
+				body: "",
 				output: [...header, "Length: 0 (no body)"].join("\n"),
-				details: { url: res.url, status: res.status, contentType: ct, charset, bytes: 0 } as FetchToolDetails,
+				details: { url: res.url, status: res.status, ...(res.headers.has("content-type") ? { contentType: ct } : {}), charset, bytes: 0 },
 			};
 		}
 
@@ -543,7 +547,7 @@ export async function fetchUrl(opts: FetchOptions): Promise<FetchResult> {
 		const baseDetails: FetchToolDetails = {
 			url: res.url,
 			status: res.status,
-			contentType: ct,
+			...(res.headers.has("content-type") ? { contentType: ct } : {}),
 			charset,
 			bytes: collected.bytes,
 			truncated: collected.truncated,
@@ -553,6 +557,7 @@ export async function fetchUrl(opts: FetchOptions): Promise<FetchResult> {
 		if (collected.category === "binary") {
 			const note = collected.truncated ? " (truncated to 50MB)" : "";
 			return {
+				body: "",
 				output: [
 					...header,
 					`Body: ${formatSize(collected.bytes)}${note} binary (${mimeType(ct) || "unknown"}) — saved untouched for processing`,
@@ -589,6 +594,7 @@ export async function fetchUrl(opts: FetchOptions): Promise<FetchResult> {
 
 		if (!spill) {
 			return {
+				body,
 				output: [...header, lengthLine, "", body + truncNote].join("\n"),
 				details: { ...baseDetails, spilled: false },
 			};
@@ -600,6 +606,7 @@ export async function fetchUrl(opts: FetchOptions): Promise<FetchResult> {
 			? "Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must. Markdown is grep-able by heading (^#)."
 			: "Read slices of this file with the read tool (offset/limit) or grep it; do not read the whole file unless you must.";
 		return {
+			body: "",
 			output: [
 				...header,
 				lengthLine,

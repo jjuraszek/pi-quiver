@@ -11,11 +11,16 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { readFileSync } from "node:fs";
+import type { JsonValue } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import {
 	defaultApiCall,
 	defaultUploadBytes,
+	INLINE_MAX_BYTES,
+	INLINE_MAX_LINES,
 	buildPolicyBlock,
 	discoverRepoRoot,
 	resolveSlackConfig,
@@ -53,6 +58,45 @@ const SLACK_FORMATTING_GUIDANCE: { rules: string[]; example: string } = {
 	example: 'Native list example: {"text":"- First\\n- Second","blocks":[{"type":"rich_text","elements":[{"type":"rich_text_list","style":"bullet","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"First"}]},{"type":"rich_text_section","elements":[{"type":"text","text":"Second"}]}]}]}]}',
 };
 
+const SlackMessage = Type.Object({
+	ts: Type.String(),
+	text: Type.String(),
+	user: Type.Optional(Type.String()),
+	thread_ts: Type.Optional(Type.String()),
+	channel: Type.Optional(Type.Union([
+		Type.String(),
+		Type.Object({ id: Type.Optional(Type.String()), name: Type.Optional(Type.String()) }, { additionalProperties: true }),
+	])),
+	permalink: Type.Optional(Type.String()),
+}, { additionalProperties: true });
+
+const searchFields = {
+	total: Type.Number(),
+	page: Type.Number(),
+	page_count: Type.Number(),
+};
+
+const threadFields = {
+	complete: Type.Boolean(),
+	next_cursor: Type.Optional(Type.String()),
+	message_count: Type.Number(),
+	caveat: Type.Optional(Type.String()),
+};
+
+function structuredMessages(messages: Record<string, unknown>[], slug: string): { messages: JsonValue[] } | { file: string } {
+	const json = JSON.stringify(messages);
+	if (Buffer.byteLength(json, "utf8") <= INLINE_MAX_BYTES && json.split("\n").length <= INLINE_MAX_LINES) {
+		// These are raw JSON objects from Slack's transport, not a projected message subset.
+		return { messages: messages as JsonValue[] };
+	}
+	const hash = createHash("sha256").update(json).digest("hex").slice(0, 8);
+	const dir = join(tmpdir(), "pi-slack");
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, `${Date.now()}-${hash}-${slug}.json`);
+	writeFileSync(file, json, "utf8");
+	return { file };
+}
+
 const IDENTITY = Type.Union([Type.Literal("user"), Type.Literal("bot")], {
 	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which credential source is used and whose name shows as the author.',
 });
@@ -69,7 +113,10 @@ export function formatToolError(err: unknown, identity?: "user" | "bot"): Error 
 			? Object.fromEntries(Object.entries(err.data).filter(([key]) => ALLOWED_ERROR_DATA_KEYS.has(key)))
 			: undefined;
 		const data = filtered && Object.keys(filtered).length > 0 ? `\n${JSON.stringify(filtered)}` : "";
-		return new Error(`${err.code}: ${err.message}${identitySuffix}${data}`);
+		const hint = err.code === "channel_not_found"
+			? "; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache"
+			: "";
+		return new Error(`${err.code}: ${err.message}${hint}${identitySuffix}${data}`);
 	}
 	if (err instanceof Error) return err;
 	return new Error(String(err));
@@ -170,11 +217,11 @@ function mentionAwareResult(
 	};
 }
 
-export function searchResultText(result: SearchResult): string {
+export function searchResultText(result: Omit<SearchResult, "matches">): string {
 	return `${result.output}\n\ntotal: ${result.total} | page: ${result.page} of ${result.pageCount}`;
 }
 
-export function threadResultText(result: ThreadResult, raw = false): string {
+export function threadResultText(result: Omit<ThreadResult, "messages">, raw = false): string {
 	if (raw) return result.output;
 	const lines = [result.output, "", `complete: ${result.complete}`];
 	if (!result.complete && result.nextCursor) lines.push(`next_cursor: ${result.nextCursor}`);
@@ -257,6 +304,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 			name: "slack_search",
 			label: "Slack Search",
 			promptSnippet: "Search Slack messages with Slack's search operator grammar",
+			outputSchema: Type.Union([
+				Type.Object({ matches: Type.Array(SlackMessage), ...searchFields }),
+				Type.Object({ file: Type.String(), ...searchFields }),
+			]),
 			description:
 				'Search Slack messages via search.messages. Always uses the "user" identity (search.messages accepts only user tokens - no `as` param). `query` uses Slack\'s documented operator grammar (e.g. `in:#channel-name`, `from:@display-name`); channel/user names in the query are passed through as-is, never rewritten to IDs. `count` (default 20, max 100) and optional `page` control a single page of Slack\'s offset-paginated results. Output is compact (author, channel, ts, permalink, text) and size-gated: over 32KB/1000 lines it is written to a temp file with a 60-line preview.',
 			parameters: Type.Object({
@@ -268,8 +319,15 @@ export default function slackExtension(pi: ExtensionAPI) {
 				return guarded(async () => {
 					const { deps } = await resolveCall("user", cfg, ctx, signal, repoRoot);
 					const result = await searchMessages(params, deps);
+					const structured = structuredMessages(result.matches, "search");
 					return {
 						content: [{ type: "text" as const, text: searchResultText(result) }],
+						structuredContent: {
+							...("messages" in structured ? { matches: structured.messages } : structured),
+							total: result.total,
+							page: result.page,
+							page_count: result.pageCount,
+						},
 						details: result,
 					};
 				}, "user");
@@ -282,8 +340,12 @@ export default function slackExtension(pi: ExtensionAPI) {
 			name: "slack_thread",
 			label: "Slack Thread",
 			promptSnippet: "Read all replies in a Slack thread",
+			outputSchema: Type.Union([
+				Type.Object({ messages: Type.Array(SlackMessage), ...threadFields }),
+				Type.Object({ file: Type.String(), ...threadFields }),
+			]),
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` is for block extraction and slack_update round-trips: it returns the thread messages as a pure JSON array (no status trailer - `complete`/`next_cursor` stay in the result details and are not visible in the content, so an incomplete raw thread is a partial array with no in-content signal: try JSON.parse, on failure read the file named in the truncation line, and use default mode when completeness matters). Both modes are size-gated like slack_search: over the cap the full output is written to a temp file.',
+				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
 			parameters: Type.Object({
 				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
@@ -302,6 +364,13 @@ export default function slackExtension(pi: ExtensionAPI) {
 					);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],
+						structuredContent: {
+							...structuredMessages(result.messages, "thread"),
+							complete: result.complete,
+							message_count: result.messageCount,
+							...(result.nextCursor !== undefined ? { next_cursor: result.nextCursor } : {}),
+							...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
+						},
 						details: result,
 					};
 				}, "user");
@@ -315,8 +384,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Post",
 			promptSnippet: "Post a Slack message, reply, or headline+detail announcement",
 			description:
-				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts the detail `blocks` with `thread_body` fallback (or text-only `thread_body`) as the first threaded reply in the same call; for text-only detail, if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the returned error supplies recovery-artifact details. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact." + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
-			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
+				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts the detail `blocks` with `thread_body` fallback (or text-only `thread_body`) as the first threaded reply in the same call; for text-only detail, if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the returned error supplies recovery-artifact details. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
+			promptGuidelines: [...SLACK_FORMATTING_GUIDANCE.rules, SLACK_FORMATTING_GUIDANCE.example],
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
@@ -398,8 +467,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Update",
 			promptSnippet: "Edit an existing Slack message",
 			description:
-				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).' + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
-			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
+				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).',
+			promptGuidelines: [...SLACK_FORMATTING_GUIDANCE.rules, SLACK_FORMATTING_GUIDANCE.example],
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
@@ -526,10 +595,11 @@ export default function slackExtension(pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name: "slack_cache_refresh",
+			exposure: "codemode",
 			label: "Slack Cache Refresh",
 			promptSnippet: "Rebuild the Slack channel/user name->ID cache",
 			description:
-				'Rebuild the Slack channel and user name->ID cache from scratch (full conversations.list + users.list scan, atomic replace). Uses the "user" identity when a user token is configured, else falls back to "bot" (no `as` param). Run this after channels/users change or when a #name/@name lookup unexpectedly fails with name_not_found. Reports the resulting channel, user, and email counts - a low email/user ratio hints the users:read.email scope may be missing.',
+				'Refresh the channel/user name cache after channel_not_found or a rename; reachable only from codemode scripts as tools.slack_cache_refresh({}).',
 			parameters: Type.Object({}),
 			async execute(_toolCallId, _params, signal) {
 				const identity = pickCacheRefreshIdentity(cfg, process.env, repoRoot);

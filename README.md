@@ -103,6 +103,8 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 
 Published to npm as the unscoped `pi-quiver` package. Requires Node `^24.15.0 || >=26.0.0` (the floor `jsdom` 31 and `unpdf` 2 declare).
 
+Pi 0.99.0 or later is required for typed results from `doc_to_md`, `fetch`, `slack_thread`, and `slack_search`, and for the script-only cache refresh. With codemode enabled, scripts receive structured objects instead of rendered text. When Slack is enabled, refresh is reachable from codemode scripts only via `await tools.slack_cache_refresh({})`, not as a direct model tool. With `codemode.mode: "only"`, the host's inline catalog (default `codemode.inlineBudget`: 3000 tokens) does not have room for `doc_to_md` and `slack_post`; they stay callable, and a script can read their declaration with `await describeTool("doc_to_md")` or find them with `searchTools`. In the default mode `"on"`, nothing is omitted because direct tools are not listed in that catalog. The `pi-quiver` CLI does not require Pi.
+
 **User scope** (all repos under your pi profile):
 
 ```bash

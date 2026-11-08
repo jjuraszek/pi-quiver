@@ -304,7 +304,7 @@ test("local file and headline usage failures precede credentials and transport",
 
 test("error classification distinguishes definitive, unknown and non-mutating failures and redacts literal tokens", async () => {
 	for (const row of [
-		{ sub: "post", error: new SlackError("channel_not_found", "channel_not_found"), code: 4, err: "channel_not_found; check the name or run slack_cache_refresh\n" },
+		{ sub: "post", error: new SlackError("channel_not_found", "channel_not_found"), code: 4, err: "channel_not_found; check the channel ID and that the token's user is a member of it\n" },
 		{ sub: "post", error: new SlackError("transport", "bad synthetic\nsecret"), code: 5, err: "transport: bad <redacted>\nCheck the channel before retrying.\n" },
 		{ sub: "post", error: new SyntaxError("bad JSON"), code: 5, err: "slack failed: bad JSON\nCheck the channel before retrying.\n" },
 		{ sub: "dm", error: new SlackError("transport", "offline"), code: 4, err: "transport: offline\n" },
@@ -469,7 +469,10 @@ test("canvas JSON transport, ok:false errors and raw non-JSON mutation responses
 			const r = await f.run(kind === "canvas" ? ["canvas", "--id", "F123456", "--markdown-file", "body"] : post, [], { apiCall: makeApiCall() });
 			assert.equal(requests, kind === "rate-limit" ? 2 : 1); assert.equal(r.code, kind === "canvas" ? 0 : kind === "definitive" || kind === "rate-limit" ? 4 : 5);
 			assert.equal(r.stdout, kind === "canvas" ? "canvas=F123456\n" : kind === "definitive" ? "error=channel_not_found\n" : kind === "rate-limit" ? "error=rate_limited\n" : "");
-			if (kind === "definitive") assert.equal(r.stderr, "channel_not_found: check the name or run slack_cache_refresh\n");
+			if (kind === "definitive") {
+				assert.equal(r.stderr, "channel_not_found; check the channel ID and that the token's user is a member of it\n");
+				assert.doesNotMatch(r.stderr, /slack_cache_refresh|codemode|tools\./);
+			}
 			if (kind === "non-json") assert.match(r.stderr, /Check the channel before retrying\.\n$/);
 		}
 	} finally { globalThis.fetch = original; }

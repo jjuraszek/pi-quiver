@@ -4,7 +4,34 @@
 
 ## Core/adapter split
 
-`lib/fetch-core.ts` owns all behavior - GitHub routing, streaming caps, HTML->Markdown, the spill policy - and exports `fetchUrl(opts): Promise<{ output, details }>`. `extensions/fetch.ts` is a thin pi adapter (TypeBox schema, `registerTool`, envelope mapping, TUI renderers); `bin/pi-quiver.ts` is a thin CLI adapter over the same core, giving Claude Code (via `npx -y pi-quiver@latest fetch <url>`) the identical routing, caps, and spill behavior as the pi tool. The CLI ships as an esbuild-built `dist/bin/pi-quiver.js` (built at `prepack`, tarball-only, gitignored in the source tree); the pi path still loads `extensions/fetch.ts` straight from TypeScript source, unchanged.
+`lib/fetch-core.ts` owns all behavior - GitHub routing, streaming caps, HTML->Markdown, the spill policy - and exports `fetchUrl(opts): Promise<{ output, details, body }>`. `extensions/fetch.ts` is a thin pi adapter (TypeBox schema, `registerTool`, envelope mapping, TUI renderers); `bin/pi-quiver.ts` is a thin CLI adapter over the same core, giving Claude Code (via `npx -y pi-quiver@latest fetch <url>`) the identical routing, caps, and spill behavior as the pi tool. The CLI ships as an esbuild-built `dist/bin/pi-quiver.js` (built at `prepack`, tarball-only, gitignored in the source tree); the pi path still loads `extensions/fetch.ts` straight from TypeScript source, unchanged.
+
+## Structured results
+
+On Pi 0.99.0 or later, `await tools.fetch({ url })` in a codemode script
+receives `structuredContent`, declared by the tool's `outputSchema`. Branch
+on `spilled`, not on the rendered text:
+
+| Shape | Fields |
+|---|---|
+| `spilled: false` | `url: string`, `content: string`, optional `status: number`, `contentType: string`, `truncated: true` |
+| `spilled: true` | `url: string`, `file: string`, optional `status: number`, `contentType: string`, `truncated: true` |
+
+`content` is the inlined body or converted Markdown, without the adapter's
+status/source headers; HEAD and bodyless responses use `content: ""`.
+Binary responses and oversized text carry `file` instead of `content`.
+HTTP results carry `status` and include `contentType` when the response
+supplies one. GitHub results served by `gh` omit both fields.
+
+HTTP 404 and 503 responses resolve with the same envelope and their body;
+check `status` before using it. Unsupported protocols, network errors, and
+aborts throw instead of returning a structured object. `truncated: true`
+appears only when a download cap was hit (1 MB parsable, 50 MB binary), on
+either arm; a spilled file then contains only the capped bytes, not the
+full response. Otherwise `truncated` is absent.
+
+Direct calls keep their existing text and spill preview. The CLI still
+prints text and exits 0 for received HTTP responses, including non-2xx.
 
 ## HTML -> Markdown
 

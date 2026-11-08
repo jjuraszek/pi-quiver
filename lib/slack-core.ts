@@ -309,7 +309,6 @@ export type UploadBytes = (url: string, bytes: Uint8Array, opts?: { signal?: Abo
 const JSON_METHODS = new Set(["chat.postMessage", "chat.update", "canvases.edit"]);
 
 export const ERROR_HINTS: Record<string, string> = {
-	channel_not_found: "check the name or run slack_cache_refresh",
 	not_in_channel: "invite the bot to the channel",
 	msg_too_long: "message exceeds Slack's length ceiling",
 	is_archived: "the channel is archived",
@@ -507,6 +506,7 @@ export const THREAD_PAGE_CAP = 50;
 export const THREAD_MESSAGE_CAP = 5_000;
 
 export interface SearchResult {
+	matches: Record<string, unknown>[];
 	output: string;
 	spilled: boolean;
 	path?: string;
@@ -516,6 +516,7 @@ export interface SearchResult {
 }
 
 export interface ThreadResult {
+	messages: Record<string, unknown>[];
 	output: string;
 	spilled: boolean;
 	path?: string;
@@ -564,7 +565,7 @@ export async function searchMessages(
 
 	const rendered = matches.map(renderSearchLine).join("\n");
 	const gated = gateOutput(rendered, "search");
-	return { ...gated, total, page, pageCount };
+	return { ...gated, matches, total, page, pageCount };
 }
 
 function inlineElementText(element: unknown): string {
@@ -735,7 +736,7 @@ export async function readThread(
 
 	const rendered = args.raw === true ? JSON.stringify(messages, null, 2) : messages.map(renderThreadLine).join("\n");
 	const gated = gateOutput(rendered, "thread");
-	return { ...gated, complete, nextCursor, caveat, messageCount: messages.length };
+	return { ...gated, messages, complete, nextCursor, caveat, messageCount: messages.length };
 }
 
 /**

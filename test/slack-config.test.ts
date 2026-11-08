@@ -1,12 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import { Value } from "@sinclair/typebox/value";
+import type { TSchema } from "@sinclair/typebox";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import {
 	DEFAULT_SLACK_CONFIG,
 	SlackError,
+	makeApiCall,
 	coerce,
 	applyEnvOverrides,
 	resolveSlackConfig,
@@ -16,6 +19,8 @@ import {
 	resolveCredential,
 	userConfigEnvPath,
 	type SlackConfig,
+	type SearchResult,
+	type ThreadResult,
 } from "../lib/slack-core.ts";
 
 function withSettings(
@@ -980,7 +985,7 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 		const post = defs.find((d) => d.name === "slack_post")!;
 		const update = defs.find((d) => d.name === "slack_update")!;
 		assert.ok(post.promptGuidelines?.length);
-		assert.strictEqual(post.promptGuidelines, update.promptGuidelines);
+		assert.deepEqual(post.promptGuidelines, update.promptGuidelines);
 		const deliveryRule = post.promptGuidelines.find((rule) => rule.includes("MAX_TEXT_LENGTH"));
 		assert.ok(deliveryRule);
 		assert.match(deliveryRule, /never use threshold-based or msg_too_long upload fallback/);
@@ -988,10 +993,15 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 		assert.match(post.description, /Recovery: re-invoke with `thread_ts` set/);
 		assert.match(post.description, /the returned error supplies recovery-artifact details/);
 		for (const tool of [post, update]) {
-			for (const rule of tool.promptGuidelines!) {
+			const guidelines = tool.promptGuidelines!;
+			const rules = guidelines.slice(0, -1);
+			assert.equal(rules.length, 7);
+			for (const rule of rules) {
 				assert.match(rule, /^For slack_post and slack_update, /);
-				assert.ok(tool.description.includes(rule));
+				assert.ok(!tool.description.includes(rule));
 			}
+			const guidance = guidelines.join("\n");
+			assert.doesNotMatch(tool.description, /For slack_post and slack_update, |Native list example:/);
 			for (const fragment of [
 				"calling skill", "Keep otherwise plain content plain", 'style: "bullet"', 'style: "ordered"',
 				"rich_text_section", "rich_text_quote", "attribution", "bold", "italic", "strike", "code",
@@ -999,16 +1009,10 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 				"backticks", "quoted lines", "code alone", "echo \\@alice", "echo @alice",
 				"text and thread_body", "@name in blocks", "item boundaries", "commentary",
 				"thread_body ?? text", "without thread_ts", "MAX_TEXT_LENGTH", "msg_too_long",
-			]) assert.ok(tool.description.includes(fragment), `${tool.name} missing ${fragment}`);
-			assert.equal(tool.description.split("Native list example:").length, 2);
-			const example = JSON.parse(tool.description.split("Native list example: ")[1]);
-			assert.equal(example.text, "- First\n- Second");
-			assert.deepEqual(example.blocks, [{ type: "rich_text", elements: [{
-				type: "rich_text_list", style: "bullet", elements: ["First", "Second"].map((text) => ({
-					type: "rich_text_section", elements: [{ type: "text", text }],
-				})),
-			}] }]);
+			]) assert.ok(guidance.includes(fragment), `${tool.name} missing ${fragment}`);
+			assert.equal(guidance.split("Native list example:").length, 2);
 			assert.doesNotMatch(tool.description, /when useful|when appropriate|thread_blocks/);
+			assert.doesNotMatch(guidance, /when useful|when appropriate|thread_blocks/);
 		}
 		assert.equal(handlers.before_agent_start, undefined);
 	});
@@ -1090,15 +1094,21 @@ test("formatToolError: missing_scope without an identity omits the suffix", () =
 	assert.equal(formatted.message, 'missing_scope: the token passed to this call does not have the "chat:write" scope.');
 });
 
-test("formatToolError: raw Slack API response data is whitelisted, not dumped wholesale", () => {
-	const err = new SlackError("channel_not_found", "check the name or run slack_cache_refresh", {
+test("formatToolError: mapped channel_not_found names script recovery and whitelists raw data", async () => {
+	await withFakeFetch({ "conversations.info": () => ({
 		ok: false,
 		error: "channel_not_found",
 		channel: "C123",
 		response_metadata: { warnings: ["internal_detail"] },
+	}) }, async () => {
+		await assert.rejects(makeApiCall()("conversations.info", "synthetic-token", { channel: "C123" }), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.message, "channel_not_found");
+			const formatted = formatToolError(err);
+			assert.equal(formatted.message, 'channel_not_found: channel_not_found; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache\n{"channel":"C123"}');
+			return true;
+		});
 	});
-	const formatted = formatToolError(err);
-	assert.equal(formatted.message, 'channel_not_found: check the name or run slack_cache_refresh\n{"channel":"C123"}');
 });
 
 test("formatToolError: recovery fields (ts, channel, permalink, detailPath, thread_ts) all pass the whitelist", () => {
@@ -1295,7 +1305,168 @@ test("slack_update: markdown_text field is rejected before any token resolution"
 // (the /api/<method> path segment); an unscripted method throws loudly instead of hitting the
 // network.
 
-type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown>>;
+test("slack_thread structured results preserve raw objects, pagination and independent spill gates", async (t) => {
+	// Freeze only the filename timestamp so the raw-mode comparison includes spill paths.
+	t.mock.method(Date, "now", () => 1800000000000);
+	const small = { ts: "1.1", text: "fallback", user: "U1", channel: { name: "general", future: true },
+		blocks: [{ type: "section", text: { type: "mrkdwn", text: "body" } }], evolving: { nested: [1, true] } };
+	const scenarios = [
+		{ name: "inline", messages: [small], textSpilled: false, spilled: false },
+		{ name: "empty", messages: [], textSpilled: false, spilled: false },
+		{ name: "structured only", messages: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true },
+		{ name: "text only", messages: Array.from({ length: 1001 }, () => ({ ts: "", text: "" })), textSpilled: true, spilled: false },
+		{ name: "both", messages: [{ ts: "1.1", text: "x".repeat(33000) }], textSpilled: true, spilled: true },
+		{ name: "page cap", messages: [small], textSpilled: false, spilled: false, cap: true },
+		{ name: "throttle", messages: [small], textSpilled: false, spilled: false, throttle: true },
+		{ name: "spilled throttle", messages: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true, throttle: true },
+	];
+	await withEnvToken("SLACK_USER_TOKEN", "dummy-typed-thread", async () => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+			const { api, defs, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(cwd));
+			const tool = defs.find((d) => d.name === "slack_thread")!;
+			const schema = tool.outputSchema as TSchema | undefined;
+			assert.ok(schema, "thread must declare outputSchema");
+			for (const scenario of scenarios) {
+				let compact: unknown;
+				for (const raw of [false, true]) {
+					let calls = 0;
+					await withFakeFetch({
+						"auth.test": () => ({ ok: true, team_id: "T-typed" }),
+						"conversations.replies": (params) => {
+							calls++;
+							if (calls > 1) assert.equal(params.cursor, "NEXT");
+							if (scenario.throttle && calls > 1) return new Response("", { status: 429, headers: { "retry-after": "60" } });
+							return { ok: true, messages: scenario.messages, has_more: !!(scenario.cap || scenario.throttle),
+								response_metadata: { next_cursor: "NEXT" } };
+						},
+					}, async () => {
+						const result = await tool.execute("typed", { channel: "C12345678", ts: "1.1", raw }, undefined, () => {}, undefined as never);
+						assert.equal(result.content[0].type, "text");
+						if (result.content[0].type !== "text") throw new Error("expected text content");
+						const details = result.details as ThreadResult;
+						const data = result.structuredContent as Record<string, any>;
+						assert.ok(Value.Check(schema, data), scenario.name);
+						const messages = scenario.cap ? Array.from({ length: 50 }, () => scenario.messages).flat() : scenario.messages;
+						assert.equal(data.message_count, messages.length);
+						assert.equal(data.complete, !(scenario.cap || scenario.throttle));
+						assert.equal(Object.hasOwn(data, "next_cursor"), !!(scenario.cap || scenario.throttle));
+						if (scenario.cap || scenario.throttle) assert.equal(data.next_cursor, "NEXT");
+						assert.equal(Object.hasOwn(data, "caveat"), !!scenario.throttle);
+						if (scenario.throttle) assert.match(data.caveat, /rate limited/);
+						assert.deepEqual(details.messages, messages);
+						if (scenario.spilled) {
+							assert.equal(Object.hasOwn(data, "messages"), false);
+							assert.match(data.file, /pi-slack[/\\].*-thread\.json$/);
+							assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), messages);
+							assert.notEqual(data.file, details.path);
+						} else {
+							assert.deepEqual(data.messages, messages);
+							assert.equal(Object.hasOwn(data, "file"), false);
+						}
+						if (!raw) assert.equal(details.spilled, scenario.textSpilled, scenario.name);
+						if (details.spilled) {
+							assert.ok(details.path);
+							assert.match(details.path, /\.md$/);
+						}
+						if (raw) {
+							assert.deepEqual(data, compact, scenario.name);
+							const text = details.path ? readFileSync(details.path, "utf8") : result.content[0].text;
+							assert.equal(text, JSON.stringify(messages, null, 2));
+						} else {
+							compact = data;
+							if (scenario.name === "inline") assert.equal(result.content[0].text, "U1 | 1.1 | body\n\ncomplete: true");
+						}
+					});
+				}
+			}
+			for (const message of [{ ts: "1" }, { text: "missing ts" }]) {
+				assert.equal(Value.Check(schema, { messages: [message], complete: true, message_count: 1 }), false);
+			}
+			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed" }),
+				"conversations.replies": () => ({ ok: false, error: "channel_not_found" }) }, async () => {
+				await assert.rejects(tool.execute("error", { channel: "C12345678", ts: "1.1" }, undefined, () => {}, undefined as never), {
+					message: "channel_not_found: channel_not_found; check the name, or run `tools.slack_cache_refresh({})` from a codemode script to refresh the name cache",
+				});
+			});
+		});
+	});
+});
+
+test("slack_search structured results preserve matches, paging and independent spill gates", async () => {
+	const small = { ts: "1.1", text: "hello", user: "U1", channel: { name: "general", future: true },
+		permalink: "https://example.test/p/11", blocks: [{ type: "divider" }], evolving: { nested: [1, true] } };
+	const scenarios = [
+		{ name: "inline", matches: [small], textSpilled: false, spilled: false },
+		{ name: "empty", matches: [], textSpilled: false, spilled: false },
+		{ name: "structured only", matches: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true },
+		{ name: "text only", matches: Array.from({ length: 1001 }, () => ({ ts: "", text: "" })), textSpilled: true, spilled: false },
+		{ name: "both", matches: [{ ...small, text: "x".repeat(33000) }], textSpilled: true, spilled: true },
+	];
+	await withEnvToken("SLACK_USER_TOKEN", "dummy-typed-search", async () => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+			const { api, defs, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(cwd));
+			const tool = defs.find((d) => d.name === "slack_search")!;
+			const schema = tool.outputSchema as TSchema | undefined;
+			assert.ok(schema, "search must declare outputSchema");
+			for (const scenario of scenarios) {
+				let calls = 0;
+				const total = scenario.matches.length === 0 ? 0 : 2042;
+				await withFakeFetch({
+					"auth.test": () => ({ ok: true, team_id: "T-typed-search" }),
+					"search.messages": (params) => {
+						calls++;
+						assert.deepEqual(params, { query: "hello in:#general", count: "100", page: "2" });
+						return { ok: true, messages: { matches: scenario.matches, paging: { total, page: 2, pages: 21 } } };
+					},
+				}, async () => {
+					const result = await tool.execute("typed", { query: "hello in:#general", count: 100, page: 2 }, undefined, () => {}, undefined as never);
+					const details = result.details as SearchResult;
+					const data = result.structuredContent as Record<string, any>;
+					assert.ok(Value.Check(schema, data), scenario.name);
+					assert.deepEqual([data.total, data.page, data.page_count], [total, 2, 21]);
+					assert.deepEqual(details.matches, scenario.matches);
+					assert.equal(Object.hasOwn(data, "messages"), false);
+					if (scenario.spilled) {
+						assert.equal(Object.hasOwn(data, "matches"), false);
+						assert.match(data.file, /pi-slack[/\\].*-search\.json$/);
+						assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), scenario.matches);
+						assert.notEqual(data.file, details.path);
+					} else {
+						assert.deepEqual(data.matches, scenario.matches);
+						assert.equal(Object.hasOwn(data, "file"), false);
+					}
+					assert.equal(details.spilled, scenario.textSpilled, scenario.name);
+					const rendered = scenario.matches.map((m) =>
+						`${"user" in m ? m.user : "unknown"} | #${"channel" in m ? m.channel.name : "unknown"} | ${m.ts} | ${"permalink" in m ? m.permalink : ""} | ${m.text}`).join("\n");
+					assert.equal(result.content[0].type, "text");
+					if (result.content[0].type !== "text") throw new Error("expected text content");
+					if (scenario.textSpilled) {
+						assert.ok(details.path);
+						assert.match(details.path, /\.md$/);
+						assert.equal(readFileSync(details.path, "utf8"), rendered);
+						assert.match(result.content[0].text, /\[truncated - full output written to /);
+					} else {
+						assert.equal(result.content[0].text, `${rendered}\n\ntotal: ${total} | page: 2 of 21`);
+					}
+				});
+				assert.equal(calls, 1, "search fetches exactly one page");
+			}
+			for (const match of [{ ts: "1" }, { text: "missing ts" }]) {
+				assert.equal(Value.Check(schema, { matches: [match], total: 1, page: 1, page_count: 1 }), false);
+			}
+			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed-search" }),
+				"search.messages": () => ({ ok: false, error: "invalid_auth" }) }, async () => {
+				await assert.rejects(tool.execute("error", { query: "hello" }, undefined, () => {}, undefined as never), /invalid_auth/);
+			});
+		});
+	});
+});
+
+type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown> | Response>;
 
 async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): Promise<void> {
 	const original = globalThis.fetch;
@@ -1312,7 +1483,8 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 				params = Object.fromEntries(new URLSearchParams(body));
 			}
 		}
-		return new Response(JSON.stringify(handler(params)), { status: 200, headers: { "content-type": "application/json" } });
+		const result = handler(params);
+		return result instanceof Response ? result : new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
 	}) as typeof fetch;
 	try {
 		await fn();
@@ -1610,7 +1782,7 @@ async function runDmTool(
 	writeMentionCache(cacheFile);
 	const run: DmRun = { calls: [] };
 	const record =
-		(method: string, respond: (params: Record<string, unknown>) => Record<string, unknown>) =>
+		(method: string, respond: FetchHandlers[string]) =>
 		(params: Record<string, unknown>) => {
 			run.calls.push({ method, params });
 			return respond(params);
@@ -1807,6 +1979,10 @@ test("slack_cache_refresh execute: zero emails out of N users names the missing 
 						slackExtension(api);
 						await handlers.session_start({}, makeFakeCtx(cwd));
 						const def = defs.find((d) => d.name === "slack_cache_refresh")!;
+						assert.match(def.description, /channel_not_found/);
+						assert.match(def.description, /rename/);
+						assert.match(def.description, /only from codemode scripts/);
+						assert.ok(def.description.includes("tools.slack_cache_refresh({})"));
 						const result = (await def.execute("tc1", {}, new AbortController().signal, () => {}, undefined as never)) as {
 							content: { type: string; text: string }[];
 						};
