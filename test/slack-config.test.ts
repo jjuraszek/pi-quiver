@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import { Value } from "@sinclair/typebox/value";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -1295,7 +1296,89 @@ test("slack_update: markdown_text field is rejected before any token resolution"
 // (the /api/<method> path segment); an unscripted method throws loudly instead of hitting the
 // network.
 
-type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown>>;
+test("slack_thread structured results preserve raw objects, pagination and independent spill gates", async (t) => {
+	// Freeze only the filename timestamp so the raw-mode comparison includes spill paths.
+	t.mock.method(Date, "now", () => 1800000000000);
+	const small = { ts: "1.1", text: "fallback", user: "U1", channel: { name: "general", future: true },
+		blocks: [{ type: "section", text: { type: "mrkdwn", text: "body" } }], evolving: { nested: [1, true] } };
+	const scenarios = [
+		{ name: "inline", messages: [small], textSpilled: false, spilled: false },
+		{ name: "empty", messages: [], textSpilled: false, spilled: false },
+		{ name: "structured only", messages: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true },
+		{ name: "text only", messages: Array.from({ length: 1001 }, () => ({ ts: "", text: "" })), textSpilled: true, spilled: false },
+		{ name: "both", messages: [{ ts: "1.1", text: "x".repeat(33000) }], textSpilled: true, spilled: true },
+		{ name: "page cap", messages: [small], textSpilled: false, spilled: false, cap: true },
+		{ name: "throttle", messages: [small], textSpilled: false, spilled: false, throttle: true },
+		{ name: "spilled throttle", messages: [{ ...small, evolving: "x".repeat(33000) }], textSpilled: false, spilled: true, throttle: true },
+	];
+	await withEnvToken("SLACK_USER_TOKEN", "dummy-typed-thread", async () => {
+		await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
+			const { api, defs, handlers } = makeMockApi();
+			slackExtension(api);
+			await handlers.session_start({}, makeFakeCtx(cwd));
+			const tool = defs.find((d) => d.name === "slack_thread")!;
+			assert.ok(tool.outputSchema, "thread must declare outputSchema");
+			for (const scenario of scenarios) {
+				let compact: unknown;
+				for (const raw of [false, true]) {
+					let calls = 0;
+					await withFakeFetch({
+						"auth.test": () => ({ ok: true, team_id: "T-typed" }),
+						"conversations.replies": (params) => {
+							calls++;
+							if (calls > 1) assert.equal(params.cursor, "NEXT");
+							if (scenario.throttle && calls > 1) return new Response("", { status: 429, headers: { "retry-after": "60" } });
+							return { ok: true, messages: scenario.messages, has_more: !!(scenario.cap || scenario.throttle),
+								response_metadata: { next_cursor: "NEXT" } };
+						},
+					}, async () => {
+						const result = await tool.execute("typed", { channel: "C12345678", ts: "1.1", raw }, undefined, () => {}, undefined as never);
+						assert.equal(result.content[0].type, "text");
+						if (result.content[0].type !== "text") throw new Error("expected text content");
+						const data = result.structuredContent as Record<string, any>;
+						assert.ok(Value.Check(tool.outputSchema!, data), scenario.name);
+						const messages = scenario.cap ? Array.from({ length: 50 }, () => scenario.messages).flat() : scenario.messages;
+						assert.equal(data.message_count, messages.length);
+						assert.equal(data.complete, !(scenario.cap || scenario.throttle));
+						assert.equal(Object.hasOwn(data, "next_cursor"), !!(scenario.cap || scenario.throttle));
+						if (scenario.cap || scenario.throttle) assert.equal(data.next_cursor, "NEXT");
+						assert.equal(Object.hasOwn(data, "caveat"), !!scenario.throttle);
+						if (scenario.throttle) assert.match(data.caveat, /rate limited/);
+						assert.deepEqual(result.details.messages, messages);
+						if (scenario.spilled) {
+							assert.equal(Object.hasOwn(data, "messages"), false);
+							assert.match(data.file, /pi-slack[/\\].*-thread\.json$/);
+							assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), messages);
+							assert.notEqual(data.file, result.details.path);
+						} else {
+							assert.deepEqual(data.messages, messages);
+							assert.equal(Object.hasOwn(data, "file"), false);
+						}
+						if (!raw) assert.equal(result.details.spilled, scenario.textSpilled, scenario.name);
+						if (result.details.spilled) assert.match(result.details.path, /\.md$/);
+						if (raw) {
+							assert.deepEqual(data, compact, scenario.name);
+							const text = result.details.path ? readFileSync(result.details.path, "utf8") : result.content[0].text;
+							assert.equal(text, JSON.stringify(messages, null, 2));
+						} else {
+							compact = data;
+							if (scenario.name === "inline") assert.equal(result.content[0].text, "U1 | 1.1 | body\n\ncomplete: true");
+						}
+					});
+				}
+			}
+			for (const message of [{ ts: "1" }, { text: "missing ts" }]) {
+				assert.equal(Value.Check(tool.outputSchema, { messages: [message], complete: true, message_count: 1 }), false);
+			}
+			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed" }),
+				"conversations.replies": () => ({ ok: false, error: "channel_not_found" }) }, async () => {
+				await assert.rejects(tool.execute("error", { channel: "C12345678", ts: "1.1" }, undefined, () => {}, undefined as never), /channel_not_found/);
+			});
+		});
+	});
+});
+
+type FetchHandlers = Record<string, (params: Record<string, unknown>) => Record<string, unknown> | Response>;
 
 async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): Promise<void> {
 	const original = globalThis.fetch;
@@ -1312,7 +1395,8 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 				params = Object.fromEntries(new URLSearchParams(body));
 			}
 		}
-		return new Response(JSON.stringify(handler(params)), { status: 200, headers: { "content-type": "application/json" } });
+		const result = handler(params);
+		return result instanceof Response ? result : new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
 	}) as typeof fetch;
 	try {
 		await fn();

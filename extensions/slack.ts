@@ -11,11 +11,16 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { readFileSync } from "node:fs";
+import type { JsonValue } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import {
 	defaultApiCall,
 	defaultUploadBytes,
+	INLINE_MAX_BYTES,
+	INLINE_MAX_LINES,
 	buildPolicyBlock,
 	discoverRepoRoot,
 	resolveSlackConfig,
@@ -52,6 +57,39 @@ const SLACK_FORMATTING_GUIDANCE: { rules: string[]; example: string } = {
 	],
 	example: 'Native list example: {"text":"- First\\n- Second","blocks":[{"type":"rich_text","elements":[{"type":"rich_text_list","style":"bullet","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"First"}]},{"type":"rich_text_section","elements":[{"type":"text","text":"Second"}]}]}]}]}',
 };
+
+const SlackMessage = Type.Object({
+	ts: Type.String(),
+	text: Type.String(),
+	user: Type.Optional(Type.String()),
+	thread_ts: Type.Optional(Type.String()),
+	channel: Type.Optional(Type.Union([
+		Type.String(),
+		Type.Object({ id: Type.Optional(Type.String()), name: Type.Optional(Type.String()) }, { additionalProperties: true }),
+	])),
+	permalink: Type.Optional(Type.String()),
+}, { additionalProperties: true });
+
+const threadFields = {
+	complete: Type.Boolean(),
+	next_cursor: Type.Optional(Type.String()),
+	message_count: Type.Number(),
+	caveat: Type.Optional(Type.String()),
+};
+
+function structuredMessages(messages: Record<string, unknown>[], slug: string): { messages: JsonValue[] } | { file: string } {
+	const json = JSON.stringify(messages);
+	if (Buffer.byteLength(json, "utf8") <= INLINE_MAX_BYTES && json.split("\n").length <= INLINE_MAX_LINES) {
+		// These are raw JSON objects from Slack's transport, not a projected message subset.
+		return { messages: messages as JsonValue[] };
+	}
+	const hash = createHash("sha256").update(json).digest("hex").slice(0, 8);
+	const dir = join(tmpdir(), "pi-slack");
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, `${Date.now()}-${hash}-${slug}.json`);
+	writeFileSync(file, json, "utf8");
+	return { file };
+}
 
 const IDENTITY = Type.Union([Type.Literal("user"), Type.Literal("bot")], {
 	description: 'Which token to act as: "user" (a real person, needed for slack_search/slack_thread) or "bot" (an app identity). Determines which credential source is used and whose name shows as the author.',
@@ -174,7 +212,7 @@ export function searchResultText(result: SearchResult): string {
 	return `${result.output}\n\ntotal: ${result.total} | page: ${result.page} of ${result.pageCount}`;
 }
 
-export function threadResultText(result: ThreadResult, raw = false): string {
+export function threadResultText(result: Omit<ThreadResult, "messages">, raw = false): string {
 	if (raw) return result.output;
 	const lines = [result.output, "", `complete: ${result.complete}`];
 	if (!result.complete && result.nextCursor) lines.push(`next_cursor: ${result.nextCursor}`);
@@ -282,8 +320,12 @@ export default function slackExtension(pi: ExtensionAPI) {
 			name: "slack_thread",
 			label: "Slack Thread",
 			promptSnippet: "Read all replies in a Slack thread",
+			outputSchema: Type.Union([
+				Type.Object({ messages: Type.Array(SlackMessage), ...threadFields }),
+				Type.Object({ file: Type.String(), ...threadFields }),
+			]),
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` is for block extraction and slack_update round-trips: it returns the thread messages as a pure JSON array (no status trailer - `complete`/`next_cursor` stay in the result details and are not visible in the content, so an incomplete raw thread is a partial array with no in-content signal: try JSON.parse, on failure read the file named in the truncation line, and use default mode when completeness matters). Both modes are size-gated like slack_search: over the cap the full output is written to a temp file.',
+				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
 			parameters: Type.Object({
 				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
@@ -302,6 +344,13 @@ export default function slackExtension(pi: ExtensionAPI) {
 					);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],
+						structuredContent: {
+							...structuredMessages(result.messages, "thread"),
+							complete: result.complete,
+							message_count: result.messageCount,
+							...(result.nextCursor !== undefined ? { next_cursor: result.nextCursor } : {}),
+							...(result.caveat !== undefined ? { caveat: result.caveat } : {}),
+						},
 						details: result,
 					};
 				}, "user");

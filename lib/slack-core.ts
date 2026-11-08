@@ -516,6 +516,7 @@ export interface SearchResult {
 }
 
 export interface ThreadResult {
+	messages: Record<string, unknown>[];
 	output: string;
 	spilled: boolean;
 	path?: string;
@@ -735,7 +736,7 @@ export async function readThread(
 
 	const rendered = args.raw === true ? JSON.stringify(messages, null, 2) : messages.map(renderThreadLine).join("\n");
 	const gated = gateOutput(rendered, "thread");
-	return { ...gated, complete, nextCursor, caveat, messageCount: messages.length };
+	return { ...gated, messages, complete, nextCursor, caveat, messageCount: messages.length };
 }
 
 /**
