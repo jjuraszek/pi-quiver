@@ -1,7 +1,148 @@
 import { test } from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { Value } from "@sinclair/typebox/value";
+import type { TSchema } from "@sinclair/typebox";
+import type { ExtensionAPI, ToolDefinition, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import fetchExtension from "../extensions/fetch.ts";
 import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync } from "node:fs";
 import { categorize, htmlToMarkdown, htmlToMarkdownRaw, prettyJson, applyGate, collectBody, binaryExtension, classifyGitHubTarget, buildGhArgs, buildGhLogArgs, planGhRouting, executeGhRouting } from "../lib/fetch-core.ts";
+
+function registeredFetchTool(): ToolDefinition {
+	let tool!: ToolDefinition;
+	fetchExtension({ registerTool: (definition: ToolDefinition) => { tool = definition; } } as ExtensionAPI);
+	return tool;
+}
+
+test("fetch structured HTTP results validate and preserve body, status, and spill semantics", async (t) => {
+	const tool = registeredFetchTool();
+	const schema = tool.outputSchema as TSchema | undefined;
+	assert.ok(schema, "fetch must declare outputSchema");
+	const html = "<html><head><title>Title</title></head><body><article><h2>Section</h2><p>Article body.</p></article></body></html>";
+	const url = "https://example.test/response";
+	const cases = [
+		{ name: "text", body: "hello", ct: "text/plain", content: "hello" },
+		{ name: "json", body: '{"x":1}', ct: "application/json", content: '{\n  "x": 1\n}' },
+		{ name: "raw json", body: '{"x":1}', ct: "application/json", raw: true, content: '{"x":1}' },
+		{ name: "html", body: html, ct: "text/html", content: htmlToMarkdown(html, url)! },
+		{ name: "missing content type", body: "hello", content: "hello" },
+		{ name: "HEAD", body: "ignored", ct: "text/plain", method: "HEAD", content: "" },
+		{ name: "bodyless", body: null, status: 204, ct: "text/plain", content: "" },
+		{ name: "404", body: "not found", status: 404, ct: "text/plain", content: "not found" },
+		{ name: "503", body: "unavailable", status: 503, ct: "text/plain", content: "unavailable" },
+		{ name: "text spill", body: "x".repeat(32_001), ct: "text/plain", spilled: true },
+		{ name: "line spill", body: "x\n".repeat(1001), ct: "text/plain", spilled: true },
+		{ name: "503 spill", body: "x".repeat(32_001), status: 503, ct: "text/plain", spilled: true },
+		{ name: "capped text", body: "x".repeat(1_000_100), ct: "text/plain", spilled: true, cap: 1_000_000 },
+		{ name: "binary", body: Buffer.from([0x89, 0x50, 0x00]), ct: "image/png", spilled: true },
+		{ name: "capped binary", body: Buffer.alloc(50_000_001), ct: "application/zip", spilled: true, cap: 50_000_000 },
+	];
+	for (const c of cases) await t.test(c.name, async (t) => {
+		t.mock.method(globalThis, "fetch", async () => {
+			const response = new Response(c.body === null ? null : Buffer.from(c.body), {
+				status: c.status ?? 200, headers: c.ct ? { "content-type": c.ct } : {},
+			});
+			Object.defineProperty(response, "url", { value: url });
+			return response;
+		});
+		const result = await tool.execute("typed", { url, ...(c.method ? { method: c.method } : {}), raw: c.raw }, undefined, undefined, {} as ExtensionToolContext);
+		const structured = result.structuredContent as Record<string, unknown>;
+		assert.ok(Value.Check(schema, structured), JSON.stringify(structured));
+		assert.equal(structured.spilled, c.spilled ?? false);
+		assert.equal(structured.url, url);
+		assert.equal(structured.status, c.status ?? 200);
+		assert.equal(structured.contentType, c.ct);
+		assert.equal(Object.hasOwn(structured, "contentType"), c.ct !== undefined);
+		assert.equal(Object.hasOwn(structured, "truncated"), c.cap !== undefined);
+		assert.equal(structured.truncated, c.cap ? true : undefined);
+		if (structured.spilled) {
+			assert.equal(Object.hasOwn(structured, "content"), false);
+			assert.equal(typeof structured.file, "string");
+			const file = structured.file as string;
+			try {
+				const expected = Buffer.from(c.body!).subarray(0, c.cap);
+				assert.deepEqual(readFileSync(file), expected);
+				assert.ok(result.content[0].type === "text" && result.content[0].text.includes(`Saved-To: ${file}`));
+			} finally { rmSync(file); }
+		} else {
+			assert.equal(Object.hasOwn(structured, "file"), false);
+			assert.equal(structured.content, c.content);
+			const text = result.content[0];
+			assert.equal(text.type, "text");
+			if (text.type === "text") {
+				assert.ok(text.text.startsWith(`HTTP ${c.status ?? 200}`));
+				assert.ok(text.text.endsWith(c.content || "Length: 0 (no body)"));
+			}
+		}
+	});
+});
+
+test("fetch schema rejects missing payloads, wrong discriminants, and invalid optional fields", () => {
+	const schema = registeredFetchTool().outputSchema as TSchema | undefined;
+	assert.ok(schema, "fetch must declare outputSchema");
+	for (const value of [
+		{ spilled: false, url: "u", content: "" },
+		{ spilled: true, url: "u", file: "f", truncated: true },
+	]) assert.ok(Value.Check(schema, value));
+	for (const value of [
+		{ url: "u", content: "" }, { spilled: false, content: "" },
+		{ spilled: false, url: "u", file: "f" }, { spilled: true, url: "u", content: "" },
+		{ spilled: "false", url: "u", content: "" }, { spilled: false, url: "u", content: 3 },
+		{ spilled: true, url: "u", file: 3 },
+		...[{ truncated: false }, { status: "200" }, { contentType: null }].map(patch => ({ spilled: false, url: "u", content: "", ...patch })),
+	]) assert.ok(!Value.Check(schema, value), JSON.stringify(value));
+});
+
+test("fetch thrown protocol, network, and abort failures reject instead of returning structured content", async (t) => {
+	const tool = registeredFetchTool();
+	await assert.rejects(tool.execute("bad", { url: "ftp://example.test/x" }, undefined, undefined, {} as ExtensionToolContext), /Unsupported protocol/);
+	for (const reason of [new TypeError("network failure"), new DOMException("aborted", "AbortError")]) {
+		t.mock.method(globalThis, "fetch", async () => { throw reason; });
+		await assert.rejects(tool.execute("bad", { url: "https://example.test/x" }, undefined, undefined, {} as ExtensionToolContext), error => error === reason);
+	}
+});
+
+test("fetch gh adapter returns typed bodies and spill files without HTTP metadata or Source headers", async () => {
+	const program = `
+		import assert from "node:assert/strict";
+		import cp from "node:child_process";
+		import { promisify } from "node:util";
+		import { syncBuiltinESMExports } from "node:module";
+		import { readFileSync, rmSync } from "node:fs";
+		import { Value } from "@sinclair/typebox/value";
+		let body;
+		cp.execFile = () => { throw new Error("unexpected subprocess"); };
+		cp.execFile[promisify.custom] = async (command) => {
+			assert.equal(command, "gh");
+			return { stdout: body + "\\n", stderr: "" };
+		};
+		syncBuiltinESMExports();
+		globalThis.fetch = () => { throw new Error("unexpected HTTP request"); };
+		const { default: extension } = await import(${JSON.stringify(new URL("../extensions/fetch.ts", import.meta.url).href)});
+		let tool;
+		extension({ registerTool: definition => { tool = definition; } });
+		assert.ok(tool.outputSchema, "fetch must declare outputSchema");
+		for (body of ["# Issue\\n\\nBody", "x".repeat(32_001)]) {
+			const url = "https://github.com/o/r/issues/1";
+			const result = await tool.execute("typed", { url });
+			const value = result.structuredContent;
+			assert.ok(Value.Check(tool.outputSchema, value));
+			assert.equal(value.url, url);
+			for (const key of ["status", "contentType", "truncated"]) assert.ok(!Object.hasOwn(value, key));
+			if (body.length > 32_000) {
+				assert.equal(value.spilled, true);
+				assert.ok(!Object.hasOwn(value, "content"));
+				try { assert.equal(readFileSync(value.file, "utf8"), body); }
+				finally { rmSync(value.file); }
+			} else {
+				assert.deepEqual(value, { spilled: false, url, content: body });
+				assert.equal(result.content[0].text, "Source: gh issue view " + url + " --comments\\n\\n" + body);
+			}
+		}
+	`;
+	await promisify(execFile)(process.execPath, ["--input-type=module", "-e", program], { timeout: 20_000 });
+});
 
 const empty = Buffer.alloc(0);
 const withNul = Buffer.from([0x68, 0x00, 0x69]); // "h\0i"
@@ -282,6 +423,7 @@ test("executeGhRouting: success renders gh result; failure falls through (null)"
 	assert.equal(okResult!.details.category, "markdown");
 	assert.equal(okResult!.details.status, undefined);
 	assert.ok(okResult!.output.startsWith("Source: gh issue view https://github.com/o/r/issues/1 --comments"));
+	assert.equal(okResult!.body, "# Issue title\n\nbody text");
 
 	const failRunner = async () => ({ ok: false as const });
 	const failResult = await executeGhRouting({}, new URL("https://github.com/o/r/issues/1"), undefined, failRunner);
@@ -300,6 +442,7 @@ test("executeGhRouting: large gh output spills to a file", async () => {
 	assert.ok(result!.details.file, "expected a spill file path");
 	assert.ok(existsSync(result!.details.file!));
 	assert.ok(result!.output.includes("Saved-To:"));
+	assert.equal(result!.body, "");
 	rmSync(result!.details.file!);
 });
 
@@ -320,6 +463,7 @@ test("executeGhRouting: job URL makes summary + --log-failed calls, appends logs
 	assert.ok(result!.output.includes("Source: gh run view --job 7 --log-failed --repo o/r"));
 	assert.ok(result!.output.includes("## Failed step logs"));
 	assert.ok(result!.output.includes("##[error]assertion failed"));
+	assert.equal(result!.body, "X Run tests\n\n## Failed step logs\n\n##[error]assertion failed");
 	assert.equal(result!.details.ghCommand, "run view --job");
 	assert.equal(result!.details.url, "https://github.com/o/r/actions/runs/1/job/7");
 });

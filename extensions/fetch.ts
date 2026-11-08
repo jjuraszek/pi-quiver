@@ -16,6 +16,13 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { fetchUrl, DEFAULT_TIMEOUT_MS, type FetchToolDetails } from "../lib/fetch-core.ts";
 
+const resultFields = {
+	url: Type.String(),
+	status: Type.Optional(Type.Number()),
+	contentType: Type.Optional(Type.String()),
+	truncated: Type.Optional(Type.Literal(true)),
+};
+
 export default function fetchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "fetch",
@@ -23,6 +30,10 @@ export default function fetchExtension(pi: ExtensionAPI) {
 		description:
 			"Fetch a URL over HTTP(S). HTML is extracted to Markdown (readability + turndown). Binary content (images, PDFs, archives) is saved untouched to a temp file and only a path is returned. Text/Markdown/JSON over 32KB or 1000 lines is written to a temp file with a 60-line preview; smaller content is returned inline. Parsable downloads are capped at 1MB, binary at 50MB. When the body is written to a file, grep it or read with offset/limit; converted Markdown is grep-able by heading (^#). GitHub issue/PR/repo/actions-run/actions-job URLs are served via the gh CLI when available (falls back to HTTP otherwise; raw=true forces the rendered HTML page); failed runs/jobs append failed-step logs (best-effort, summary-only when nothing failed).",
 		promptSnippet: "Fetch the contents of a URL",
+		outputSchema: Type.Union([
+			Type.Object({ spilled: Type.Literal(false), ...resultFields, content: Type.String() }),
+			Type.Object({ spilled: Type.Literal(true), ...resultFields, file: Type.String() }),
+		]),
 		parameters: Type.Object({
 			url: Type.String({ description: "Absolute http(s) URL" }),
 			method: Type.Optional(
@@ -44,9 +55,17 @@ export default function fetchExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal) {
 			const result = await fetchUrl({ ...params, signal: signal ?? undefined });
+			const d = result.details;
 			return {
 				content: [{ type: "text" as const, text: result.output }],
-				details: result.details,
+				details: d,
+				structuredContent: {
+					url: d.url!,
+					...(d.status !== undefined ? { status: d.status } : {}),
+					...(d.contentType !== undefined ? { contentType: d.contentType } : {}),
+					...(d.truncated ? { truncated: true as const } : {}),
+					...(d.spilled ? { spilled: true as const, file: d.file! } : { spilled: false as const, content: result.body }),
+				},
 			};
 		},
 

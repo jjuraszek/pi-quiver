@@ -3,13 +3,13 @@
 base: 620091bd35d15945dc0ac5dc0207b43a9d4d1832
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 2
+iterations: 3
 allowance: 10
 
 | row | status | attempts | evidence |
 |---|---|---|---|
 | 1 | done | 1 | timeout -k 30 180 env -u PI_CODING_AGENT_DIR node --test test/doc_to_md.test.ts; 126 passed, 1 skipped, 0 failed; conversion and info match CLI JSON and bundle excludes host/TypeBox; no paid or external actions launched |
-| 2 | open | 0 | |
+| 2 | done | 1 | timeout -k 30 60 env -u PI_CODING_AGENT_DIR node --test test/fetch.test.ts; 60 passed, 0 failed; HTTP/gh schemas, inline/spill bodies, caps and thrown errors verified locally; no paid or external actions launched |
 | 3 | open | 0 | |
 | 4 | open | 0 | |
 | 5 | open | 0 | |
@@ -22,3 +22,4 @@ allowance: 10
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 6
 row 1 done | Added typed conversion/info results with unchanged text and CLI JSON; no paid or external actions launched. | Reuse publicHandle in lib/doc-to-md-handle.ts for CLI-compatible projections and test/doc_to_md.test.ts for schema/adapter checks.
+row 2 done | Added schema-validated fetch inline/spill results and core body data; no paid or external actions launched. | Reuse FetchResult.body in lib/fetch-core.ts for header-free bodies and test/fetch.test.ts for mocked HTTP/gh adapter checks.
