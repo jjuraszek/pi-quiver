@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "@sinclair/typebox/value";
+import type { TSchema } from "@sinclair/typebox";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +19,8 @@ import {
 	resolveCredential,
 	userConfigEnvPath,
 	type SlackConfig,
+	type SearchResult,
+	type ThreadResult,
 } from "../lib/slack-core.ts";
 
 function withSettings(
@@ -1324,7 +1327,8 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 			slackExtension(api);
 			await handlers.session_start({}, makeFakeCtx(cwd));
 			const tool = defs.find((d) => d.name === "slack_thread")!;
-			assert.ok(tool.outputSchema, "thread must declare outputSchema");
+			const schema = tool.outputSchema as TSchema | undefined;
+			assert.ok(schema, "thread must declare outputSchema");
 			for (const scenario of scenarios) {
 				let compact: unknown;
 				for (const raw of [false, true]) {
@@ -1342,8 +1346,9 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 						const result = await tool.execute("typed", { channel: "C12345678", ts: "1.1", raw }, undefined, () => {}, undefined as never);
 						assert.equal(result.content[0].type, "text");
 						if (result.content[0].type !== "text") throw new Error("expected text content");
+						const details = result.details as ThreadResult;
 						const data = result.structuredContent as Record<string, any>;
-						assert.ok(Value.Check(tool.outputSchema!, data), scenario.name);
+						assert.ok(Value.Check(schema, data), scenario.name);
 						const messages = scenario.cap ? Array.from({ length: 50 }, () => scenario.messages).flat() : scenario.messages;
 						assert.equal(data.message_count, messages.length);
 						assert.equal(data.complete, !(scenario.cap || scenario.throttle));
@@ -1351,21 +1356,24 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 						if (scenario.cap || scenario.throttle) assert.equal(data.next_cursor, "NEXT");
 						assert.equal(Object.hasOwn(data, "caveat"), !!scenario.throttle);
 						if (scenario.throttle) assert.match(data.caveat, /rate limited/);
-						assert.deepEqual(result.details.messages, messages);
+						assert.deepEqual(details.messages, messages);
 						if (scenario.spilled) {
 							assert.equal(Object.hasOwn(data, "messages"), false);
 							assert.match(data.file, /pi-slack[/\\].*-thread\.json$/);
 							assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), messages);
-							assert.notEqual(data.file, result.details.path);
+							assert.notEqual(data.file, details.path);
 						} else {
 							assert.deepEqual(data.messages, messages);
 							assert.equal(Object.hasOwn(data, "file"), false);
 						}
-						if (!raw) assert.equal(result.details.spilled, scenario.textSpilled, scenario.name);
-						if (result.details.spilled) assert.match(result.details.path, /\.md$/);
+						if (!raw) assert.equal(details.spilled, scenario.textSpilled, scenario.name);
+						if (details.spilled) {
+							assert.ok(details.path);
+							assert.match(details.path, /\.md$/);
+						}
 						if (raw) {
 							assert.deepEqual(data, compact, scenario.name);
-							const text = result.details.path ? readFileSync(result.details.path, "utf8") : result.content[0].text;
+							const text = details.path ? readFileSync(details.path, "utf8") : result.content[0].text;
 							assert.equal(text, JSON.stringify(messages, null, 2));
 						} else {
 							compact = data;
@@ -1375,7 +1383,7 @@ test("slack_thread structured results preserve raw objects, pagination and indep
 				}
 			}
 			for (const message of [{ ts: "1" }, { text: "missing ts" }]) {
-				assert.equal(Value.Check(tool.outputSchema, { messages: [message], complete: true, message_count: 1 }), false);
+				assert.equal(Value.Check(schema, { messages: [message], complete: true, message_count: 1 }), false);
 			}
 			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed" }),
 				"conversations.replies": () => ({ ok: false, error: "channel_not_found" }) }, async () => {
@@ -1403,7 +1411,8 @@ test("slack_search structured results preserve matches, paging and independent s
 			slackExtension(api);
 			await handlers.session_start({}, makeFakeCtx(cwd));
 			const tool = defs.find((d) => d.name === "slack_search")!;
-			assert.ok(tool.outputSchema, "search must declare outputSchema");
+			const schema = tool.outputSchema as TSchema | undefined;
+			assert.ok(schema, "search must declare outputSchema");
 			for (const scenario of scenarios) {
 				let calls = 0;
 				const total = scenario.matches.length === 0 ? 0 : 2042;
@@ -1416,28 +1425,30 @@ test("slack_search structured results preserve matches, paging and independent s
 					},
 				}, async () => {
 					const result = await tool.execute("typed", { query: "hello in:#general", count: 100, page: 2 }, undefined, () => {}, undefined as never);
+					const details = result.details as SearchResult;
 					const data = result.structuredContent as Record<string, any>;
-					assert.ok(Value.Check(tool.outputSchema!, data), scenario.name);
+					assert.ok(Value.Check(schema, data), scenario.name);
 					assert.deepEqual([data.total, data.page, data.page_count], [total, 2, 21]);
-					assert.deepEqual(result.details.matches, scenario.matches);
+					assert.deepEqual(details.matches, scenario.matches);
 					assert.equal(Object.hasOwn(data, "messages"), false);
 					if (scenario.spilled) {
 						assert.equal(Object.hasOwn(data, "matches"), false);
 						assert.match(data.file, /pi-slack[/\\].*-search\.json$/);
 						assert.deepEqual(JSON.parse(readFileSync(data.file, "utf8")), scenario.matches);
-						assert.notEqual(data.file, result.details.path);
+						assert.notEqual(data.file, details.path);
 					} else {
 						assert.deepEqual(data.matches, scenario.matches);
 						assert.equal(Object.hasOwn(data, "file"), false);
 					}
-					assert.equal(result.details.spilled, scenario.textSpilled, scenario.name);
+					assert.equal(details.spilled, scenario.textSpilled, scenario.name);
 					const rendered = scenario.matches.map((m) =>
 						`${"user" in m ? m.user : "unknown"} | #${"channel" in m ? m.channel.name : "unknown"} | ${m.ts} | ${"permalink" in m ? m.permalink : ""} | ${m.text}`).join("\n");
 					assert.equal(result.content[0].type, "text");
 					if (result.content[0].type !== "text") throw new Error("expected text content");
 					if (scenario.textSpilled) {
-						assert.match(result.details.path, /\.md$/);
-						assert.equal(readFileSync(result.details.path, "utf8"), rendered);
+						assert.ok(details.path);
+						assert.match(details.path, /\.md$/);
+						assert.equal(readFileSync(details.path, "utf8"), rendered);
 						assert.match(result.content[0].text, /\[truncated - full output written to /);
 					} else {
 						assert.equal(result.content[0].text, `${rendered}\n\ntotal: ${total} | page: 2 of 21`);
@@ -1446,7 +1457,7 @@ test("slack_search structured results preserve matches, paging and independent s
 				assert.equal(calls, 1, "search fetches exactly one page");
 			}
 			for (const match of [{ ts: "1" }, { text: "missing ts" }]) {
-				assert.equal(Value.Check(tool.outputSchema, { matches: [match], total: 1, page: 1, page_count: 1 }), false);
+				assert.equal(Value.Check(schema, { matches: [match], total: 1, page: 1, page_count: 1 }), false);
 			}
 			await withFakeFetch({ "auth.test": () => ({ ok: true, team_id: "T-typed-search" }),
 				"search.messages": () => ({ ok: false, error: "invalid_auth" }) }, async () => {
@@ -1772,7 +1783,7 @@ async function runDmTool(
 	writeMentionCache(cacheFile);
 	const run: DmRun = { calls: [] };
 	const record =
-		(method: string, respond: (params: Record<string, unknown>) => Record<string, unknown>) =>
+		(method: string, respond: FetchHandlers[string]) =>
 		(params: Record<string, unknown>) => {
 			run.calls.push({ method, params });
 			return respond(params);

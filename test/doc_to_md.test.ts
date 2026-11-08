@@ -78,6 +78,13 @@ test("doc_to_md output schema types every public field and nested member", async
 		assert.ok(Value.Check(schema, projected));
 		assert.equal(handle.formatHandle(projected), r.output);
 		assert.deepEqual(projected.outline, [{ line: 1, level: 1, title: "Heading", page: 2 }]);
+		for (const key of ["wordsErrors", "sidecars", "wordSidecars", "ocrErrors"]) {
+			const withEntry = (value: unknown) => key === "wordsErrors"
+				? { ...projected, wordsErrors: { appendix: value } }
+				: { ...projected, ocr: { ...projected.ocr, [key]: { appendix: value } } };
+			assert.ok(Value.Check(schema, withEntry("page data")), `${key} accepts string values under nonnumeric keys`);
+			assert.ok(!Value.Check(schema, withEntry(42)), `${key} rejects non-string values under nonnumeric keys`);
+		}
 		for (const key of Object.keys(projected)) {
 			const partial = { ...projected } as Record<string, unknown>;
 			delete partial[key];
@@ -112,6 +119,7 @@ test("tool description names supported formats and bundle locations", () => {
 	for (const term of ["DOC", "XLSM", ".msg", ".eml", "pageImages", "pages/", "attachments/", "Two-pass OCR", "ocrMode", "Page-Stats", "ocrMaxPages"]) assert.ok(description.includes(term), term);
 	assert.doesNotMatch(description, /Pages without a text layer and image inputs always keep their picture in images\//);
 	assert.ok(!description.includes("\n"));
+	assert.doesNotMatch(description, /pymupdf4llm|PyMuPDF|unpdf|mammoth|python-docx|markdownify|Turndown/);
 });
 
 const FAKE_TIER = fileURLToPath(new URL("../test/fixtures/fake-tier.mjs", import.meta.url));
@@ -1665,6 +1673,17 @@ test("same stem twice without overwrite renames and notes", async () => {
 		assert.ok(c.details.savedTo.endsWith("multipage-3.md"));
 		assert.match(c.output, /^Notes: renamed to multipage-3 \(multipage\.md exists\)$/m);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("tool schema uses concise option help without changing shared help", () => {
+	const props = registeredDocTool().parameters.properties;
+	const overrides = ["pages", "outputDir", "words", "ocrMode", "hideAnnotations"];
+	assert.deepEqual(core.DOC_TO_MD_OPTIONS.filter((d) => d.toolHelp !== undefined).map((d) => d.key).sort(), [...overrides].sort());
+	for (const d of core.DOC_TO_MD_OPTIONS) {
+		if (d.settingsOnly) continue;
+		assert.equal(props[d.key].description, d.toolHelp ?? d.help, d.key);
+		if (overrides.includes(d.key)) assert.ok(d.toolHelp!.length < d.help.length, d.key);
+	}
 });
 
 test("tool schema omits the settings-only ocrMaxPages; a per-call value cannot raise the ceiling", () => {

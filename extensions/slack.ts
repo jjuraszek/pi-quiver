@@ -384,8 +384,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Post",
 			promptSnippet: "Post a Slack message, reply, or headline+detail announcement",
 			description:
-				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts the detail `blocks` with `thread_body` fallback (or text-only `thread_body`) as the first threaded reply in the same call; for text-only detail, if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the returned error supplies recovery-artifact details. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact." + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
-			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
+				"Post a Slack message via chat.postMessage, as `as: \"user\"` or `as: \"bot\"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Plain post: `text` and/or `blocks` (Block Kit JSON, passed through unvalidated). Threaded reply: also set `thread_ts` - no headline is ever emitted, `thread_body` (or `text`) becomes the reply body. Announce mode: set `thread_body` WITHOUT `thread_ts` - posts a short single-line `text` headline, then posts the detail `blocks` with `thread_body` fallback (or text-only `thread_body`) as the first threaded reply in the same call; for text-only detail, if `thread_body`'s rendered length exceeds the configured uploadThresholdChars (default 4000), it is delivered as a threaded file upload instead. Recovery: re-invoke with `thread_ts` set (never re-omit it) to post only into the existing thread - a second headline is never sent. On detail-delivery failure the headline is marked \"detail pending\" and the detail is saved to a temp file; the returned error supplies recovery-artifact details. `unfurl_links`/`unfurl_media` apply to this post only, are omitted when unset (Slack's default stands), and slack_update cannot change unfurling after the fact.",
+			promptGuidelines: [...SLACK_FORMATTING_GUIDANCE.rules, SLACK_FORMATTING_GUIDANCE.example],
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
@@ -467,8 +467,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			label: "Slack Update",
 			promptSnippet: "Edit an existing Slack message",
 			description:
-				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).' + "\n\n" + SLACK_FORMATTING_GUIDANCE.rules.join("\n") + "\n\n" + SLACK_FORMATTING_GUIDANCE.example,
-			promptGuidelines: SLACK_FORMATTING_GUIDANCE.rules,
+				'Edit a message via chat.update, as `as: "user"` or `as: "bot"`. `channel` accepts #name, channel ID, @name, or user ID (DM). Only the identity that originally posted the message can edit it (Slack constraint; surfaced as an error otherwise). Accepts `text` and/or `blocks` (Block Kit JSON, unvalidated).',
+			promptGuidelines: [...SLACK_FORMATTING_GUIDANCE.rules, SLACK_FORMATTING_GUIDANCE.example],
 			parameters: Type.Object({
 				as: IDENTITY,
 				channel: Type.String({ description: "#name, channel ID, @name, or user ID (DM)" }),
