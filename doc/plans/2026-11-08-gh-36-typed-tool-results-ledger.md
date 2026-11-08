@@ -3,7 +3,7 @@
 base: 620091bd35d15945dc0ac5dc0207b43a9d4d1832
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 9
+iterations: 10
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -17,7 +17,7 @@ allowance: 10
 | 7 | done | 1 | timeout -k 30 60 env -u PI_CODING_AGENT_DIR node --test test/slack-codemode.test.ts; 2 passed, 0 failed; model-free SDK sessions prove default exposure and real sandbox refresh in both modes; no paid or external actions launched |
 | 8 | done | 1 | timeout -k 30 180 env -u PI_CODING_AGENT_DIR node --test test/slack-core.test.ts test/slack-config.test.ts test/slack-cli.test.ts; 237 passed, 0 failed; mapped errors prove per-surface recovery and refresh description names scripts only; no paid or external actions launched |
 | 9 | done | 1 | timeout -k 30 30 node -e 'require("node:assert/strict").deepEqual([require("./package.json").devDependencies["@earendil-works/pi-coding-agent"], ...["Pi 0.99.0 or later", "typed results", "codemode scripts only", "tools.slack_cache_refresh({})"].map(s => require("node:fs").readFileSync("README.md", "utf8").includes(s))], ["^1.5.0", true, true, true, true])'; passed: existing ^1.5.0 pin and README minimum host plus script-only refresh verified; no paid or external actions launched |
-| 10 | open | 0 | |
+| 10 | done | 1 | timeout -k 30 30 node -e 'require("node:assert/strict").deepEqual(Object.entries({"CHANGELOG.md":["## Unreleased","- Typed results:","- Script-only refresh:"],"doc/doc-to-md.md":["## Structured results","structuredContent","savedTo","pageCount","outline","metadata","toc","sheets"],"doc/fetch.md":["## Structured results","spilled: false","spilled: true","contentType","truncated: true","404","503"],"doc/slack.md":["### Structured results","messages","matches","message_count","page_count","next_cursor","caveat","independently",".json"]}).flatMap(([p, terms]) => terms.filter(t => !require("node:fs").readFileSync(p, "utf8").split("## v")[0].includes(t)).map(t => p + ": missing " + t)), [])'; passed: Unreleased bullets and all four documented result shapes; description diet not claimed or amended; no paid or external actions launched |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 6
@@ -30,3 +30,4 @@ row 5 done | Verified unchanged direct text for all four tools and doc-to-md CLI
 row 7 done | Made cache refresh script-only and proved SDK exposure plus sandbox execution in both modes; no paid or external actions launched. | Reuse test/slack-codemode.test.ts for model-free host sessions with a synthetic assistant call and fake Slack transport.
 row 8 done | Split channel_not_found recovery by surface and documented script-only refresh with 237 passing tests; no paid or external actions launched. | Reuse formatToolError and runSlack for surface-specific hints, and doc/slack.md for the script-only refresh contract.
 row 9 done | Documented Pi 0.99.0 minimum for typed results and script-only refresh and verified the existing ^1.5.0 dev pin; no paid or external actions launched. | Reuse README.md Install for the host-version requirement and codemode-only refresh invocation.
+row 10 done | Documented all four structured result shapes and added typed-result and script-only refresh changelog bullets; no paid or external actions launched. | Reuse doc/doc-to-md.md, doc/fetch.md, and doc/slack.md for script field contracts, pagination, and independent spill handling.

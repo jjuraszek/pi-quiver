@@ -411,16 +411,48 @@ spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
 
-Set `raw: true` for block extraction and `slack_update` round-trips. The
-result content is a pure JSON array of raw message objects with `blocks`
-untouched and no status trailer. Consequently, `complete: false` and
-`nextCursor` live only in result `details`: pagination caps and 429 throttles
-produce a partial array with no in-content signal, while other errors surface
-as tool errors with no content. A spill preview starts with `[` just like a
-complete array. Attempt `JSON.parse` on the content; on failure, read the file
-named in the truncation line. When completeness matters, run default (compact)
-mode first so `complete:` and `next_cursor` appear inline, then use `raw: true`
-for extraction or a round-trip.
+Set `raw: true` for block extraction and `slack_update` round-trips in text
+results. Inline raw text is a JSON array with `blocks` untouched and no
+status trailer; large text spills with a preview instead. A partial raw
+array has no in-content completeness signal. Codemode scripts use the
+structured fields below instead of parsing text or making a second call
+in compact mode.
+
+### Structured results
+
+On Pi 0.99.0 or later, `slack_thread` and `slack_search` declare an
+`outputSchema` and return `structuredContent` to codemode scripts. Their
+direct-call text stays unchanged. `raw` changes only thread text, never
+the structured messages or pagination metadata.
+
+| Call | Inline shape | Spilled shape |
+|---|---|---|
+| `await tools.slack_thread({ channel, ts })` | `messages: SlackMessage[]`, `complete: boolean`, `message_count: number`, optional `next_cursor: string`, `caveat: string` | `file: string` replaces `messages`; all metadata stays |
+| `await tools.slack_search({ query })` | `matches: SlackMessage[]`, `total: number`, `page: number`, `page_count: number` | `file: string` replaces `matches`; all metadata stays |
+
+`SlackMessage` is the raw Slack object, including `blocks` and unknown
+fields. The schema requires string `ts` and `text`; it types optional
+string `user`, `thread_ts`, and `permalink`. Optional `channel` is either
+a string or an object with optional string `id` and `name`, allowing other
+fields too. A search match with only `channel: { name }` is valid.
+
+Thread `message_count` counts the returned messages. `complete: false`
+marks a capped or throttled read; pass `next_cursor` as `cursor` to resume.
+The throttle explanation is in `caveat` when present. Optional keys are
+omitted when unavailable, not set to null. Search returns one page with
+`total`, `page`, and `page_count` for paging. Empty reads use `messages: []`
+and `message_count: 0`, or `matches: []` and `total: 0`.
+
+Text and structured arrays are gated independently at 32,000 UTF-8 bytes
+or 1,000 lines. The structured gate measures the serialized JSON array,
+not the compact text or preview. Over the gate, `file` names a `.json` file
+under the system temp directory's `pi-slack/`; it contains only the array,
+not an envelope. `messages` or `matches` is absent, not an empty array.
+A text spill uses its own `.md` file and preview. Both may be inline,
+either may spill alone, or both may spill into two distinct files. Read
+and parse the structured `file` for messages; do not parse the text spill
+as structured data. Slack errors return `isError` text without
+`structuredContent`.
 
 ### Conditional formatting (`slack_post`, `slack_update`)
 

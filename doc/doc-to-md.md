@@ -2,6 +2,69 @@
 
 `doc_to_md` takes a local `.pdf`, `.docx`, `.doc`, `.pptx`, `.xlsx`, `.xlsm`, `.xls`, `.msg`, `.eml`, `.html`, `.htm`, `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`, `.bmp`, or `.gif` path, writes a Markdown bundle on disk, and returns a concise handle - never inline Markdown. For remote documents, `fetch` the URL first, then pass its saved path here.
 
+## Structured results
+
+On Pi 0.99.0 or later, `await tools.doc_to_md({ path })` in a codemode
+script receives `structuredContent`, declared by the tool's `outputSchema`.
+Conversion returns the same object as CLI `--json`; `info: true` returns
+the same object as CLI `--info --json`. Direct-call text and CLI output
+are unchanged. Failures throw without a structured result.
+
+### Conversion handle
+
+`savedTo`, `pageCount`, and `outline` come from the same data as the text
+handle's `Saved-To:`, `Page-Count:`, and `Outline` lines. Markdown stays on
+disk: read `savedTo` with offset/limit. All fields below are present;
+nullable fields use `null`, and empty collections use `[]` or `{}`.
+Internal `path`, `backend`, `pymupdfVersion`, `inputType`, `file`, and
+`outputDir` fields are excluded from this public conversion shape.
+
+| Fields | Shape |
+|---|---|
+| `savedTo` | string |
+| `imagesDir`, `sheetsDir`, `pagesDir`, `pageStatsPath`, `ocrDir`, `wordsPath` | string or null |
+| `type` | `pdf`, `docx`, `doc`, `pptx`, `xlsx`, `xlsm`, `xls`, `html`, `image`, or `email` |
+| `engine` | `pymupdf4llm`, `pymupdf-text`, `unpdf`, `openpyxl`, `xlrd`, `mammoth`, `python-docx`, `markdownify`, `turndown`, `copy`, `extract-msg`, or `email` |
+| `tier` | `primary`, `fallback`, `unpdf`, `excel`, `docx`, `html`, `image`, or `email` |
+| `pageCount`, `explicitBreaks` | integer or null |
+| `pages` | integer array or null (all pages) |
+| `imageCount`, `pageImageCount`, `bytes`, `lines`, `outlineTotal` | integer |
+| `pageImagesReason`, `degraded`, `fallbackReason`, `wordsReason` | string or null |
+| `failedPages`, `emptyPages` | integer arrays |
+| `notes` | string array |
+| `outline` | array of `{ line, level, title, page }`: integer line/level, string title, integer or null page |
+| `ocr` | OCR object below, or null |
+| `pageStats` | array of `{ page, chars, images, imageCoverage }` (numeric fields) or `{ page, error }` (integer page, string error), or null |
+| `nativeImages` | array of `{ page, file, width, height }`: string file, integer page/width/height |
+| `wordsErrors` | object mapping page numbers (JSON string keys) to error strings |
+
+The OCR object contains `status` (`off`, `unavailable`, `skipped`, `ran`),
+`lang` (string), `mode` (`textless`, `all`), `ocrMaxPages` (integer),
+`reason` and `childError` (string or null), `tesseract` (boolean or null),
+and `killed` (integer page or null). Its integer-array fields are `textless`,
+`pages`, `noText`, `ocrFailed`, `budgetStopped`, `ceilingStopped`, and
+`notAttempted`. `sidecars`, `wordSidecars`, and `ocrErrors` map page numbers
+(JSON string keys) to paths or error strings.
+
+### Inspection handle
+
+`info: true` writes no bundle. All inspection fields are present:
+
+| Fields | Shape |
+|---|---|
+| `type` | same input-type values as conversion |
+| `backend` | `uv`, `python`, `venv`, or `none` |
+| `pageCount` | integer or null |
+| `metadata` | object mapping string keys to string values |
+| `toc` | array of `{ level, title, page }`: integer level, string title, integer or null page |
+| `tocTotal`, `sheetsTotal` | integer |
+| `sheets` | sheet inventory array, or null |
+
+Each sheet has integer `index`, string `name`, `kind` (`worksheet` or
+`chartsheet`), boolean `hidden` and `rendered`, nullable integer `rows` and
+`cols`, integer `hiddenRows`, `hiddenCols`, `charts`, and `images`, and
+string or null `csv`.
+
 ## Backend ladder
 
 The backend is resolved once per process. Every conversion tier is a fresh child process, so a stuck MuPDF or PDF.js call can be killed.
