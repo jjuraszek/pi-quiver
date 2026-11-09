@@ -3,7 +3,7 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-## Unreleased
+## v6.16.1 - 2026-11-09
 
 - doc_to_md result and option enums share one declaration in `lib/`, so members cannot drift between TypeScript types and tool schemas. (#38)
 
