@@ -4,9 +4,12 @@
  */
 import { extname } from "node:path";
 
-export type InputType = "pdf" | "docx" | "doc" | "pptx" | "xlsx" | "xlsm" | "xls" | "html" | "image" | "email";
-export type ImageFormat = "png" | "jpg";
-export type OcrMode = "textless" | "all";
+export const INPUT_TYPES = ["pdf", "docx", "doc", "pptx", "xlsx", "xlsm", "xls", "html", "image", "email"] as const;
+export type InputType = (typeof INPUT_TYPES)[number];
+export const IMAGE_FORMATS = ["png", "jpg"] as const;
+export type ImageFormat = (typeof IMAGE_FORMATS)[number];
+export const OCR_MODES = ["textless", "all"] as const;
+export type OcrMode = (typeof OCR_MODES)[number];
 
 export interface Tunables {
 	primaryTimeoutMs: number;
@@ -78,7 +81,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "overwrite", flag: "--overwrite", type: "bool", default: false, settable: false, help: "Replace an existing completed <stem>.md bundle" },
 	{ key: "pageImages", flag: "--page-images", type: "bool", default: false, settable: false, help: "Also render every selected page to pages/<stem>-pNNN.<imageFormat> at imageDpi (PDF, PPTX, .doc, DOCX via LibreOffice); off by default" },
 	{ key: "words", toolHelp: "Write word positions to <stem>.words.json, or ocr/<stem>-pNNN.words.json for ocrMode all. Never triggers OCR. PDF and image inputs only.", flag: "--words", type: "bool", default: false, settable: false, help: "Write word positions: <stem>.words.json beside the Markdown lists every text-layer word of each selected page with its bbox (PDF points, top-left origin, display orientation; image inputs in source pixels) and the words inline OCR recognized, tagged source \"text\" or \"ocr\"; under --ocr-mode all the OCR words go to ocr/<stem>-pNNN.words.json beside each sidecar. Never triggers OCR. PDF and image inputs only." },
-	{ key: "ocrMode", toolHelp: "textless (default): OCR empty text layers inline. all: OCR selected pages to ocr/ sidecars without changing Markdown; requires ocr and explicit pages (PDF, PPTX, DOC).", flag: "--ocr-mode", type: "enum", default: "textless", settable: false, enumValues: ["textless", "all"], help: "OCR policy: textless (default) OCRs only pages with an empty text layer, inline; all OCRs every selected page and writes the recognized text to ocr/<stem>-pNNN.md sidecars, leaving the Markdown untouched. all requires --ocr and an explicit --pages selection (PDF, PPTX, DOC)." },
+	{ key: "ocrMode", toolHelp: "textless (default): OCR empty text layers inline. all: OCR selected pages to ocr/ sidecars without changing Markdown; requires ocr and explicit pages (PDF, PPTX, DOC).", flag: "--ocr-mode", type: "enum", default: "textless", settable: false, enumValues: OCR_MODES, help: "OCR policy: textless (default) OCRs only pages with an empty text layer, inline; all OCRs every selected page and writes the recognized text to ocr/<stem>-pNNN.md sidecars, leaving the Markdown untouched. all requires --ocr and an explicit --pages selection (PDF, PPTX, DOC)." },
 	{ key: "primaryTimeoutMs", flag: "--primary-timeout", type: "int", default: 60000, settable: true, env: "PI_DOC_TO_MD_CONVERT_TIMEOUT_MS", help: "pymupdf4llm tier and DOCX child (docx mode); also the unpdf tier" },
 	{ key: "fallbackTimeoutMs", flag: "--fallback-timeout", type: "int", default: 30000, settable: true, help: "PyMuPDF get_text tier (including DOCX LibreOffice fallback); also PDF and DOCX info and Excel rendered views" },
 	{ key: "sofficeTimeoutMs", flag: "--soffice-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS", help: "DOCX/PPTX -> PDF via LibreOffice; also Excel rendered views" },
@@ -86,7 +89,7 @@ export const DOC_TO_MD_OPTIONS: readonly OptionDescriptor[] = [
 	{ key: "warmTimeoutMs", flag: "--warm-timeout", type: "int", default: 120000, settable: true, env: "PI_DOC_TO_MD_WARM_TIMEOUT_MS", help: "Absolute backend discovery/bootstrap deadline (first call per process)" },
 	{ key: "pymupdfVersion", flag: "--pymupdf-version", type: "version", default: "1.27.2.3", settable: true, env: "PI_DOC_TO_MD_PYMUPDF_VERSION", help: "pymupdf4llm pin (>= 1.27.0)" },
 	{ key: "imageDpi", flag: "--image-dpi", type: "int", default: 150, settable: true, help: "Render DPI for page images and Excel rendered views" },
-	{ key: "imageFormat", flag: "--image-format", type: "enum", default: "png", settable: true, enumValues: ["png", "jpg"], help: "Rendered image format (embedded images keep their native extension)" },
+	{ key: "imageFormat", flag: "--image-format", type: "enum", default: "png", settable: true, enumValues: IMAGE_FORMATS, help: "Rendered image format (embedded images keep their native extension)" },
 	{ key: "maxOutputBytes", flag: "--max-output-bytes", type: "int", default: 20000000, settable: true, help: "Child stdout cap in bytes" },
 	{ key: "outlineMaxEntries", flag: "--outline-max-entries", type: "int", default: 40, settable: true, help: "Heading outline / TOC / sheet inventory cap in the handle" },
 	{ key: "ocr", flag: "--ocr", type: "bool", default: false, settable: true, help: "Run OCR on pages without a text layer and on image inputs when Tesseract language data is installed; off by default (--no-ocr turns a settings-level true off)" },

@@ -13,12 +13,12 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { type StagedPage, type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
-import { type NativeImage, type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
+import { type BackendKind, type NativeImage, type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, UsageError, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
 export * from "./doc-to-md-options.ts";
 export { compactRanges, formatHandle, formatInfoHandle, formatSize, scanOutline } from "./doc-to-md-handle.ts";
-export type { Engine, HandleData, InfoData, OutlineEntry, SheetInfo, Tier, TocEntry } from "./doc-to-md-handle.ts";
+export type { BackendKind, Engine, HandleData, InfoData, OutlineEntry, SheetInfo, Tier, TocEntry } from "./doc-to-md-handle.ts";
 
 // --- Types ---
 
@@ -227,7 +227,6 @@ export function probeArgs(): string[] {
 }
 export const PYTHON_CANDIDATES = ["python3", "python"] as const;
 
-export type BackendKind = "uv" | "python" | "venv" | "none";
 export type Backend =
 	| { kind: "uv"; pdf: true; xlsx: true; docx: true; email: true }
 	| { kind: "python"; exe: string; pdf: boolean; xlsx: boolean; docx: boolean; email: boolean }
