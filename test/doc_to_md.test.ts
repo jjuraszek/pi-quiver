@@ -109,7 +109,7 @@ test("doc_to_md output schema types every public field and nested member", async
 		}
 		const conversion = schema.anyOf[0].properties;
 		const inspection = schema.anyOf[1].properties;
-		const parameters = registeredDocTool().parameters;
+		const parameters = registeredDocTool().parameters as TObject;
 		const cases: [string, TSchema, TSchema, readonly string[], (value: string) => unknown][] = [
 			["engine", schema, conversion.engine, handle.ENGINES, (value) => ({ ...projected, engine: value })],
 			["tier", schema, conversion.tier, handle.TIERS, (value) => ({ ...projected, tier: value })],
