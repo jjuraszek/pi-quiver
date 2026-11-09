@@ -1,16 +1,23 @@
 import type { InputType, OcrMode } from "./doc-to-md-options.ts";
 import type { DocToMdDetails } from "./doc-to-md-core.ts";
 
-export type Tier = "primary" | "fallback" | "unpdf" | "excel" | "docx" | "html" | "image" | "email";
-export type Engine = "pymupdf4llm" | "pymupdf-text" | "unpdf" | "openpyxl" | "xlrd" | "mammoth" | "python-docx" | "markdownify" | "turndown" | "copy" | "extract-msg" | "email";
-export type BackendKind = "uv" | "python" | "venv" | "none";
+export const TIERS = ["primary", "fallback", "unpdf", "excel", "docx", "html", "image", "email"] as const;
+export type Tier = (typeof TIERS)[number];
+export const ENGINES = ["pymupdf4llm", "pymupdf-text", "unpdf", "openpyxl", "xlrd", "mammoth", "python-docx", "markdownify", "turndown", "copy", "extract-msg", "email"] as const;
+export type Engine = (typeof ENGINES)[number];
+export const BACKEND_KINDS = ["uv", "python", "venv", "none"] as const;
+export type BackendKind = (typeof BACKEND_KINDS)[number];
+export const SHEET_KINDS = ["worksheet", "chartsheet"] as const;
+export type SheetKind = (typeof SHEET_KINDS)[number];
+export const OCR_STATUSES = ["off", "unavailable", "skipped", "ran"] as const;
+export type OcrStatus = (typeof OCR_STATUSES)[number];
 
 export interface OutlineEntry { line: number; level: number; title: string; page: number | null; }
 export interface TocEntry { level: number; title: string; page: number | null; }
 export interface SheetInfo {
 	index: number;
 	name: string;
-	kind: "worksheet" | "chartsheet";
+	kind: SheetKind;
 	hidden: boolean;
 	rows: number | null; cols: number | null;
 	hiddenRows: number; hiddenCols: number;
@@ -22,7 +29,7 @@ export interface SheetInfo {
 export type PageStat = { page: number; chars: number; images: number; imageCoverage: number } | { page: number; error: string };
 
 export interface OcrInfo {
-	status: "off" | "unavailable" | "skipped" | "ran";
+	status: OcrStatus;
 	lang: string;
 	textless: number[];
 	pages: number[];

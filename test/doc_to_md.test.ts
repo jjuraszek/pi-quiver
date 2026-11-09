@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolveOptions, TUNABLE_DEFAULTS } from "../lib/doc-to-md-options.ts";
+import * as options from "../lib/doc-to-md-options.ts";
 import { classifyInput, soffArgs, warmArgs, uvChildArgs, pythonChildArgs, scriptPath, runCapped, KILL_GRACE_MS, VENV_DIR_NAME, LEGACY_VENV_DIR_NAMES, findPackageRoot, parseProbeOutput, meetsFloor, cacheDir, venvPython, resolveBackend, getBackend, resetBackendCacheForTests, probeArgs, PROBE_PROGRAM, officeFailure, tryConvertOffice, reconcileRenderMarkers, EXCEL_PDF_FILTER, pipInstallArgs, convertDocument, inspectDocument, prepareHtml, DEGRADED_HTML_TURNDOWN, resolveOcrLabels, resolveUnpdfWorker, type PipelineSeams, type TierResult, type Backend } from "../lib/doc-to-md-core.ts";
 import type { CappedResult as CR, ResolverDeps } from "../lib/doc-to-md-core.ts";
 import type { OcrInfo } from "../lib/doc-to-md-handle.ts";
@@ -92,9 +93,7 @@ test("doc_to_md output schema types every public field and nested member", async
 			assert.ok(!Value.Check(schema, partial), `missing ${key} must fail`);
 		}
 		for (const patch of [
-			{ type: "unknown" }, { engine: "unknown" }, { tier: "unknown" },
 			{ outline: [{ line: 1, level: 1, title: "Heading", page: "2" }] },
-			{ ocr: { ...projected.ocr, mode: "unknown" } },
 			{ ocr: { ...projected.ocr, sidecars: { 2: 42 } } },
 			{ pageStats: [{ page: 2, chars: "ten", images: 1, imageCoverage: 0.5 }] },
 			{ nativeImages: [{ page: 2, file: "image.png", width: "wide", height: 10 }] },
@@ -108,7 +107,27 @@ test("doc_to_md output schema types every public field and nested member", async
 			delete partial[key];
 			assert.ok(!Value.Check(schema, partial), `missing info ${key} must fail`);
 		}
-		for (const patch of [{ backend: "unknown" }, { metadata: { title: 42 } }, { toc: [{ level: "one", title: "Heading", page: 1 }] }, { sheets: [{ ...info.sheets![0], kind: "unknown" }] }]) {
+		const conversion = schema.anyOf[0].properties;
+		const inspection = schema.anyOf[1].properties;
+		const parameters = registeredDocTool().parameters as TObject;
+		const cases: [string, TSchema, TSchema, readonly string[], (value: string) => unknown][] = [
+			["engine", schema, conversion.engine, handle.ENGINES, (value) => ({ ...projected, engine: value })],
+			["tier", schema, conversion.tier, handle.TIERS, (value) => ({ ...projected, tier: value })],
+			["conversion type", schema, conversion.type, options.INPUT_TYPES, (value) => ({ ...projected, type: value })],
+			["ocr.status", schema, conversion.ocr.anyOf[0].properties.status, handle.OCR_STATUSES, (value) => ({ ...projected, ocr: { ...projected.ocr, status: value } })],
+			["ocr.mode", schema, conversion.ocr.anyOf[0].properties.mode, options.OCR_MODES, (value) => ({ ...projected, ocr: { ...projected.ocr, mode: value } })],
+			["inspection type", schema, inspection.type, options.INPUT_TYPES, (value) => ({ ...info, type: value })],
+			["backend", schema, inspection.backend, handle.BACKEND_KINDS, (value) => ({ ...info, backend: value })],
+			["sheets[].kind", schema, inspection.sheets.anyOf[0].items.properties.kind, handle.SHEET_KINDS, (value) => ({ ...info, sheets: [{ ...info.sheets![0], kind: value }] })],
+			["ocrMode", parameters, parameters.properties.ocrMode, options.OCR_MODES, (value) => ({ path: "x.pdf", ocrMode: value })],
+			["imageFormat", parameters, parameters.properties.imageFormat, options.IMAGE_FORMATS, (value) => ({ path: "x.pdf", imageFormat: value })],
+		];
+		for (const [name, carrierSchema, fieldSchema, values, withValue] of cases) {
+			assert.deepEqual(fieldSchema.anyOf.map((member: TSchema) => member.const), values, `${name} lists every shared member in order`);
+			for (const value of values) assert.ok(Value.Check(carrierSchema, withValue(value)), `${name} accepts ${value}`);
+			assert.ok(!Value.Check(carrierSchema, withValue("unknown")), `${name} rejects a non-member`);
+		}
+		for (const patch of [{ metadata: { title: 42 } }, { toc: [{ level: "one", title: "Heading", page: 1 }] }]) {
 			assert.ok(!Value.Check(schema, { ...info, ...patch }), JSON.stringify(patch));
 		}
 	} finally { rmSync(dirname(r.details.savedTo), { recursive: true, force: true }); }

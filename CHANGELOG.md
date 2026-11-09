@@ -3,6 +3,10 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
+## Unreleased
+
+- doc_to_md result and option enums share one declaration in `lib/`, so members cannot drift between TypeScript types and tool schemas. (#38)
+
 Published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Pushing a
 `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which publishes to npm
 via OIDC trusted publishing. The release helper at

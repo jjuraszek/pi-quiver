@@ -14,23 +14,24 @@ import {
 	coerceDocToMdSettings, convertDocument, inspectDocument, resolveOptions,
 } from "../lib/doc-to-md-core.ts";
 import { resolve } from "node:path";
-import { publicHandle } from "../lib/doc-to-md-handle.ts";
+import { BACKEND_KINDS, ENGINES, OCR_STATUSES, SHEET_KINDS, TIERS, publicHandle } from "../lib/doc-to-md-handle.ts";
+import { INPUT_TYPES, OCR_MODES } from "../lib/doc-to-md-options.ts";
 
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
-const strings = <T extends string>(values: T[]) => Type.Union(values.map((value) => Type.Literal(value)));
+const strings = <T extends string>(values: readonly T[]) => Type.Union(values.map((value) => Type.Literal(value)));
 const pages = Type.Array(Type.Integer());
 const pageStrings = Type.Record(Type.String(), Type.String());
-const inputType = strings(["pdf", "docx", "doc", "pptx", "xlsx", "xlsm", "xls", "html", "image", "email"]);
+const inputType = strings(INPUT_TYPES);
 const tocEntry = { level: Type.Integer(), title: Type.String(), page: nullable(Type.Integer()) };
 const ocrSchema = Type.Object({
-	status: strings(["off", "unavailable", "skipped", "ran"]), lang: Type.String(),
+	status: strings(OCR_STATUSES), lang: Type.String(),
 	textless: pages, pages, noText: pages, ocrFailed: pages, budgetStopped: pages, ceilingStopped: pages,
 	ocrMaxPages: Type.Integer(), reason: nullable(Type.String()), tesseract: nullable(Type.Boolean()),
-	mode: strings(["textless", "all"]), sidecars: pageStrings, wordSidecars: pageStrings, ocrErrors: pageStrings,
+	mode: strings(OCR_MODES), sidecars: pageStrings, wordSidecars: pageStrings, ocrErrors: pageStrings,
 	killed: nullable(Type.Integer()), notAttempted: pages, childError: nullable(Type.String()),
 });
 const sheetSchema = Type.Object({
-	index: Type.Integer(), name: Type.String(), kind: strings(["worksheet", "chartsheet"]), hidden: Type.Boolean(),
+	index: Type.Integer(), name: Type.String(), kind: strings(SHEET_KINDS), hidden: Type.Boolean(),
 	rows: nullable(Type.Integer()), cols: nullable(Type.Integer()), hiddenRows: Type.Integer(), hiddenCols: Type.Integer(),
 	charts: Type.Integer(), images: Type.Integer(), rendered: Type.Boolean(), csv: nullable(Type.String()),
 });
@@ -38,8 +39,8 @@ const outputSchema = Type.Union([
 	Type.Object({
 		savedTo: Type.String(), imagesDir: nullable(Type.String()), sheetsDir: nullable(Type.String()), pagesDir: nullable(Type.String()),
 		type: inputType,
-		engine: strings(["pymupdf4llm", "pymupdf-text", "unpdf", "openpyxl", "xlrd", "mammoth", "python-docx", "markdownify", "turndown", "copy", "extract-msg", "email"]),
-		tier: strings(["primary", "fallback", "unpdf", "excel", "docx", "html", "image", "email"]),
+		engine: strings(ENGINES),
+		tier: strings(TIERS),
 		pageCount: nullable(Type.Integer()), pages: nullable(pages), explicitBreaks: nullable(Type.Integer()),
 		imageCount: Type.Integer(), pageImageCount: Type.Integer(), pageImagesReason: nullable(Type.String()), bytes: Type.Integer(), lines: Type.Integer(),
 		degraded: nullable(Type.String()), fallbackReason: nullable(Type.String()), failedPages: pages, emptyPages: pages,
@@ -53,7 +54,7 @@ const outputSchema = Type.Union([
 		wordsPath: nullable(Type.String()), wordsReason: nullable(Type.String()), wordsErrors: pageStrings,
 	}),
 	Type.Object({
-		type: inputType, backend: strings(["uv", "python", "venv", "none"]), pageCount: nullable(Type.Integer()),
+		type: inputType, backend: strings(BACKEND_KINDS), pageCount: nullable(Type.Integer()),
 		metadata: Type.Record(Type.String(), Type.String()), toc: Type.Array(Type.Object(tocEntry)), tocTotal: Type.Integer(),
 		sheets: nullable(Type.Array(sheetSchema)), sheetsTotal: Type.Integer(),
 	}),
