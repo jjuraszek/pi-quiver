@@ -1,10 +1,13 @@
 /**
- * Fast mode for Claude Opus 4.8 / Opus 5.
+ * Fast mode for the Claude models Anthropic serves it on (FAST_MODE_MODELS).
  *
  * When enabled, injects Anthropic's fast-mode signals into every qualifying
- * Opus 4.8 / Opus 5 request on the anthropic-messages API, regardless of thinking level:
+ * request on the anthropic-messages API, regardless of thinking level:
  *   - payload: { ...payload, speed: "fast" }        (before_provider_request)
  *   - header:  anthropic-beta: ...,fast-mode-2026-02-01  (before_provider_headers)
+ * The header goes only to the models that still need the beta (Opus 5,
+ * Opus 4.8); on the rest `speed` is the whole contract and pi's own
+ * `anthropic-beta` list is left untouched.
  *
  * OFF BY DEFAULT. Three control surfaces, lowest precedence first:
  *   1. settings.json  "fastMode": true | { "enabled": true }  (default false)
@@ -33,14 +36,25 @@ import { resolveConfig } from "../lib/extension-config.ts";
 
 export const FAST_MODE_BETA = "fast-mode-2026-02-01";
 export const FAST_SPEED = "fast";
-// Loose prefixes: match dated snapshots (claude-opus-4-8-*, claude-opus-5-*).
-// Opus 4.7 is out of scope (D1); a future model needs a one-line addition here.
-export const FAST_MODE_MODEL_PREFIXES = ["claude-opus-4-8", "claude-opus-5"];
+// One row per model in Anthropic's fast-mode availability table:
+// https://platform.claude.com/docs/en/build-with-claude/fast-mode#feature-availability
+// (retrieved 2026-11-13). `beta` marks the models that need the fast-mode beta
+// header - Opus 5 (research preview) and Opus 4.8 (deprecated, removal
+// 2026-11-30); the rest take `speed` alone. Prefixes are loose and the first
+// match wins, so claude-opus-5-5 must stay ahead of claude-opus-5. A model
+// added to or dropped from that table is a one-row change here.
+export const FAST_MODE_MODELS = [
+	{ prefix: "claude-fable-5-2", beta: false },
+	{ prefix: "claude-mythos-5-2", beta: false },
+	{ prefix: "claude-opus-5-5", beta: false },
+	{ prefix: "claude-opus-5", beta: true },
+	{ prefix: "claude-opus-4-8", beta: true },
+];
 
-// Anthropic bills Opus 4.8/5 fast mode at exactly 2x standard rates; input,
-// output, and cache read/write all scale by the same factor because caching
-// multipliers "apply on top of fast mode pricing". Rate card:
-// https://docs.claude.com/en/docs/build-with-claude/fast-mode (retrieved 2026-08-04).
+// Anthropic bills fast mode at exactly 2x standard rates on every model in
+// FAST_MODE_MODELS; input, output, and cache read/write all scale by the same
+// factor because caching multipliers "apply on top of fast mode pricing". Rate card:
+// https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing (retrieved 2026-11-13).
 export const FAST_MODE_COST_MULTIPLIER = 2;
 
 export function scaleCost(cost: Usage["cost"], multiplier: number): Usage["cost"] {
@@ -79,15 +93,31 @@ export function coerce(raw: unknown): Partial<Config> | undefined {
 	return undefined;
 }
 
-type ModelLike = { id?: string; api?: string; provider?: string } | undefined;
+type ModelLike = { id?: string; api?: string; provider?: string; baseUrl?: string } | undefined;
+
+// Proxies and cloud platforms reuse Anthropic's model ids on anthropic-messages
+// and must never see fast-mode signals, so the endpoint has to be Anthropic's
+// own: pi's built-in provider, or a custom provider entry aimed at the same host.
+function isAnthropicEndpoint(model: NonNullable<ModelLike>): boolean {
+	if (model.provider === "anthropic") return true;
+	return URL.parse(model.baseUrl ?? "")?.hostname === "api.anthropic.com";
+}
+
+function fastModeModel(model: ModelLike) {
+	const id = model?.id;
+	if (typeof id !== "string") return undefined;
+	return FAST_MODE_MODELS.find((m) => id.startsWith(m.prefix));
+}
 
 export function shouldInject(enabled: boolean, model: ModelLike): boolean {
 	if (!enabled || !model) return false;
-	if (model.provider !== "anthropic") return false;
+	if (!isAnthropicEndpoint(model)) return false;
 	if (model.api !== "anthropic-messages") return false;
-	const id = model.id;
-	if (typeof id !== "string") return false;
-	return FAST_MODE_MODEL_PREFIXES.some((p) => id.startsWith(p));
+	return fastModeModel(model) !== undefined;
+}
+
+export function needsFastModeBeta(model: ModelLike): boolean {
+	return fastModeModel(model)?.beta === true;
 }
 
 export function injectSpeed(payload: unknown): unknown {
@@ -185,6 +215,7 @@ export default function (pi: ExtensionAPI) {
 	// requests per session (headers -> request -> message_end, awaited in order).
 	let pendingFastSpeed = false;
 	let pendingFastHeader = false;
+	let pendingBetaRequired = false;
 
 	const readFlag = (): boolean => pi.getFlag("fast") === true;
 
@@ -221,7 +252,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerFlag("fast", {
 		type: "boolean",
-		description: "Enable Anthropic fast mode for Opus 4.8/5 requests this launch",
+		description: "Enable Anthropic fast mode for supported Claude models this launch",
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -241,11 +272,12 @@ export default function (pi: ExtensionAPI) {
 		const next = injectSpeed(event.payload);
 		pendingFastSpeed =
 			typeof next === "object" && next !== null && (next as Record<string, unknown>).speed === FAST_SPEED;
+		pendingBetaRequired = needsFastModeBeta(ctx.model);
 		return next;
 	});
 
 	pi.on("before_provider_headers", async (event, ctx) => {
-		if (!shouldInject(enabled, ctx.model) || !event.headers) {
+		if (!shouldInject(enabled, ctx.model) || !needsFastModeBeta(ctx.model) || !event.headers) {
 			pendingFastHeader = false;
 			return;
 		}
@@ -267,7 +299,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("message_end", (event) => {
 		const msg = event.message;
 		if (msg.role !== "assistant") return;
-		const corrected = pendingFastSpeed && pendingFastHeader && !!msg.usage?.cost;
+		// Billed fast: `speed` went out, plus the beta header where the model needs one.
+		const billedFast = pendingFastSpeed && (pendingFastHeader || !pendingBetaRequired);
+		const corrected = billedFast && !!msg.usage?.cost;
 		pendingFastSpeed = false;
 		pendingFastHeader = false;
 		if (!corrected) return;
@@ -280,7 +314,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("fast", {
-		description: "Manage Opus 4.8/5 fast mode: /fast [on|off|status]",
+		description: "Manage Anthropic fast mode: /fast [on|off|status]",
 		getArgumentCompletions: (prefix) => {
 			const p = prefix.trim().toLowerCase();
 			if (p.includes(" ")) return null;
