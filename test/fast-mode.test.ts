@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	coerce,
 	shouldInject,
+	needsFastModeBeta,
 	injectSpeed,
 	buildBetaHeader,
 	needsFallbackBeta,
@@ -46,10 +47,29 @@ test("shouldInject: opus-5 anthropic passes when enabled", () => {
 	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5-20260315" }), true);
 });
 
+test("shouldInject: fable-5-2, mythos-5-2, and opus-5-5 anthropic pass when enabled", () => {
+	assert.equal(shouldInject(true, { ...opus, id: "claude-fable-5-2" }), true);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-mythos-5-2" }), true);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5-5" }), true);
+});
+
+test("needsFastModeBeta: only research-preview opus-5 and deprecated opus-4-8", () => {
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5" }), true);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5-20260315" }), true);
+	assert.equal(needsFastModeBeta(opus), true);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5-5" }), false);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-fable-5-2" }), false);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-mythos-5-2" }), false);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-4-7" }), false);
+	assert.equal(needsFastModeBeta(undefined), false);
+});
+
 test("shouldInject: gated off cases", () => {
 	assert.equal(shouldInject(false, opus), false);
 	assert.equal(shouldInject(true, undefined), false);
 	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-4-7" }), false);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-fable-5" }), false);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-fable-5-1" }), false);
 	assert.equal(shouldInject(true, { ...opus, api: "bedrock-converse-stream" }), false);
 	assert.equal(shouldInject(true, { ...opus, provider: "opencode" }), false);
 	assert.equal(shouldInject(true, { id: undefined, api: "anthropic-messages", provider: "anthropic" }), false);
@@ -348,6 +368,30 @@ test("integration: opus-5 with fallback catalog carries both fast and fallback b
 	}
 });
 
+// Catalog-shaped: claude-fable-5-2 carries allowedFallbackModels, so pi adds
+// the server-side fallback beta itself once the header hook stays out of the way.
+const fable52 = {
+	id: "claude-fable-5-2",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
+	input: ["text"],
+	compat: { forceAdaptiveThinking: true, allowedFallbackModels: [{ provider: "anthropic", model: "claude-opus-5-5", cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } }] },
+};
+
+for (const id of ["claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5"]) {
+	test(`integration: ${id} gets speed and leaves pi's anthropic-beta header alone`, async () => {
+		const h = harness({ flag: true, oauth: true, model: { ...fable52, id } });
+		await h.hooks.get("session_start")!({}, h.ctx);
+		const payload = await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+		assert.deepEqual(payload, { m: 1, speed: "fast" });
+		const headers: Record<string, string> = {};
+		await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
+		assert.deepEqual(headers, {});
+		assert.equal(h.getStatus(), "\u26a1 fast");
+	});
+}
+
 test("integration: /fast on then off toggles live override over config", async () => {
 	const h = harness();
 	await h.hooks.get("session_start")!({}, h.ctx);
@@ -497,6 +541,48 @@ test("cost: /fast toggled on between hooks (off->on) is not corrected", async ()
 	await h.hooks.get("before_provider_headers")!({ headers }, h.ctx);
 	await h.commands.get("fast").handler("on", h.ctx);
 	await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.equal(res, undefined);
+});
+
+test("cost: beta-free model is corrected on speed alone, with no header and unresolvable auth", async () => {
+	const h = harness({ flag: true, authFails: true, model: fable52 });
+	await driveFast(h);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+});
+
+test("cost: beta-free model is corrected when the header hook never runs", async () => {
+	const h = harness({ flag: true, model: fable52 });
+	await h.hooks.get("session_start")!({}, h.ctx);
+	await h.hooks.get("before_provider_request")!({ payload: { m: 1 } }, h.ctx);
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+});
+
+test("cost: beta-free model follows the speed field across a mid-flight /fast toggle", async () => {
+	const off = harness({ flag: true, model: fable52 });
+	await off.hooks.get("session_start")!({}, off.ctx);
+	await off.hooks.get("before_provider_headers")!({ headers: {} }, off.ctx);
+	await off.commands.get("fast").handler("off", off.ctx);
+	await off.hooks.get("before_provider_request")!({ payload: { m: 1 } }, off.ctx);
+	assert.equal(await off.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, off.ctx), undefined);
+
+	const on = harness({ model: fable52 });
+	await on.hooks.get("session_start")!({}, on.ctx);
+	await on.hooks.get("before_provider_headers")!({ headers: {} }, on.ctx);
+	await on.commands.get("fast").handler("on", on.ctx);
+	await on.hooks.get("before_provider_request")!({ payload: { m: 1 } }, on.ctx);
+	const res = await on.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, on.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
+});
+
+test("cost: beta-free request does not leak a correction into the next beta-model request", async () => {
+	const h = harness({ flag: true, authFails: true, model: fable52 });
+	await driveFast(h);
+	await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	h.ctx.model = { ...fable52, id: "claude-opus-5" };
+	await driveFast(h);
 	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
 	assert.equal(res, undefined);
 });
