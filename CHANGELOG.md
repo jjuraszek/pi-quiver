@@ -6,6 +6,7 @@ one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 ## Unreleased
 
 - `fast-mode` covers every model in Anthropic's fast-mode availability table: Claude Fable 5.2 and Mythos 5.2 join Opus 5.5, Opus 5, and Opus 4.8. The `fast-mode-2026-02-01` beta header goes only to Opus 5 (research preview) and Opus 4.8 (deprecated), the two models Anthropic still requires it on; Fable 5.2, Mythos 5.2, and Opus 5.5 get `speed: "fast"` alone and keep the `anthropic-beta` header pi built. Opus 5.5 previously got the header through the `claude-opus-5` prefix, which dropped pi's `message-threads-2026-08-12` beta and cost a rejected first attempt on every request. Cost correction stays 2x, checked against the rate card for all five models. (#40)
+- `fast-mode` applies to a custom provider entry whose `baseUrl` host is `api.anthropic.com`, not only to pi's built-in `anthropic` provider. Proxy providers stay excluded. (#41)
 
 ## v6.16.1 - 2026-11-09
 

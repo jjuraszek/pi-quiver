@@ -93,7 +93,15 @@ export function coerce(raw: unknown): Partial<Config> | undefined {
 	return undefined;
 }
 
-type ModelLike = { id?: string; api?: string; provider?: string } | undefined;
+type ModelLike = { id?: string; api?: string; provider?: string; baseUrl?: string } | undefined;
+
+// Proxies and cloud platforms reuse Anthropic's model ids on anthropic-messages
+// and must never see fast-mode signals, so the endpoint has to be Anthropic's
+// own: pi's built-in provider, or a custom provider entry aimed at the same host.
+function isAnthropicEndpoint(model: NonNullable<ModelLike>): boolean {
+	if (model.provider === "anthropic") return true;
+	return URL.parse(model.baseUrl ?? "")?.hostname === "api.anthropic.com";
+}
 
 function fastModeModel(model: ModelLike) {
 	const id = model?.id;
@@ -103,7 +111,7 @@ function fastModeModel(model: ModelLike) {
 
 export function shouldInject(enabled: boolean, model: ModelLike): boolean {
 	if (!enabled || !model) return false;
-	if (model.provider !== "anthropic") return false;
+	if (!isAnthropicEndpoint(model)) return false;
 	if (model.api !== "anthropic-messages") return false;
 	return fastModeModel(model) !== undefined;
 }

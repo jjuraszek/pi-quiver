@@ -64,6 +64,26 @@ test("needsFastModeBeta: only research-preview opus-5 and deprecated opus-4-8", 
 	assert.equal(needsFastModeBeta(undefined), false);
 });
 
+test("shouldInject: custom provider entry aimed at Anthropic's own API passes", () => {
+	const custom = { ...opus, provider: "my-anthropic", baseUrl: "https://api.anthropic.com" };
+	assert.equal(shouldInject(true, custom), true);
+	assert.equal(shouldInject(true, { ...custom, id: "claude-fable-5-2", baseUrl: "https://api.anthropic.com/" }), true);
+	assert.equal(needsFastModeBeta(custom), true);
+});
+
+test("shouldInject: custom provider entry aimed anywhere else is gated off", () => {
+	const custom = { ...opus, provider: "my-proxy" };
+	assert.equal(shouldInject(true, custom), false);
+	assert.equal(shouldInject(true, { ...custom, baseUrl: "https://opencode.ai/inference/anthropic" }), false);
+	assert.equal(shouldInject(true, { ...custom, baseUrl: "https://api.anthropic.com.example.net" }), false);
+	assert.equal(shouldInject(true, { ...custom, baseUrl: "https://example.net/api.anthropic.com" }), false);
+	assert.equal(shouldInject(true, { ...custom, baseUrl: "not a url" }), false);
+	// Microsoft Foundry: the deployment sets the speed and rejects a `speed` field.
+	const foundry = { ...custom, baseUrl: "https://example-resource.services.ai.azure.com/anthropic" };
+	assert.equal(shouldInject(true, { ...foundry, id: "claude-opus-5-5" }), false);
+	assert.equal(shouldInject(true, { ...foundry, id: "claude-opus-5-5-fast" }), false);
+});
+
 test("shouldInject: gated off cases", () => {
 	assert.equal(shouldInject(false, opus), false);
 	assert.equal(shouldInject(true, undefined), false);
@@ -585,6 +605,14 @@ test("cost: beta-free request does not leak a correction into the next beta-mode
 	await driveFast(h);
 	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
 	assert.equal(res, undefined);
+});
+
+test("integration: custom provider entry on api.anthropic.com gets speed, status, and cost correction", async () => {
+	const h = harness({ flag: true, model: { ...fable52, provider: "my-anthropic" } });
+	await driveFast(h);
+	assert.equal(h.getStatus(), "\u26a1 fast");
+	const res = await h.hooks.get("message_end")!({ message: assistantMsg(fastCost) }, h.ctx);
+	assert.deepEqual(res.message.usage.cost, doubledCost);
 });
 
 test("cost: non-assistant message and missing usage.cost are untouched", async () => {
