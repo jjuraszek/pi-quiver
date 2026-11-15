@@ -53,6 +53,15 @@ test("shouldInject: fable-5-2, mythos-5-2, and opus-5-5 anthropic pass when enab
 	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5-5" }), true);
 });
 
+test("shouldInject: a dated snapshot of an older version does not match a newer version's row", () => {
+	assert.equal(shouldInject(true, { ...opus, id: "claude-fable-5-20260801" }), false);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-mythos-5-20260801" }), false);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-fable-5-2-20261001" }), true);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-mythos-5-2-20261001" }), true);
+	assert.equal(shouldInject(true, { ...opus, id: "claude-opus-5-5-20261001" }), true);
+	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5-5-20261001" }), false);
+});
+
 test("needsFastModeBeta: only research-preview opus-5 and deprecated opus-4-8", () => {
 	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5" }), true);
 	assert.equal(needsFastModeBeta({ ...opus, id: "claude-opus-5-20260315" }), true);

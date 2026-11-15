@@ -40,9 +40,11 @@ export const FAST_SPEED = "fast";
 // https://platform.claude.com/docs/en/build-with-claude/fast-mode#feature-availability
 // (retrieved 2026-11-13). `beta` marks the models that need the fast-mode beta
 // header - Opus 5 (research preview) and Opus 4.8 (deprecated, removal
-// 2026-11-30); the rest take `speed` alone. Prefixes are loose and the first
-// match wins, so claude-opus-5-5 must stay ahead of claude-opus-5. A model
-// added to or dropped from that table is a one-row change here.
+// 2026-11-30); the rest take `speed` alone. A prefix matches the id itself or
+// the id up to a `-`, so a dated claude-fable-5-2026... snapshot is not
+// Fable 5.2. The first match wins, so claude-opus-5-5 must stay ahead of
+// claude-opus-5. A model added to or dropped from that table is a one-row
+// change here.
 export const FAST_MODE_MODELS = [
 	{ prefix: "claude-fable-5-2", beta: false },
 	{ prefix: "claude-mythos-5-2", beta: false },
@@ -98,7 +100,7 @@ type ModelLike = { id?: string; api?: string; provider?: string } | undefined;
 function fastModeModel(model: ModelLike) {
 	const id = model?.id;
 	if (typeof id !== "string") return undefined;
-	return FAST_MODE_MODELS.find((m) => id.startsWith(m.prefix));
+	return FAST_MODE_MODELS.find((m) => id === m.prefix || id.startsWith(`${m.prefix}-`));
 }
 
 export function shouldInject(enabled: boolean, model: ModelLike): boolean {
