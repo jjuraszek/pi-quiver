@@ -121,7 +121,7 @@ Both hooks apply an identical gate, factored into a pure
 
 ```
 inject when: enabled === true
-         AND model?.provider === "anthropic"          // see D2
+         AND (model?.provider === "anthropic" OR URL.parse(model?.baseUrl ?? "")?.hostname === "api.anthropic.com") // see D2
          AND model?.api === "anthropic-messages"
          AND FAST_MODE_MODEL_PREFIXES.some(p => model.id?.startsWith(p))
 ```
@@ -223,9 +223,11 @@ Boundary-only, no belt-and-suspenders:
 - **D1 - model scope: Opus 4.8 only.** `FAST_MODE_MODEL_PREFIXES =
   ["claude-opus-4-8"]`. Opus 4.7 is supported by Anthropic but out of scope here;
   adding it later is a one-line prefix addition.
-- **D2 - proxy providers: keep the `provider === "anthropic"` gate.** opencode /
-  cloudflare-ai-gateway passthroughs of `claude-opus-4-8` are excluded; fast-mode
-  signals are never sent to third-party proxies.
+- **D2 - provider gate: built-in name or exact Anthropic hostname.** pi's
+  built-in `anthropic` provider passes by name, including a `baseUrl` override
+  to a proxy. Any other provider entry passes only when its `baseUrl` hostname
+  is exactly `api.anthropic.com`. opencode, cloudflare-ai-gateway, and Microsoft
+  Foundry match neither and stay excluded.
 - **D3 - header merge: reconstruct-and-union.** The extension reconstructs pi's
   beta list keyed on detected auth mode, unions in `fast-mode-2026-02-01`,
   de-dupes, and writes the full value. The pi-ai coupling is documented as
