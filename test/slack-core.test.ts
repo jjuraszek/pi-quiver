@@ -829,7 +829,10 @@ test("renderMentionTokens: known user IDs become @Display Name, labeled groups b
 	assert.equal(renderMentionTokens("<@U01ALICE> <!subteam^S01OPS|@ops-oncall>"), "<@U01ALICE> @ops-oncall");
 });
 
-test("searchMessages: compact text renders cached user mentions and labeled group mentions", async () => {
+const MENTION_TEXT = "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>, not `<@U01ALICE>` or ```\n<!subteam^S01OPS|@ops-oncall>\n```";
+const COMPACT_MENTION_TEXT = "@Alice Example and @ops-oncall: ask <@U09GHOST>, not `<@U01ALICE>` or ``` <!subteam^S01OPS|@ops-oncall> ```";
+
+test("searchMessages: compact text renders mentions outside code and keeps the original match", async () => {
 	const apiCall: ApiCall = async () => ({
 		ok: true,
 		messages: {
@@ -839,25 +842,31 @@ test("searchMessages: compact text renders cached user mentions and labeled grou
 					channel: { name: "general" },
 					ts: "1.1",
 					permalink: "p",
-					text: "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>",
+					text: MENTION_TEXT,
 				},
 			],
 			paging: { count: 1, total: 1, page: 1, pages: 1 },
 		},
 	});
 	const result = await searchMessages({ query: "ask" }, { apiCall, token: "t", userNames: MENTION_NAMES });
-	assert.equal(result.output, "bob | #general | 1.1 | p | @Alice Example and @ops-oncall: ask <@U09GHOST>");
-	assert.equal(result.matches[0].text, "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>");
+	assert.equal(result.output, `bob | #general | 1.1 | p | ${COMPACT_MENTION_TEXT}`);
+	assert.equal(result.matches[0].text, MENTION_TEXT);
 });
 
 test("readThread: compact lines render cached mentions from text and rich_text blocks; raw output keeps the tokens", async () => {
 	const messages = [
-		{ user: "U2", ts: "1.1", text: "<@U01ALICE> please review, cc <!subteam^S01OPS|@ops-oncall>" },
+		{ user: "U2", ts: "1.1", text: MENTION_TEXT },
 		{
 			user: "U3",
 			ts: "1.2",
 			text: "<@U01ALICE> <@U09GHOST> <!subteam^S02DEV>",
 			blocks: [
+				{ type: "header", text: { type: "plain_text", text: "<@U01ALICE>" } },
+				{
+					type: "section",
+					text: { type: "mrkdwn", text: MENTION_TEXT },
+					fields: [{ type: "plain_text", text: "<@U01ALICE>" }],
+				},
 				{
 					type: "rich_text",
 					elements: [
@@ -869,8 +878,11 @@ test("readThread: compact lines render cached mentions from text and rich_text b
 								{ type: "user", user_id: "U09GHOST" },
 								{ type: "text", text: " " },
 								{ type: "usergroup", usergroup_id: "S02DEV" },
+								{ type: "text", text: " literal: <@U01ALICE>, code: ", style: { code: true } },
+								{ type: "user", user_id: "U01ALICE", style: { code: true } },
 							],
 						},
+						{ type: "rich_text_preformatted", elements: [{ type: "user", user_id: "U01ALICE" }] },
 					],
 				},
 			],
@@ -881,7 +893,8 @@ test("readThread: compact lines render cached mentions from text and rich_text b
 	const compact = await readThread({ channel: "C1", ts: "1.1" }, deps);
 	assert.equal(
 		compact.output,
-		"U2 | 1.1 | @Alice Example please review, cc @ops-oncall\nU3 | 1.2 | @Alice Example <@U09GHOST> <!subteam^S02DEV>",
+		`U2 | 1.1 | ${COMPACT_MENTION_TEXT}\nU3 | 1.2 | <@U01ALICE> / ${COMPACT_MENTION_TEXT} <@U01ALICE> / ` +
+			"@Alice Example <@U09GHOST> <!subteam^S02DEV> literal: <@U01ALICE>, code: <@U01ALICE> <@U01ALICE>",
 	);
 	const raw = await readThread({ channel: "C1", ts: "1.1", raw: true }, deps);
 	assert.equal(raw.output, JSON.stringify(messages, null, 2));
