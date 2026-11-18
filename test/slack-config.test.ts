@@ -1493,17 +1493,16 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 	}
 }
 
-test("slack_search and slack_thread compact text name cached users; raw thread output keeps the tokens", async () => {
+test("slack_search and slack_thread name users only from the authenticated workspace; raw output keeps the tokens", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-names-"));
 	const cacheFile = join(dir, "cache.json");
-	writeMentionCache(cacheFile);
-	const text = "<@U01ALICE> ping <@U09GHOST>";
+	const text = "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall> ping <@U09GHOST>";
 	const message = { user: "U02BOB", ts: "1.1", text };
 	try {
 		await withEnvToken("SLACK_USER_TOKEN", "xoxp-e2e-names", async () => {
 			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
 				await withFakeFetch({
-					"auth.test": () => ({ ok: true, team_id: "T1" }),
+					"auth.test": () => ({ ok: true, team_id: "T2" }),
 					"search.messages": () => ({
 						ok: true,
 						messages: { matches: [{ ...message, username: "bob", channel: { name: "general" }, permalink: "p" }], paging: { total: 1, page: 1, pages: 1 } },
@@ -1517,8 +1516,12 @@ test("slack_search and slack_thread compact text name cached users; raw thread o
 						const result = await defs.find((d) => d.name === name)!.execute("tc1", params as never, undefined, () => {}, undefined as never);
 						return result.content[0].type === "text" ? result.content[0].text : "";
 					};
-					assert.equal(await run("slack_search", { query: "ping" }), "bob | #general | 1.1 | p | @Alice ping <@U09GHOST>\n\ntotal: 1 | page: 1 of 1");
-					assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1" }), "U02BOB | 1.1 | @Alice ping <@U09GHOST>\n\ncomplete: true");
+					for (const [cacheTeam, alice] of [["T1", "<@U01ALICE>"], ["T2", "@Alice"]]) {
+						writeMentionCache(cacheFile, cacheTeam);
+						const rendered = `${alice} and @ops-oncall ping <@U09GHOST>`;
+						assert.equal(await run("slack_search", { query: "ping" }), `bob | #general | 1.1 | p | ${rendered}\n\ntotal: 1 | page: 1 of 1`);
+						assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1" }), `U02BOB | 1.1 | ${rendered}\n\ncomplete: true`);
+					}
 					assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1", raw: true }), JSON.stringify([message], null, 2));
 				});
 			});
@@ -1628,11 +1631,11 @@ async function withEnvToken(envVar: string, value: string, fn: () => Promise<voi
 	}
 }
 
-function writeMentionCache(filePath: string): void {
+function writeMentionCache(filePath: string, teamId = "T1"): void {
 	writeFileSync(
 		filePath,
 		JSON.stringify({
-			team_id: "T1",
+			team_id: teamId,
 			channels: { general: "C123" },
 			users: { alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" } },
 			refreshed_at: new Date().toISOString(),

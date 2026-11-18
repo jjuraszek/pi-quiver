@@ -124,6 +124,7 @@ export function formatToolError(err: unknown, identity?: "user" | "bot"): Error 
 
 interface ResolvedCall {
 	token: string;
+	teamId: string;
 	filePath: string;
 	cacheCtx: CacheCtx;
 	deps: CoreDeps;
@@ -156,7 +157,7 @@ async function resolveCall(
 	const filePath = cacheFilePath(cfg, repoRoot, teamId);
 	const cacheCtx: CacheCtx = { apiCall: defaultApiCall, token, filePath, signal };
 	const deps: CoreDeps = { apiCall: defaultApiCall, token, signal };
-	return { token, filePath, cacheCtx, deps };
+	return { token, teamId, filePath, cacheCtx, deps };
 }
 
 /**
@@ -317,8 +318,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
-					const { deps, filePath } = await resolveCall("user", cfg, ctx, signal, repoRoot);
-					const result = await searchMessages(params, { ...deps, userNames: cachedUserNames(filePath) });
+					const { deps, filePath, teamId } = await resolveCall("user", cfg, ctx, signal, repoRoot);
+					const result = await searchMessages(params, { ...deps, userNames: cachedUserNames(filePath, teamId) });
 					const structured = structuredMessages(result.matches, "search");
 					return {
 						content: [{ type: "text" as const, text: searchResultText(result) }],
@@ -355,12 +356,12 @@ export default function slackExtension(pi: ExtensionAPI) {
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
-					const { deps, cacheCtx, filePath } = await resolveCall("user", cfg, ctx, signal, repoRoot);
+					const { deps, cacheCtx, filePath, teamId } = await resolveCall("user", cfg, ctx, signal, repoRoot);
 					const channel =
 						params.permalink === undefined && params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
 					const result = await readThread(
 						{ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor, raw: params.raw },
-						{ ...deps, userNames: cachedUserNames(filePath) },
+						{ ...deps, userNames: cachedUserNames(filePath, teamId) },
 					);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],

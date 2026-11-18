@@ -73,7 +73,9 @@ test("cacheFilePath: undefined cachePath resolves to userCacheDir/slack-<team>.j
 test("cachedUserNames: maps IDs to display name, else real name, else username; empty without a cache file", () => {
 	const dir = tmpDir("quiver-slack-names-");
 	const filePath = join(dir, "cache.json");
-	assert.deepEqual(cachedUserNames(filePath), new Map());
+	assert.deepEqual(cachedUserNames(filePath, "T1"), new Map());
+	writeFileSync(filePath, JSON.stringify({ users: { alice: { id: "U01ALICE", display_name: "Alice" } } }));
+	assert.deepEqual(cachedUserNames(filePath, "T1"), new Map());
 	writeCacheFile(filePath, {
 		team_id: "T1",
 		channels: {},
@@ -85,7 +87,7 @@ test("cachedUserNames: maps IDs to display name, else real name, else username; 
 		refreshed_at: "x",
 	});
 	assert.deepEqual(
-		cachedUserNames(filePath),
+		cachedUserNames(filePath, "T1"),
 		new Map([
 			["U01ALICE", "Alice"],
 			["U02BOB", "Bob Example"],

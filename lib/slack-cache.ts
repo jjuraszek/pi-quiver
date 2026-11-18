@@ -293,9 +293,10 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
  * User ID -> name for rendering `<@U...>` in read output: display name, else real name, else the
  * username key. Read-only and offline - an ID the cache has never seen is simply absent.
  */
-export function cachedUserNames(filePath: string): Map<string, string> {
-	const users = readCacheFile(filePath)?.users ?? {};
-	return new Map(Object.entries(users).map(([username, u]) => [u.id, u.display_name || u.real_name || username]));
+export function cachedUserNames(filePath: string, teamId: string): Map<string, string> {
+	const cache = readCacheFile(filePath);
+	if (!cache?.team_id || cache.team_id !== teamId) return new Map();
+	return new Map(Object.entries(cache.users ?? {}).map(([username, u]) => [u.id, u.display_name || u.real_name || username]));
 }
 
 const MENTION_DENY = new Set(["here", "channel", "everyone"]);
