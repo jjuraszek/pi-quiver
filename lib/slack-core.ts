@@ -555,8 +555,9 @@ export function parsePermalink(url: string): { channel: string; ts: string } | u
 	return { channel, ts: `${digits.slice(0, -6)}.${digits.slice(-6)}` };
 }
 
-function compactMessageText(text: unknown, userNames?: UserNames): string {
-	return typeof text === "string" ? renderMentionTokens(text, userNames).replace(/\r?\n/g, " ") : "";
+function compactMessageText({ text, mrkdwn }: Record<string, unknown>, userNames?: UserNames): string {
+	if (typeof text !== "string") return "";
+	return (mrkdwn === false ? text : renderMentionTokens(text, userNames)).replace(/\r?\n/g, " ");
 }
 
 function renderSearchLine(match: Record<string, unknown>, userNames?: UserNames): string {
@@ -565,7 +566,7 @@ function renderSearchLine(match: Record<string, unknown>, userNames?: UserNames)
 	const channelName = typeof channelObj?.name === "string" ? channelObj.name : String(channelObj?.id ?? "unknown");
 	const ts = String(match.ts ?? "");
 	const permalink = String(match.permalink ?? "");
-	return `${author} | #${channelName} | ${ts} | ${permalink} | ${compactMessageText(match.text, userNames)}`;
+	return `${author} | #${channelName} | ${ts} | ${permalink} | ${compactMessageText(match, userNames)}`;
 }
 
 export async function searchMessages(
@@ -691,7 +692,7 @@ function renderThreadLine(message: Record<string, unknown>, userNames?: UserName
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
 	const flattened = Array.isArray(message.blocks) ? renderBlocks(message.blocks, userNames) : "";
-	const body = flattened || compactMessageText(message.text, userNames);
+	const body = flattened || compactMessageText(message, userNames);
 	return `${author} | ${ts} | ${body}`;
 }
 

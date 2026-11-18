@@ -856,6 +856,16 @@ test("searchMessages: compact text renders mentions outside code and keeps the o
 	assert.equal(result.matches[0].text, MENTION_TEXT);
 });
 
+test("compact search and thread text preserve literal mentions when mrkdwn is false", async () => {
+	const message = { user: "bob", ts: "1.1", text: "<@U01ALICE>\n<!subteam^S01OPS|@ops>", mrkdwn: false };
+	const deps = { token: "t", userNames: MENTION_NAMES };
+	const search = await searchMessages({ query: "ops" }, { ...deps, apiCall: async () => ({ messages: { matches: [message] } }) });
+	const thread = await readThread({ channel: "C1", ts: "1.1" }, { ...deps, apiCall: async () => ({ messages: [message] }) });
+	const literal = "<@U01ALICE> <!subteam^S01OPS|@ops>";
+	assert.equal(search.output, `bob | #unknown | 1.1 |  | ${literal}`);
+	assert.equal(thread.output, `bob | 1.1 | ${literal}`);
+});
+
 test("readThread: compact lines render cached mentions from text and rich_text blocks; raw output keeps the tokens", async () => {
 	const messages = [
 		{ user: "U2", ts: "1.1", text: MENTION_TEXT },
