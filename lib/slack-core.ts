@@ -502,21 +502,20 @@ export interface CoreDeps {
 	apiCall: ApiCall;
 	token: string;
 	signal?: AbortSignal;
-	/** User ID -> display name for compact read output; IDs absent here keep their raw token. */
+	/** User ID -> display name for compact read output. */
 	userNames?: UserNames;
 }
 
 const CODE_OR_MENTION = /```[\s\S]*?(?:```|$)|`[^`\r\n]*`|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>|<!subteam\^[A-Z0-9]+(?:\|@?([^>]+))?>/g;
 
-/**
- * Compact read output only: `<@U...>` becomes `@Display Name` when `userNames` knows the ID, and
- * `<!subteam^S...|@handle>` becomes `@handle`. A token with no known name stays verbatim so the ID
- * is never lost.
- */
+function compactUserMention(id: string, names?: UserNames): string {
+	const name = names?.get(id);
+	return name === undefined ? `@user(${id})` : `@${name}`;
+}
 export function renderMentionTokens(text: string, userNames?: UserNames): string {
 	return text.replace(CODE_OR_MENTION, (token, userId: string | undefined, handle: string | undefined) => {
-		const name = userId === undefined ? handle : userNames?.get(userId);
-		return name === undefined ? token : `@${name}`;
+		if (userId !== undefined) return compactUserMention(userId, userNames);
+		return handle === undefined ? token : `@${handle}`;
 	});
 }
 
@@ -590,7 +589,7 @@ export async function searchMessages(
 	return { ...gated, matches, total, page, pageCount };
 }
 
-function inlineElementText(element: unknown, userNames?: UserNames): string {
+function inlineElementText(element: unknown, userNames: UserNames | undefined, preformatted: boolean): string {
 	if (typeof element !== "object" || element === null) return "[unknown]";
 	const el = element as Record<string, unknown>;
 	const type = typeof el.type === "string" ? el.type : "unknown";
@@ -600,8 +599,7 @@ function inlineElementText(element: unknown, userNames?: UserNames): string {
 		case "user": {
 			if (typeof el.user_id !== "string") return "[user]";
 			const code = (el.style as { code?: boolean } | undefined)?.code;
-			const name = code ? undefined : userNames?.get(el.user_id);
-			return name === undefined ? `<@${el.user_id}>` : `@${name}`;
+			return preformatted || code ? `<@${el.user_id}>` : compactUserMention(el.user_id, userNames);
 		}
 		case "channel":
 			return typeof el.channel_id === "string" ? `<#${el.channel_id}>` : "[channel]";
@@ -625,8 +623,8 @@ function richTextContainerText(element: unknown, userNames?: UserNames): string 
 		case "rich_text_section":
 		case "rich_text_quote":
 		case "rich_text_preformatted": {
-			const names = type === "rich_text_preformatted" ? undefined : userNames;
-			return Array.isArray(el.elements) ? el.elements.map((item) => inlineElementText(item, names)).join("") : "";
+			const preformatted = type === "rich_text_preformatted";
+			return Array.isArray(el.elements) ? el.elements.map((item) => inlineElementText(item, userNames, preformatted)).join("") : "";
 		}
 		case "rich_text_list":
 			return Array.isArray(el.elements)
