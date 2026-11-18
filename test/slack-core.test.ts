@@ -691,6 +691,8 @@ test("readThread: 429 mid-pagination returns partial messages, complete false, t
 	assert.match(result.caveat ?? "", /1 request\/minute/);
 });
 
+const MENTION_NAMES = new Map([["U01ALICE", "Alice Example"]]);
+
 test("renderBlocks: header, section with fields, context, unknown and malformed blocks", () => {
 	const blocks = [
 		{ type: "header", text: { type: "plain_text", text: "Deploy *failed*" } },
@@ -705,8 +707,8 @@ test("renderBlocks: header, section with fields, context, unknown and malformed 
 		{
 			type: "context",
 			elements: [
-				{ type: "mrkdwn", text: "pipeline ci" },
-				{ type: "plain_text", text: "2m ago" },
+				{ type: "plain_text", text: "<@U01ALICE>" },
+				{ type: "mrkdwn", text: "<@U01ALICE>" },
 				{ type: "image", image_url: "https://x/i.png", alt_text: "i" },
 			],
 		},
@@ -715,8 +717,8 @@ test("renderBlocks: header, section with fields, context, unknown and malformed 
 		"nonsense",
 	];
 	assert.equal(
-		renderBlocks(blocks),
-		"Deploy *failed* / Build <https://x|#42> broke *env:* prod *by:* alice / pipeline ci 2m ago [image] / [divider] / [unknown]",
+		renderBlocks(blocks, MENTION_NAMES),
+		"Deploy *failed* / Build <https://x|#42> broke *env:* prod *by:* alice / <@U01ALICE> @Alice Example [image] / [divider] / [unknown]",
 	);
 });
 
@@ -757,7 +759,7 @@ test("renderBlocks: rich_text containers recurse; six named inline elements; unl
 					style: "bullet",
 					elements: [
 						{ type: "rich_text_section", elements: [{ type: "text", text: "one" }] },
-						{ type: "rich_text_section", elements: [{ type: "text", text: "two" }] },
+						{ type: "rich_text_section", elements: [{ type: "user", user_id: "U01ALICE" }] },
 					],
 				},
 				{ type: "rich_text_quote", elements: [{ type: "text", text: "quoted" }] },
@@ -765,7 +767,10 @@ test("renderBlocks: rich_text containers recurse; six named inline elements; unl
 			],
 		},
 	];
-	assert.equal(renderBlocks(blocks), "Hello <@U1> <#C9> <!subteam^S7> A https://b :wave: [date] one two quoted code");
+	assert.equal(
+		renderBlocks(blocks, MENTION_NAMES),
+		"Hello <@U1> <#C9> <!subteam^S7> A https://b :wave: [date] one @Alice Example quoted code",
+	);
 });
 
 test("renderBlocks: inline element with a missing required field renders [<type>], never <@undefined>", () => {
@@ -815,8 +820,6 @@ test("readThread: message with blocks renders flattened blocks; empty flatten fa
 		"U1 | 1.1 | line1 line2\nU2 | 1.2 | only text\nU3 | 1.3 | degenerate\nU4 | 1.4 | plain old",
 	);
 });
-
-const MENTION_NAMES = new Map([["U01ALICE", "Alice Example"]]);
 
 test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, unknown tokens stay verbatim", () => {
 	assert.equal(
