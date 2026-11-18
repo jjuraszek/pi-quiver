@@ -500,6 +500,22 @@ export interface CoreDeps {
 	apiCall: ApiCall;
 	token: string;
 	signal?: AbortSignal;
+	/** User ID -> display name for compact read output; IDs absent here keep their raw token. */
+	userNames?: ReadonlyMap<string, string>;
+}
+
+const MENTION_TOKEN = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>|<!subteam\^[A-Z0-9]+(?:\|@?([^>]+))?>/g;
+
+/**
+ * Compact read output only: `<@U...>` becomes `@Display Name` when `userNames` knows the ID, and
+ * `<!subteam^S...|@handle>` becomes `@handle`. A token with no known name stays verbatim so the ID
+ * is never lost.
+ */
+export function renderMentionTokens(text: string, userNames?: ReadonlyMap<string, string>): string {
+	return text.replace(MENTION_TOKEN, (token, userId: string | undefined, handle: string | undefined) => {
+		const name = userId === undefined ? handle : userNames?.get(userId);
+		return name === undefined ? token : `@${name}`;
+	});
 }
 
 export const THREAD_PAGE_CAP = 50;
@@ -537,13 +553,13 @@ export function parsePermalink(url: string): { channel: string; ts: string } | u
 	return { channel, ts: `${digits.slice(0, -6)}.${digits.slice(-6)}` };
 }
 
-function renderSearchLine(match: Record<string, unknown>): string {
+function renderSearchLine(match: Record<string, unknown>, userNames?: ReadonlyMap<string, string>): string {
 	const author = typeof match.username === "string" ? match.username : String(match.user ?? "unknown");
 	const channelObj = match.channel as Record<string, unknown> | undefined;
 	const channelName = typeof channelObj?.name === "string" ? channelObj.name : String(channelObj?.id ?? "unknown");
 	const ts = String(match.ts ?? "");
 	const permalink = String(match.permalink ?? "");
-	const text = typeof match.text === "string" ? match.text.replace(/\r?\n/g, " ") : "";
+	const text = typeof match.text === "string" ? renderMentionTokens(match.text.replace(/\r?\n/g, " "), userNames) : "";
 	return `${author} | #${channelName} | ${ts} | ${permalink} | ${text}`;
 }
 
@@ -563,7 +579,7 @@ export async function searchMessages(
 	const page = typeof paging.page === "number" ? paging.page : (args.page ?? 1);
 	const pageCount = typeof paging.pages === "number" ? paging.pages : 1;
 
-	const rendered = matches.map(renderSearchLine).join("\n");
+	const rendered = matches.map((match) => renderSearchLine(match, deps.userNames)).join("\n");
 	const gated = gateOutput(rendered, "search");
 	return { ...gated, matches, total, page, pageCount };
 }
@@ -579,6 +595,8 @@ function inlineElementText(element: unknown): string {
 			return typeof el.user_id === "string" ? `<@${el.user_id}>` : "[user]";
 		case "channel":
 			return typeof el.channel_id === "string" ? `<#${el.channel_id}>` : "[channel]";
+		case "usergroup":
+			return typeof el.usergroup_id === "string" ? `<!subteam^${el.usergroup_id}>` : "[usergroup]";
 		case "link":
 			if (typeof el.text === "string" && el.text.length > 0) return el.text;
 			return typeof el.url === "string" ? el.url : "[link]";
@@ -659,11 +677,14 @@ export function renderBlocks(blocks: unknown[]): string {
 		.replace(/\r?\n/g, " ");
 }
 
-function renderThreadLine(message: Record<string, unknown>): string {
+function renderThreadLine(message: Record<string, unknown>, userNames?: ReadonlyMap<string, string>): string {
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
 	const flattened = Array.isArray(message.blocks) && message.blocks.length > 0 ? renderBlocks(message.blocks) : "";
-	const body = (flattened.length > 0 ? flattened : typeof message.text === "string" ? message.text : "").replace(/\r?\n/g, " ");
+	const body = renderMentionTokens(
+		(flattened.length > 0 ? flattened : typeof message.text === "string" ? message.text : "").replace(/\r?\n/g, " "),
+		userNames,
+	);
 	return `${author} | ${ts} | ${body}`;
 }
 
@@ -734,7 +755,10 @@ export async function readThread(
 		cursor = fetchedCursor;
 	}
 
-	const rendered = args.raw === true ? JSON.stringify(messages, null, 2) : messages.map(renderThreadLine).join("\n");
+	const rendered =
+		args.raw === true
+			? JSON.stringify(messages, null, 2)
+			: messages.map((message) => renderThreadLine(message, deps.userNames)).join("\n");
 	const gated = gateOutput(rendered, "thread");
 	return { ...gated, messages, complete, nextCursor, caveat, messageCount: messages.length };
 }

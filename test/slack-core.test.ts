@@ -20,6 +20,7 @@ import {
 	searchMessages,
 	readThread,
 	renderBlocks,
+	renderMentionTokens,
 	gateOutput,
 	INLINE_MAX_BYTES,
 	INLINE_MAX_LINES,
@@ -726,7 +727,7 @@ test("renderBlocks: multi-line text inside blocks collapses newlines to spaces",
 	);
 });
 
-test("renderBlocks: rich_text containers recurse; five named inline elements; unlisted -> [<type>]", () => {
+test("renderBlocks: rich_text containers recurse; six named inline elements; unlisted -> [<type>]", () => {
 	const blocks = [
 		{
 			type: "rich_text",
@@ -739,6 +740,8 @@ test("renderBlocks: rich_text containers recurse; five named inline elements; un
 						{ type: "user", user_id: "U1" },
 						{ type: "text", text: " " },
 						{ type: "channel", channel_id: "C9" },
+						{ type: "text", text: " " },
+						{ type: "usergroup", usergroup_id: "S7" },
 						{ type: "text", text: " " },
 						{ type: "link", url: "https://a", text: "A" },
 						{ type: "text", text: " " },
@@ -762,7 +765,7 @@ test("renderBlocks: rich_text containers recurse; five named inline elements; un
 			],
 		},
 	];
-	assert.equal(renderBlocks(blocks), "Hello <@U1> <#C9> A https://b :wave: [date] one two quoted code");
+	assert.equal(renderBlocks(blocks), "Hello <@U1> <#C9> <!subteam^S7> A https://b :wave: [date] one two quoted code");
 });
 
 test("renderBlocks: inline element with a missing required field renders [<type>], never <@undefined>", () => {
@@ -776,6 +779,7 @@ test("renderBlocks: inline element with a missing required field renders [<type>
 						elements: [
 							{ type: "user" },
 							{ type: "channel" },
+							{ type: "usergroup" },
 							{ type: "emoji" },
 							{ type: "link" },
 							{ type: "text" },
@@ -784,7 +788,7 @@ test("renderBlocks: inline element with a missing required field renders [<type>
 				],
 			},
 		]),
-		"[user][channel][emoji][link][text]",
+		"[user][channel][usergroup][emoji][link][text]",
 	);
 });
 
@@ -810,6 +814,77 @@ test("readThread: message with blocks renders flattened blocks; empty flatten fa
 		result.output,
 		"U1 | 1.1 | line1 line2\nU2 | 1.2 | only text\nU3 | 1.3 | degenerate\nU4 | 1.4 | plain old",
 	);
+});
+
+const MENTION_NAMES = new Map([["U01ALICE", "Alice Example"]]);
+
+test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, unknown tokens stay verbatim", () => {
+	assert.equal(
+		renderMentionTokens(
+			"<@U01ALICE> <@U01ALICE|alice> <@U09GHOST> <!subteam^S01OPS|@ops-oncall> <!subteam^S02DEV> <#C9> <!here>",
+			MENTION_NAMES,
+		),
+		"@Alice Example @Alice Example <@U09GHOST> @ops-oncall <!subteam^S02DEV> <#C9> <!here>",
+	);
+	assert.equal(renderMentionTokens("<@U01ALICE> <!subteam^S01OPS|@ops-oncall>"), "<@U01ALICE> @ops-oncall");
+});
+
+test("searchMessages: compact text renders cached user mentions and labeled group mentions", async () => {
+	const apiCall: ApiCall = async () => ({
+		ok: true,
+		messages: {
+			matches: [
+				{
+					username: "bob",
+					channel: { name: "general" },
+					ts: "1.1",
+					permalink: "p",
+					text: "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>",
+				},
+			],
+			paging: { count: 1, total: 1, page: 1, pages: 1 },
+		},
+	});
+	const result = await searchMessages({ query: "ask" }, { apiCall, token: "t", userNames: MENTION_NAMES });
+	assert.equal(result.output, "bob | #general | 1.1 | p | @Alice Example and @ops-oncall: ask <@U09GHOST>");
+	assert.equal(result.matches[0].text, "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>");
+});
+
+test("readThread: compact lines render cached mentions from text and rich_text blocks; raw output keeps the tokens", async () => {
+	const messages = [
+		{ user: "U2", ts: "1.1", text: "<@U01ALICE> please review, cc <!subteam^S01OPS|@ops-oncall>" },
+		{
+			user: "U3",
+			ts: "1.2",
+			text: "<@U01ALICE> <@U09GHOST> <!subteam^S02DEV>",
+			blocks: [
+				{
+					type: "rich_text",
+					elements: [
+						{
+							type: "rich_text_section",
+							elements: [
+								{ type: "user", user_id: "U01ALICE" },
+								{ type: "text", text: " " },
+								{ type: "user", user_id: "U09GHOST" },
+								{ type: "text", text: " " },
+								{ type: "usergroup", usergroup_id: "S02DEV" },
+							],
+						},
+					],
+				},
+			],
+		},
+	];
+	const apiCall: ApiCall = async () => ({ ok: true, messages, has_more: false, response_metadata: { next_cursor: "" } });
+	const deps = { apiCall, token: "t", userNames: MENTION_NAMES };
+	const compact = await readThread({ channel: "C1", ts: "1.1" }, deps);
+	assert.equal(
+		compact.output,
+		"U2 | 1.1 | @Alice Example please review, cc @ops-oncall\nU3 | 1.2 | @Alice Example <@U09GHOST> <!subteam^S02DEV>",
+	);
+	const raw = await readThread({ channel: "C1", ts: "1.1", raw: true }, deps);
+	assert.equal(raw.output, JSON.stringify(messages, null, 2));
 });
 
 test("readThread raw: output is a pure JSON array, each message deep-equals the API response (blocks untouched)", async () => {

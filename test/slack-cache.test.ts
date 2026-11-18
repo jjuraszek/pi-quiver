@@ -12,6 +12,7 @@ import {
 	resolveChannel,
 	resolveUser,
 	resolveMentions,
+	cachedUserNames,
 	refreshCache,
 	assertSameTeam,
 	MAX_LIST_PAGES,
@@ -67,6 +68,31 @@ test("cacheFilePath: undefined cachePath resolves to userCacheDir/slack-<team>.j
 	const cfg = { ...DEFAULT_SLACK_CONFIG, cachePath: undefined };
 	const dir = userCacheDir(process.platform, process.env, process.env.HOME ?? "");
 	assert.equal(cacheFilePath(cfg, "/repo", "T1"), join(dir, "slack-T1.json"));
+});
+
+test("cachedUserNames: maps IDs to display name, else real name, else username; empty without a cache file", () => {
+	const dir = tmpDir("quiver-slack-names-");
+	const filePath = join(dir, "cache.json");
+	assert.deepEqual(cachedUserNames(filePath), new Map());
+	writeCacheFile(filePath, {
+		team_id: "T1",
+		channels: {},
+		users: {
+			alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice Example" },
+			bob: { id: "U02BOB", display_name: "", real_name: "Bob Example" },
+			carol: { id: "U03CAROL", display_name: "", real_name: "" },
+		},
+		refreshed_at: "x",
+	});
+	assert.deepEqual(
+		cachedUserNames(filePath),
+		new Map([
+			["U01ALICE", "Alice"],
+			["U02BOB", "Bob Example"],
+			["U03CAROL", "carol"],
+		]),
+	);
+	rmSync(dir, { recursive: true, force: true });
 });
 
 // --- 2: single winning file (cachePath configured; user-dir file is never read) ---

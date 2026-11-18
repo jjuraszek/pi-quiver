@@ -411,6 +411,15 @@ spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
 
+Compact `slack_search` and `slack_thread` text renders mentions by name.
+`<@U...>` becomes `@Display Name` (falling back to real name, then username)
+when the user is in the name cache; a `rich_text` `usergroup` element renders
+as `<!subteam^S...>`, and a group mention Slack labeled
+(`<!subteam^S...|@handle>`) becomes `@handle`. IDs the cache does not hold
+and unlabeled group mentions stay verbatim. The lookup reads the cache file
+only and never calls Slack. `raw: true` text and structured results keep
+every token as Slack sent it.
+
 Set `raw: true` for block extraction and `slack_update` round-trips in text
 results. Inline raw text is a JSON array with `blocks` untouched and no
 status trailer; large text spills with a preview instead. A partial raw

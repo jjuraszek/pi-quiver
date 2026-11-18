@@ -43,7 +43,7 @@ import {
 	type ThreadResult,
 	type UnresolvedMention,
 } from "../lib/slack-core.ts";
-import { cacheFilePath, teamIdFor, resolveChannel, refreshCache, resolveMentions, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
+import { cacheFilePath, cachedUserNames, teamIdFor, resolveChannel, refreshCache, resolveMentions, assertSameTeam, type CacheCtx } from "../lib/slack-cache.ts";
 
 const SLACK_FORMATTING_GUIDANCE: { rules: string[]; example: string } = {
 	rules: [
@@ -309,7 +309,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 				Type.Object({ file: Type.String(), ...searchFields }),
 			]),
 			description:
-				'Search Slack messages via search.messages. Always uses the "user" identity (search.messages accepts only user tokens - no `as` param). `query` uses Slack\'s documented operator grammar (e.g. `in:#channel-name`, `from:@display-name`); channel/user names in the query are passed through as-is, never rewritten to IDs. `count` (default 20, max 100) and optional `page` control a single page of Slack\'s offset-paginated results. Output is compact (author, channel, ts, permalink, text) and size-gated: over 32KB/1000 lines it is written to a temp file with a 60-line preview.',
+				'Search Slack messages via search.messages. Always uses the "user" identity (search.messages accepts only user tokens - no `as` param). `query` uses Slack\'s documented operator grammar (e.g. `in:#channel-name`, `from:@display-name`); channel/user names in the query are passed through as-is, never rewritten to IDs. `count` (default 20, max 100) and optional `page` control a single page of Slack\'s offset-paginated results. Output is compact (author, channel, ts, permalink, text) and size-gated: over 32KB/1000 lines it is written to a temp file with a 60-line preview. In text, user mentions the name cache knows render as `@Display Name` and labeled group mentions as `@handle`; unknown IDs stay as `<@U...>`.',
 			parameters: Type.Object({
 				query: Type.String({ description: "Slack search query, e.g. 'deploy in:#eng from:@alice'" }),
 				count: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
@@ -317,8 +317,8 @@ export default function slackExtension(pi: ExtensionAPI) {
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
-					const { deps } = await resolveCall("user", cfg, ctx, signal, repoRoot);
-					const result = await searchMessages(params, deps);
+					const { deps, filePath } = await resolveCall("user", cfg, ctx, signal, repoRoot);
+					const result = await searchMessages(params, { ...deps, userNames: cachedUserNames(filePath) });
 					const structured = structuredMessages(result.matches, "search");
 					return {
 						content: [{ type: "text" as const, text: searchResultText(result) }],
@@ -345,7 +345,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 				Type.Object({ file: Type.String(), ...threadFields }),
 			]),
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
+				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. Compact lines render user mentions the name cache knows as `@Display Name` and labeled group mentions as `@handle`; unknown IDs stay as `<@U...>`. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
 			parameters: Type.Object({
 				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
@@ -355,12 +355,12 @@ export default function slackExtension(pi: ExtensionAPI) {
 			}),
 			async execute(_toolCallId, params, signal) {
 				return guarded(async () => {
-					const { deps, cacheCtx } = await resolveCall("user", cfg, ctx, signal, repoRoot);
+					const { deps, cacheCtx, filePath } = await resolveCall("user", cfg, ctx, signal, repoRoot);
 					const channel =
 						params.permalink === undefined && params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
 					const result = await readThread(
 						{ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor, raw: params.raw },
-						deps,
+						{ ...deps, userNames: cachedUserNames(filePath) },
 					);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],

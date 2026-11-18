@@ -1493,6 +1493,41 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 	}
 }
 
+test("slack_search and slack_thread compact text name cached users; raw thread output keeps the tokens", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-names-"));
+	const cacheFile = join(dir, "cache.json");
+	writeMentionCache(cacheFile);
+	const text = "<@U01ALICE> ping <@U09GHOST>";
+	const message = { user: "U02BOB", ts: "1.1", text };
+	try {
+		await withEnvToken("SLACK_USER_TOKEN", "xoxp-e2e-names", async () => {
+			await withSettingsAsync({}, { quiver: { slack: { enabled: true, cachePath: cacheFile } } }, async (cwd) => {
+				await withFakeFetch({
+					"auth.test": () => ({ ok: true, team_id: "T1" }),
+					"search.messages": () => ({
+						ok: true,
+						messages: { matches: [{ ...message, username: "bob", channel: { name: "general" }, permalink: "p" }], paging: { total: 1, page: 1, pages: 1 } },
+					}),
+					"conversations.replies": () => ({ ok: true, messages: [message], has_more: false, response_metadata: { next_cursor: "" } }),
+				}, async () => {
+					const { api, defs, handlers } = makeMockApi();
+					slackExtension(api);
+					await handlers.session_start({}, makeFakeCtx(cwd));
+					const run = async (name: string, params: Record<string, unknown>) => {
+						const result = await defs.find((d) => d.name === name)!.execute("tc1", params as never, undefined, () => {}, undefined as never);
+						return result.content[0].type === "text" ? result.content[0].text : "";
+					};
+					assert.equal(await run("slack_search", { query: "ping" }), "bob | #general | 1.1 | p | @Alice ping <@U09GHOST>\n\ntotal: 1 | page: 1 of 1");
+					assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1" }), "U02BOB | 1.1 | @Alice ping <@U09GHOST>\n\ncomplete: true");
+					assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1", raw: true }), JSON.stringify([message], null, 2));
+				});
+			});
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("bot tool calls do not execute userTokenCommand for the team cross-check", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-bot-command-"));
 	const marker = join(dir, "called");
