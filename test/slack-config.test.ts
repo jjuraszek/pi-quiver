@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import fs, { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -1493,7 +1494,7 @@ async function withFakeFetch(handlers: FetchHandlers, fn: () => Promise<void>): 
 	}
 }
 
-test("slack_search and slack_thread name users only from the authenticated workspace; raw output keeps the tokens", async () => {
+test("slack_search and slack_thread use valid names from the authenticated workspace; raw permalinks skip the cache", async (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "quiver-slack-e2e-names-"));
 	const cacheFile = join(dir, "cache.json");
 	const text = "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall> ping <@U09GHOST>";
@@ -1517,16 +1518,22 @@ test("slack_search and slack_thread name users only from the authenticated works
 						return result.content[0].type === "text" ? result.content[0].text : "";
 					};
 					for (const [cacheTeam, alice] of [["T1", "<@U01ALICE>"], ["T2", "@Alice"]]) {
-						writeMentionCache(cacheFile, cacheTeam);
+						writeMentionCache(cacheFile, cacheTeam, { broken: null });
 						const rendered = `${alice} and @ops-oncall ping <@U09GHOST>`;
 						assert.equal(await run("slack_search", { query: "ping" }), `bob | #general | 1.1 | p | ${rendered}\n\ntotal: 1 | page: 1 of 1`);
 						assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1" }), `U02BOB | 1.1 | ${rendered}\n\ncomplete: true`);
 					}
-					assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1", raw: true }), JSON.stringify([message], null, 2));
+					const reads = t.mock.method(fs, "readFileSync");
+					syncBuiltinESMExports();
+					const permalink = "https://example.slack.com/archives/C12345678/p1100000";
+					assert.equal(await run("slack_thread", { permalink, raw: true }), JSON.stringify([message], null, 2));
+					assert.ok(!reads.mock.calls.some((call) => call.arguments[0] === cacheFile), "raw permalink must not read the cache");
 				});
 			});
 		});
 	} finally {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
@@ -1631,13 +1638,13 @@ async function withEnvToken(envVar: string, value: string, fn: () => Promise<voi
 	}
 }
 
-function writeMentionCache(filePath: string, teamId = "T1"): void {
+function writeMentionCache(filePath: string, teamId = "T1", extraUsers: Record<string, unknown> = {}): void {
 	writeFileSync(
 		filePath,
 		JSON.stringify({
 			team_id: teamId,
 			channels: { general: "C123" },
-			users: { alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" } },
+			users: { alice: { id: "U01ALICE", display_name: "Alice", real_name: "Alice A" }, ...extraUsers },
 			refreshed_at: new Date().toISOString(),
 			snapshot_at: new Date().toISOString(),
 		}),

@@ -361,7 +361,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 						params.permalink === undefined && params.channel !== undefined ? await resolveChannel(params.channel, cacheCtx) : undefined;
 					const result = await readThread(
 						{ channel, ts: params.ts, permalink: params.permalink, cursor: params.cursor, raw: params.raw },
-						{ ...deps, userNames: cachedUserNames(filePath, teamId) },
+						params.raw === true ? deps : { ...deps, userNames: cachedUserNames(filePath, teamId) },
 					);
 					return {
 						content: [{ type: "text" as const, text: threadResultText(result, params.raw === true) }],

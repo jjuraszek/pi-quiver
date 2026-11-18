@@ -295,8 +295,14 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
  */
 export function cachedUserNames(filePath: string, teamId: string): Map<string, string> {
 	const cache = readCacheFile(filePath);
-	if (!cache?.team_id || cache.team_id !== teamId) return new Map();
-	return new Map(Object.entries(cache.users ?? {}).map(([username, u]) => [u.id, u.display_name || u.real_name || username]));
+	const names = new Map<string, string>();
+	if (!cache?.team_id || cache.team_id !== teamId) return names;
+	for (const [username, user] of Object.entries(cache.users ?? {})) {
+		if (typeof user?.id !== "string" || !user.id) continue;
+		const name = [user.display_name, user.real_name, username].find((s) => typeof s === "string" && s.length > 0);
+		if (name) names.set(user.id, name);
+	}
+	return names;
 }
 
 const MENTION_DENY = new Set(["here", "channel", "everyone"]);
