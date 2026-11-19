@@ -287,12 +287,20 @@ function runOrder(entries: readonly SessionEntry[]) {
 }
 
 test("queued prompt gets its own record", async (t) => {
-	const { session, sessionManager, faux } = await timestampSession(t, transcriptFile, { extensionFactories: [(pi) => {
+	const { session, sessionManager, faux, requests } = await timestampSession(t, (cwd) => {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({
+			quiver: { messageTimestamps: { transcript: true } }, retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+		}));
+		return SessionManager.create(cwd, join(cwd, "sessions"));
+	}, { extensionFactories: [(pi) => {
 		pi.on("before_agent_start", () => ({ message: { customType: "sibling", content: "Context", display: true } }));
 	}] });
 	session.setFollowUpMode("all");
 	const live: unknown[] = [];
+	let retries = 0;
 	t.after(session.subscribe((event) => {
+		if (event.type === "auto_retry_start") retries++;
 		// InteractiveMode mounts user and custom messages on the public start event, before persistence.
 		if (event.type === "message_start") {
 			if (event.message.role === "user") live.push(event.message.content);
@@ -305,12 +313,16 @@ test("queued prompt gets its own record", async (t) => {
 		await session.followUp("Second");
 		await session.followUp("Third");
 		return fauxAssistantMessage("Done.");
-	}, fauxAssistantMessage("Done again.")]);
+	}, fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 Service Unavailable" }),
+	fauxAssistantMessage("Done again.")]);
 	await session.prompt("First");
 	const prompt = (text: string) => [{ type: "text", text }];
 	const expected = [prompt("First"), "message-timestamp", "sibling", "stop",
-		prompt("Second"), "message-timestamp", prompt("Third"), "message-timestamp", "stop", "message-timestamp"];
-	assert.equal(faux.state.callCount, 2);
+		prompt("Second"), "message-timestamp", prompt("Third"), "message-timestamp", "error", "stop", "message-timestamp"];
+	assert.equal(retries, 1, "Pi retries the failed request for the queued batch");
+	assert.equal(faux.state.callCount, 3);
+	assert.deepEqual(requests.map((request) => [request.includes("Second"), request.includes("Third")]),
+		[[false, false], [true, true], [true, true]]);
 	assert.deepEqual(live, expected);
 	assert.deepEqual(runOrder(SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries()), expected);
 });
