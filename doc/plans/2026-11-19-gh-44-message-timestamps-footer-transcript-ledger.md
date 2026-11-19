@@ -53,3 +53,4 @@ row 13 done | Print, json and rpc sessions ignored the timestamp settings and co
 row 19 done | README documents both timestamp defaults, the session commands and when existing transcript lines change. | Link to README.md#message-timestamps for settings, toggle examples and redraw behavior.
 row 10 failed | Resume and reload show both original times in place, but the live settle line still precedes deferred shell output. | Keep the replay fix; use the deferred-shell test to check a host hook after the TUI moves shell output into chat, or amend the live-order requirement.
 row 10 failed | The deferred-shell test shows that even a setImmediate append can display the settle time before shell output while Pi awaits another extension. | Do not delay the append with a timer; move the shell flush before the extension settle hook in Pi, or amend the live-order requirement and keep shell-first replay.
+amended | 1 item | Deferred shell display order
