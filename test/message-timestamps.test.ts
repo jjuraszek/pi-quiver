@@ -69,6 +69,22 @@ test("footer follows the prompt and the final reply", async (t) => {
 	assert.deepEqual([promptStatus, statuses.get("message-timestamps")], expected);
 });
 
+test("default writes no record", async (t) => {
+	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => SessionManager.create(cwd, join(cwd, "sessions")));
+	const liveCustomTypes: string[] = [];
+	t.after(session.subscribe((event) => {
+		if (event.type === "entry_appended" && event.entry.type === "custom") liveCustomTypes.push(event.entry.customType);
+	}));
+	faux.setResponses([fauxAssistantMessage("Done.")]);
+	await session.prompt("What time is it?");
+
+	const entries = SessionManager.open(sessionManager.getSessionFile()!).getEntries();
+	const messages = entries.filter((entry) => entry.type === "message").slice(-2);
+	assert.deepEqual(messages.map((entry) => entry.message.role), ["user", "assistant"]);
+	assert.equal(entries.some((entry) => entry.type === "custom" && entry.customType === "message-timestamp"), false);
+	assert.equal(liveCustomTypes.includes("message-timestamp"), false);
+});
+
 test("resume shows the newest message time", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
 	let latest!: string;

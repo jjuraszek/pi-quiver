@@ -3,9 +3,9 @@
 base: 73bd90c390ef0fddb170645795ab4391710b3599
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 2
+iterations: 3
 allowance: 10
-returned: 1 | home | cccaf12b48e1a353ebfb7fb72351bab089287a96
+returned: 8 | home | 21e4dc5899353946a223c9fc66da65f67c19ae38
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -16,7 +16,7 @@ returned: 1 | home | cccaf12b48e1a353ebfb7fb72351bab089287a96
 | 5 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 3 passed; navigating to a sibling reply changed the footer to its saved minute |
 | 6 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 4 passed; an empty session explicitly cleared the timestamp status on startup |
 | 7 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 5 passed; footer false in project settings suppressed the status throughout the turn |
-| 8 | open | 0 | |
+| 8 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 12 passed; without settings the saved turn contained no timestamp record and no timestamp entry reached the live transcript |
 | 9 | open | 0 | |
 | 10 | open | 0 | |
 | 11 | open | 0 | |
@@ -41,3 +41,4 @@ row 7 done | The TUI resolves both switches at startup and leaves the footer tim
 row 2 done | The built-in footer displays the timestamp beside another status without gaining a row. | Add a case to the FooterComponent layout table in test/message-timestamps.test.ts to compare renders with the footer switch off and on.
 row 3 done | With no other extension status present, the timestamp adds exactly one row to the built-in footer. | nothing new to build on
 row 20 done | The Unreleased changelog introduces the default-on timestamp footer and names its settings switch. | Extend the existing #44 bullet in CHANGELOG.md when transcript lines and the command are available.
+row 8 done | With no settings, a completed TUI turn shows no transcript time line and saves no timestamp record. | Reuse the file-backed turn in test/message-timestamps.test.ts to compare live entry_appended events with records reopened from disk.
