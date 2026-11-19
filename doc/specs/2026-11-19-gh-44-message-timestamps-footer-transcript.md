@@ -129,7 +129,7 @@ Rules: .pi/gauntlet-overrides.md
 Rules: .agents/skills/release/SKILL.md
 Rules: eval/elevator/README.md
 scope: AC 1, AC 2, AC 3, AC 4, AC 5, AC 6, AC 7, AC 8, AC 9, AC 10, AC 11, AC 12, AC 13, AC 14, AC 15, AC 16, AC 17, AC 18, AC 19, AC 20
-design: owns `extensions/message-timestamps.ts`, `lib/settings-core.ts` (one registry entry), `test/message-timestamps.test.ts`, `test/extension-config.test.ts` (one registry case), `README.md`, `AGENTS.md` (intro sentence), `CHANGELOG.md`; observable outcomes are the `message-timestamps` footer status, the `message-timestamp` session records and their dim lines, the `/timestamps` command, and the `quiver.messageTimestamps` settings block.
+design: owns `extensions/message-timestamps.ts`, `lib/settings-core.ts` (one registry entry), `test/message-timestamps.test.ts`, `test/extension-config.test.ts` (one registry case and one per-layer settings case), `README.md`, `AGENTS.md` (intro sentence), `CHANGELOG.md`; observable outcomes are the `message-timestamps` footer status, the `message-timestamp` session records and their dim lines, the `/timestamps` command, and the `quiver.messageTimestamps` settings block.
 
 ## Design
 
@@ -142,7 +142,7 @@ Add:
 - `extensions/message-timestamps.ts`: default-exported extension; exported `DEFAULT_CONFIG`, `formatTime`, `newestMessageTime`, `parseArgs`; handlers for `session_start`, `session_tree`, `message_start`, `message_end`, `context`, `turn_end`, `agent_settled`; an entry renderer for custom type `message-timestamp`; the `/timestamps` command.
 - `lib/settings-core.ts`: `messageTimestamps: ["footer", "transcript"]` in `QUIVER_CONFIG_KEYS`. Nothing is added to the frozen `LEGACY_FLAT_KEYS`.
 - `test/message-timestamps.test.ts`: the tests listed under `## Tests`.
-- `test/extension-config.test.ts`: one registry case for the new `DEFAULT_CONFIG`.
+- `test/extension-config.test.ts`: one registry case for the new `DEFAULT_CONFIG` and one case for per-layer settings coercion.
 - `README.md`, `AGENTS.md`, `CHANGELOG.md`: the edits listed under [Documentation edits](#documentation-edits).
 
 `package.json` does not change: `pi.extensions` discovers `./extensions`, `files` ships it, and `@earendil-works/pi-tui` (`Text`) is already a peer dependency.
@@ -258,7 +258,7 @@ Design, error, and edge clauses:
 
 - `formatTime(new Date("2026-11-19T14:59:00Z"), "en-US", "UTC")` is `Nov 19, 02:59 PM` - `formatTime renders date and time`
 - `parseArgs` returns status for empty input, set for the four forms, usage for everything else including `footer` alone - `parseArgs accepts five forms`
-- Non-boolean `footer` or `transcript` settings are ignored per layer: with no valid layer the defaults apply, and global `transcript: true` with a non-boolean project value resolves to `true` - `coerce keeps booleans only`
+- Non-boolean `footer` or `transcript` settings are ignored per layer: with no valid layer the defaults apply, and global `transcript: true` with a non-boolean project value resolves to `true` - `test/extension-config.test.ts`, `timestamp settings keep only booleans from each layer`
 - A global settings file that starts with a byte order mark - none: a known limitation of the shared reader, recorded in `## Errors and edge cases`
 - `newestMessageTime` counts `bashExecution` messages and `custom_message` entries, skips `custom` entries (the `message-timestamp` records included), and returns `undefined` for a branch with no counted message - `newestMessageTime counts every saved message`
 - Bad arguments notify the usage line and change neither switch - `command rejects bad input`; the command outside the terminal UI - covered by `non-tui modes are inert`

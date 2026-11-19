@@ -58,3 +58,4 @@ row 10 done | Resume preserves both time lines; deferred shell output follows th
 row 12 done | Turning transcript lines off in project settings hides stored lines on resume and reload, and the next turn adds no record. | Reuse the file-backed transcript-off fixture in test/message-timestamps.test.ts to check replay when project settings override global settings.
 amended | 2 item(s) | Destination settings rule
 amended | 1 item(s) | Byte order mark in the global settings file
+amended | 1 item(s) | Settings coercion test location
