@@ -404,12 +404,25 @@ returned by `slack_post { as: "bot" }` is not readable there
 | `slack_cache_refresh` | user if configured, else bot | none | codemode scripts only via `tools.slack_cache_refresh({})`; full cache regeneration; reports `channels: N, users: N` plus `\| emails: N/N` (omitted when there are zero users; a `0/N` count adds a `(users:read.email scope may be missing)` hint) |
 
 By default, `slack_thread` renders one line per message. When a message has
-Block Kit blocks, `header` and `section` text and fields pass through without
-unescaping or entity decoding, `context` renders its text elements, and
-`rich_text` renders its named inline elements. Embedded newlines collapse to
+Block Kit blocks, it renders `header` text, `section` text and fields, and
+`context` text elements without unescaping or entity decoding. For `rich_text`
+blocks it renders the named inline elements. Embedded newlines collapse to
 spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
+
+Compact output resolves typed `rich_text` mentions and tokens in `mrkdwn`,
+search text, and thread fallback text. It leaves `plain_text` (including
+headers), inline and fenced code, and preformatted or code-styled rich text
+literal. A user mention becomes `@Display Name` (falling back to real name,
+then username) when the user is in the name cache. On a miss, a text token
+stays verbatim, including any label (e.g. `<@U09GHOST|ghost>`), and a typed
+`rich_text` user renders as `<@ID>`. A `rich_text` `usergroup` element
+renders as `<!subteam^S...>`, and a group mention Slack labeled
+(`<!subteam^S...|@handle>`) becomes `@handle`. Unlabeled group mentions stay
+verbatim. The lookup reads the cache file
+only and never calls Slack. `raw: true` text and structured results keep
+every token as Slack sent it.
 
 Set `raw: true` for block extraction and `slack_update` round-trips in text
 results. Inline raw text is a JSON array with `blocks` untouched and no

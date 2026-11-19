@@ -496,10 +496,28 @@ export function gateOutput(text: string, slug: string): { output: string; spille
  * search/thread reads surface the throttle instead of spinning.
  */
 
+type UserNames = ReadonlyMap<string, string>;
+
 export interface CoreDeps {
 	apiCall: ApiCall;
 	token: string;
 	signal?: AbortSignal;
+	/** User ID -> display name for compact read output. */
+	userNames?: UserNames;
+}
+
+const CODE_OR_MENTION = /```[\s\S]*?(?:```|$)|`[^`\r\n]*`|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>|<!subteam\^[A-Z0-9]+(?:\|@?([^>]+))?>/g;
+
+function compactUserMention(id: string, names: UserNames | undefined, token = `<@${id}>`): string {
+	const name = names?.get(id);
+	return name === undefined ? token : `@${name}`;
+}
+
+export function renderMentionTokens(text: string, userNames?: UserNames): string {
+	return text.replace(CODE_OR_MENTION, (token, userId: string | undefined, handle: string | undefined) => {
+		if (userId !== undefined) return compactUserMention(userId, userNames, token);
+		return handle === undefined ? token : `@${handle}`;
+	});
 }
 
 export const THREAD_PAGE_CAP = 50;
@@ -537,14 +555,18 @@ export function parsePermalink(url: string): { channel: string; ts: string } | u
 	return { channel, ts: `${digits.slice(0, -6)}.${digits.slice(-6)}` };
 }
 
-function renderSearchLine(match: Record<string, unknown>): string {
+function compactMessageText({ text, mrkdwn }: Record<string, unknown>, userNames?: UserNames): string {
+	if (typeof text !== "string") return "";
+	return (mrkdwn === false ? text : renderMentionTokens(text, userNames)).replace(/\r?\n/g, " ");
+}
+
+function renderSearchLine(match: Record<string, unknown>, userNames?: UserNames): string {
 	const author = typeof match.username === "string" ? match.username : String(match.user ?? "unknown");
 	const channelObj = match.channel as Record<string, unknown> | undefined;
 	const channelName = typeof channelObj?.name === "string" ? channelObj.name : String(channelObj?.id ?? "unknown");
 	const ts = String(match.ts ?? "");
 	const permalink = String(match.permalink ?? "");
-	const text = typeof match.text === "string" ? match.text.replace(/\r?\n/g, " ") : "";
-	return `${author} | #${channelName} | ${ts} | ${permalink} | ${text}`;
+	return `${author} | #${channelName} | ${ts} | ${permalink} | ${compactMessageText(match, userNames)}`;
 }
 
 export async function searchMessages(
@@ -563,22 +585,27 @@ export async function searchMessages(
 	const page = typeof paging.page === "number" ? paging.page : (args.page ?? 1);
 	const pageCount = typeof paging.pages === "number" ? paging.pages : 1;
 
-	const rendered = matches.map(renderSearchLine).join("\n");
+	const rendered = matches.map((match) => renderSearchLine(match, deps.userNames)).join("\n");
 	const gated = gateOutput(rendered, "search");
 	return { ...gated, matches, total, page, pageCount };
 }
 
-function inlineElementText(element: unknown): string {
+function inlineElementText(element: unknown, userNames: UserNames | undefined, preformatted: boolean): string {
 	if (typeof element !== "object" || element === null) return "[unknown]";
 	const el = element as Record<string, unknown>;
 	const type = typeof el.type === "string" ? el.type : "unknown";
 	switch (type) {
 		case "text":
 			return typeof el.text === "string" ? el.text : "[text]";
-		case "user":
-			return typeof el.user_id === "string" ? `<@${el.user_id}>` : "[user]";
+		case "user": {
+			if (typeof el.user_id !== "string") return "[user]";
+			const code = (el.style as { code?: boolean } | undefined)?.code;
+			return preformatted || code ? `<@${el.user_id}>` : compactUserMention(el.user_id, userNames);
+		}
 		case "channel":
 			return typeof el.channel_id === "string" ? `<#${el.channel_id}>` : "[channel]";
+		case "usergroup":
+			return typeof el.usergroup_id === "string" ? `<!subteam^${el.usergroup_id}>` : "[usergroup]";
 		case "link":
 			if (typeof el.text === "string" && el.text.length > 0) return el.text;
 			return typeof el.url === "string" ? el.url : "[link]";
@@ -589,35 +616,43 @@ function inlineElementText(element: unknown): string {
 	}
 }
 
-function richTextContainerText(element: unknown): string {
+function richTextContainerText(element: unknown, userNames?: UserNames): string {
 	if (typeof element !== "object" || element === null) return "[unknown]";
 	const el = element as Record<string, unknown>;
 	const type = typeof el.type === "string" ? el.type : "unknown";
 	switch (type) {
 		case "rich_text_section":
 		case "rich_text_quote":
-		case "rich_text_preformatted":
-			return Array.isArray(el.elements) ? el.elements.map(inlineElementText).join("") : "";
+		case "rich_text_preformatted": {
+			const preformatted = type === "rich_text_preformatted";
+			return Array.isArray(el.elements) ? el.elements.map((item) => inlineElementText(item, userNames, preformatted)).join("") : "";
+		}
 		case "rich_text_list":
 			return Array.isArray(el.elements)
-				? el.elements.map(richTextContainerText).filter((s) => s.length > 0).join(" ")
+				? el.elements.map((item) => richTextContainerText(item, userNames)).filter((s) => s.length > 0).join(" ")
 				: "";
 		default:
 			return `[${type}]`;
 	}
 }
 
-function contextElementText(element: unknown): string {
+function textObjectText(element: unknown, userNames?: UserNames): string | undefined {
+	const el = element as { type?: unknown; text?: unknown } | undefined;
+	if (typeof el?.text !== "string") return undefined;
+	return el.type === "mrkdwn" ? renderMentionTokens(el.text, userNames) : el.text;
+}
+
+function contextElementText(element: unknown, userNames?: UserNames): string {
 	if (typeof element !== "object" || element === null) return "[unknown]";
 	const el = element as Record<string, unknown>;
 	const type = typeof el.type === "string" ? el.type : "unknown";
 	if (type === "plain_text" || type === "mrkdwn") {
-		return typeof el.text === "string" ? el.text : `[${type}]`;
+		return textObjectText(el, userNames) ?? `[${type}]`;
 	}
 	return `[${type}]`;
 }
 
-function blockText(block: unknown): string {
+function blockText(block: unknown, userNames?: UserNames): string {
 	if (typeof block !== "object" || block === null) return "[unknown]";
 	const b = block as Record<string, unknown>;
 	const type = typeof b.type === "string" ? b.type : "unknown";
@@ -626,44 +661,37 @@ function blockText(block: unknown): string {
 			const text = (b.text as Record<string, unknown> | undefined)?.text;
 			return typeof text === "string" ? text : "";
 		}
-		case "section": {
-			const parts: string[] = [];
-			const text = (b.text as Record<string, unknown> | undefined)?.text;
-			if (typeof text === "string" && text.length > 0) parts.push(text);
-			if (Array.isArray(b.fields)) {
-				for (const field of b.fields) {
-					const fieldText = (field as Record<string, unknown> | undefined)?.text;
-					if (typeof fieldText === "string" && fieldText.length > 0) parts.push(fieldText);
-				}
-			}
-			return parts.join(" ");
-		}
+		case "section":
+			return [b.text, ...(Array.isArray(b.fields) ? b.fields : [])]
+				.map((field) => textObjectText(field, userNames))
+				.filter(Boolean)
+				.join(" ");
 		case "context":
 			return Array.isArray(b.elements)
-				? b.elements.map(contextElementText).filter((s) => s.length > 0).join(" ")
+				? b.elements.map((el) => contextElementText(el, userNames)).filter((s) => s.length > 0).join(" ")
 				: "";
 		case "rich_text":
 			return Array.isArray(b.elements)
-				? b.elements.map(richTextContainerText).filter((s) => s.length > 0).join(" ")
+				? b.elements.map((el) => richTextContainerText(el, userNames)).filter((s) => s.length > 0).join(" ")
 				: "";
 		default:
 			return `[${type}]`;
 	}
 }
 
-export function renderBlocks(blocks: unknown[]): string {
+export function renderBlocks(blocks: unknown[], userNames?: UserNames): string {
 	return blocks
-		.map(blockText)
+		.map((block) => blockText(block, userNames))
 		.filter((s) => s.length > 0)
 		.join(" / ")
 		.replace(/\r?\n/g, " ");
 }
 
-function renderThreadLine(message: Record<string, unknown>): string {
+function renderThreadLine(message: Record<string, unknown>, userNames?: UserNames): string {
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
-	const flattened = Array.isArray(message.blocks) && message.blocks.length > 0 ? renderBlocks(message.blocks) : "";
-	const body = (flattened.length > 0 ? flattened : typeof message.text === "string" ? message.text : "").replace(/\r?\n/g, " ");
+	const flattened = Array.isArray(message.blocks) ? renderBlocks(message.blocks, userNames) : "";
+	const body = flattened || compactMessageText(message, userNames);
 	return `${author} | ${ts} | ${body}`;
 }
 
@@ -734,7 +762,10 @@ export async function readThread(
 		cursor = fetchedCursor;
 	}
 
-	const rendered = args.raw === true ? JSON.stringify(messages, null, 2) : messages.map(renderThreadLine).join("\n");
+	const rendered =
+		args.raw === true
+			? JSON.stringify(messages, null, 2)
+			: messages.map((message) => renderThreadLine(message, deps.userNames)).join("\n");
 	const gated = gateOutput(rendered, "thread");
 	return { ...gated, messages, complete, nextCursor, caveat, messageCount: messages.length };
 }

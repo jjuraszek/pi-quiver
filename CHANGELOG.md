@@ -3,6 +3,10 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
+## Unreleased
+
+- `slack_search` and `slack_thread` compact text renders `<@U...>` as `@Display Name` when the user is in the name cache, and a labeled `<!subteam^S...|@handle>` as `@handle`. A `rich_text` `usergroup` element renders as `<!subteam^S...>` instead of `[usergroup]`. Uncached user tokens keep their original spelling and optional label; uncached `rich_text` users render as `<@ID>`. Literal text, code, raw output, and structured results keep Slack's tokens. (#42)
+
 ## v6.16.3 - 2026-11-17
 
 - `fast-mode` applies to a custom provider entry whose `baseUrl` host is `api.anthropic.com`, not only to pi's built-in `anthropic` provider. Proxy providers stay excluded. (#41)

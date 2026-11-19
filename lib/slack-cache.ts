@@ -289,6 +289,22 @@ export async function resolveUser(input: string, ctx: CacheCtx): Promise<string>
 	throw new SlackError("name_not_found", `No user named "${name}" was found in the workspace.`);
 }
 
+/**
+ * User ID -> name for rendering `<@U...>` in read output: display name, else real name, else the
+ * username key. Read-only and offline - an ID the cache has never seen is simply absent.
+ */
+export function cachedUserNames(filePath: string, teamId: string): Map<string, string> {
+	const cache = readCacheFile(filePath);
+	const names = new Map<string, string>();
+	if (!cache?.team_id || cache.team_id !== teamId) return names;
+	for (const [username, user] of Object.entries(cache.users ?? {})) {
+		if (typeof user?.id !== "string" || !user.id) continue;
+		const name = [user.display_name, user.real_name, username].find((s) => typeof s === "string" && s.length > 0);
+		if (name) names.set(user.id, name);
+	}
+	return names;
+}
+
 const MENTION_DENY = new Set(["here", "channel", "everyone"]);
 const MENTION_BOUNDARY = new Set([" ", "\t", "\n", "\r", "(", "[", "*", "_", '"', "'"]);
 // `_` is trimmed here even though it is also a boundary character: it is a legal username
