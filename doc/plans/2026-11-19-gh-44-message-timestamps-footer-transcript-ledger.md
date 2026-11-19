@@ -3,9 +3,9 @@
 base: 73bd90c390ef0fddb170645795ab4391710b3599
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 6
+iterations: 7
 allowance: 10
-returned: 10 | home | ae93f8e5e5cc8dcf2725a909aede9b361c616c63
+returned: 10 | home | 102d16fbe40c77fd0d4a2462b1d0f33b00e36210
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -18,9 +18,9 @@ returned: 10 | home | ae93f8e5e5cc8dcf2725a909aede9b361c616c63
 | 7 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 5 passed; footer false in project settings suppressed the status throughout the turn |
 | 8 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 12 passed; without settings the saved turn contained no timestamp record and no timestamp entry reached the live transcript |
 | 9 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 13 passed; three tool calls produced two dim lines in live and saved order, after the prompt and the final reply |
-| 10 | failed | 2 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 21 passed, 1 failed; live chat showed the 04:00 PM settle line before the shell output while replay showed it after; Pi waits for all extension settle handlers before it moves shell output into chat, so even a setImmediate append can arrive first |
+| 10 | done | 3 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 22 passed; resume and reload kept the prompt and settle times in place around the tool loop; deferred shell output followed the settle line live and preceded the same line on replay |
 | 11 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 17 passed; four tool-loop requests and the first request after reopening contained neither timestamp entries nor their displayed times |
-| 12 | open | 0 | |
+| 12 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 23 passed; with transcript off in project settings both stored records returned no component on resume and reload; the next saved reply left the original two records unchanged |
 | 13 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 20 passed; with both switches configured, print, json and rpc wrote no records, sent no UI updates and read no settings |
 | 14 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 14 passed; all four set forms changed only the selected switch in the same TUI session |
 | 15 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 14 passed; bare and set commands reported both switches and bad arguments warned without changing either |
@@ -54,3 +54,5 @@ row 19 done | README documents both timestamp defaults, the session commands and
 row 10 failed | Resume and reload show both original times in place, but the live settle line still precedes deferred shell output. | Keep the replay fix; use the deferred-shell test to check a host hook after the TUI moves shell output into chat, or amend the live-order requirement.
 row 10 failed | The deferred-shell test shows that even a setImmediate append can display the settle time before shell output while Pi awaits another extension. | Do not delay the append with a timer; move the shell flush before the extension settle hook in Pi, or amend the live-order requirement and keep shell-first replay.
 amended | 1 item | Deferred shell display order
+row 10 done | Resume preserves both time lines; deferred shell output follows the settle line live and precedes it on replay. | Reuse the deferred-shell fixture in test/message-timestamps.test.ts to compare live chat order with records reopened a day later.
+row 12 done | Turning transcript lines off in project settings hides stored lines on resume and reload, and the next turn adds no record. | Reuse the file-backed transcript-off fixture in test/message-timestamps.test.ts to check replay when project settings override global settings.

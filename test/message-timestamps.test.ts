@@ -183,7 +183,7 @@ test("multi-tool run writes two records in order", async (t) => {
 	});
 });
 
-test("deferred shell output precedes the settle line live and on replay", async (t) => {
+test("deferred shell output follows the settle line live but precedes it on replay", async (t) => {
 	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
 		projectSettings(cwd, { transcript: true });
 		return SessionManager.create(cwd, join(cwd, "sessions"));
@@ -193,6 +193,7 @@ test("deferred shell output precedes the settle line live and on replay", async 
 	}] });
 	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
 	const live: string[] = [];
+	const promptLine = `dim:${formatTime(new Date())}`;
 	let output = "";
 	t.after(session.subscribe((event) => {
 		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(...renderRecord(session, event.entry) ?? []);
@@ -206,13 +207,43 @@ test("deferred shell output precedes the settle line live and on replay", async 
 		return fauxAssistantMessage("Done.");
 	}]);
 	await session.prompt("Wait for my shell command.");
+	const settleLine = `dim:${formatTime(new Date())}`;
+	assert.notEqual(promptLine, settleLine);
+	assert.deepEqual(live, [promptLine, settleLine, "deferred"]);
+	t.mock.timers.tick(86_400_000);
 	const replay = SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries().flatMap((entry) =>
 		entry.type === "custom" ? renderRecord(session, entry) ?? [] :
 		entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message.output.trim()] : []);
-	assert.equal(replay.length, 3);
-	assert.equal(replay[1], "deferred");
-	assert.notEqual(replay[0], replay[2]);
-	assert.deepEqual(live, replay);
+	assert.deepEqual(replay, [promptLine, "deferred", settleLine]);
+});
+
+test("transcript off hides stored records and writes none", async (t) => {
+	const records = (manager: SessionManager) => manager.buildContextEntries().filter((entry): entry is CustomEntry =>
+		entry.type === "custom" && entry.customType === "message-timestamp");
+	const checkHidden = (session: AgentSession) => {
+		assert.deepEqual(records(session.sessionManager).map((entry) => renderRecord(session, entry)), [undefined, undefined]);
+	};
+	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
+		mkdirSync(join(cwd, "agent"), { recursive: true });
+		writeFileSync(join(cwd, "agent", "settings.json"), JSON.stringify({ quiver: { messageTimestamps: { transcript: true } } }));
+		projectSettings(cwd, { transcript: false });
+		const saved = SessionManager.create(cwd, join(cwd, "sessions"));
+		saved.appendMessage({ role: "user", content: "First prompt", timestamp: Date.now() });
+		saved.appendCustomEntry("message-timestamp");
+		saved.appendMessage(fauxAssistantMessage("First reply"));
+		saved.appendCustomEntry("message-timestamp");
+		return SessionManager.open(saved.getSessionFile()!);
+	}, { beforeBind: checkHidden });
+	const original = records(sessionManager);
+	await session.prompt("/timestamps transcript on");
+	await session.reload({ beforeSessionStart: () => checkHidden(session) });
+	faux.setResponses([fauxAssistantMessage("Second reply")]);
+	await session.prompt("Second prompt");
+	const reopened = SessionManager.open(sessionManager.getSessionFile()!);
+	const last = reopened.getLeafEntry();
+	assert.ok(last?.type === "message" && last.message.role === "assistant");
+	assert.deepEqual(last.message.content, [{ type: "text", text: "Second reply" }]);
+	assert.deepEqual(records(reopened), original);
 });
 
 test("resume shows the newest message time", async (t) => {
