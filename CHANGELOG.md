@@ -5,7 +5,7 @@ one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
 ## Unreleased
 
-- `message-timestamps` shows the newest saved message's local date and time in pi's shared terminal footer by default. Set `quiver.messageTimestamps.footer` to `false` to hide it. (#44)
+- `message-timestamps` shows the newest saved message's local date and time in pi's shared terminal footer by default. Set `quiver.messageTimestamps.transcript` to `true` for dim time lines after prompts and settled runs, or use `/timestamps` to change either display for the current session. (#44)
 
 ## v6.16.4 - 2026-11-19
 

@@ -18,7 +18,7 @@ But the moment an agent does that, one `fetch` or PDF read can dump hundreds of 
 
 `fetch` brings real web pages and GitHub issues/PRs into context and is size-gated by construction: over 32 KB or 1000 lines spills to a temp file with a preview and a grep/read hint. `doc_to_md` converts local PDF/DOCX/DOC/PPTX/XLSX/XLSM/XLS, MSG/EML, HTML, and image files into a Markdown bundle on disk and returns only a concise handle; OCR is opt-in and uses optional Tesseract language data. Ingestion is what makes data-driven work possible; bounded tool results keep it safe.
 
-`message-timestamps` shows the newest saved message's date and time in the terminal footer without setup. `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting with repo-policy injection, `@name` mention resolution, cached emails, and per-call unfurl control.
+`message-timestamps` shows the newest saved message's date and time in the terminal footer without setup. Its transcript lines are opt-in. `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in ergonomics, recovery, and integration controls: session labeling, a themed startup header, Anthropic fast mode, semantic-stall recovery, and context-safe Slack search/threads/posting with repo-policy injection, `@name` mention resolution, cached emails, and per-call unfurl control.
 
 ## Part of the pi agent toolkit
 
@@ -33,7 +33,7 @@ No code dependency between them. pi-quiver is call-level: `fetch` gates the size
 
 ## Mental model
 
-Every ingestion extension here is context-safe by construction, not by convention: `fetch` size-gates every call, while `doc_to_md` always writes a bundle and returns a handle instead of inline Markdown. `fetch` and `doc_to_md` bring real sources in, and `message-timestamps` shows the last-message time in the footer by default. `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in.
+Every ingestion extension here is context-safe by construction, not by convention: `fetch` size-gates every call, while `doc_to_md` always writes a bundle and returns a handle instead of inline Markdown. `fetch` and `doc_to_md` bring real sources in, and `message-timestamps` shows the last-message time in the footer by default. Its transcript lines stay off until enabled. `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` are opt-in.
 
 ```mermaid
 flowchart LR
@@ -66,7 +66,7 @@ A 300 KB changelog page never touches your context window - you get a preview an
 | --- | --- | --- |
 | `extensions/fetch.ts` | `fetch` | Retrieve URLs over HTTP(S). HTML -> Markdown (Readability extraction, Turndown conversion). Binary saved untouched to a temp file. GitHub issue/PR/repo/actions-run/actions-job URLs auto-route through `gh` (falls back to HTTP); failed runs/jobs include failed-step logs (best-effort, summary-only otherwise). Same size gate as `fetch`. Behavior lives in `lib/fetch-core.ts`; also exposed as the `pi-quiver fetch` CLI (see [Claude Code support](#claude-code-support)). |
 | `extensions/doc_to_md.ts` | `doc_to_md` | Convert a local PDF/DOCX/DOC/PPTX/XLSX/XLSM/XLS, MSG/EML, HTML, or image file to a Markdown bundle on disk (`<stem>.md` + `images/`, spreadsheet `sheets/`, optional `pageImages` in `pages/`, and email `attachments/`) and return a handle (paths, page count, outline, diagnostics) - never inline Markdown. `info` inspects PDF/Office inputs; `pages` selects 1-based PDF/Office pages (DOCX: explicit-page-break segments); HTML, image, and email inputs reject both; every selected PDF/PPTX page or DOCX segment when `pageCount > 1` ends with `--- end of page.page_number=N ---`. Tiers: pymupdf4llm -> PyMuPDF text (degraded) -> unpdf worker (no Python only). Excel -> sheet inventory, full CSVs, bounded previews, and optional rendered views. HTML keeps local and `data:` images in the bundle and remote images as links; image inputs keep the original image. Scanned PDF pages keep a page picture on both Python tiers; eligible single full-page images are delivered as their embedded stream, without re-encoding or render DPI; opt-in OCR needs Tesseract language data. DOCX converts directly (mammoth, python-docx fallback); LibreOffice pagination marks the degraded route. The Outline lists `L<line>` and `p<page>` per heading. Settings under `quiver.docToMd`. Every conversion that goes through the Python PDF tiers (PDF, PPTX, `.doc`, DOCX via LibreOffice) writes `<stem>.pages.json` (per-page chars, image count, image coverage; handle line `Page-Stats:`); unpdf writes no stats. `ocrMode: "all"` with `ocr: true` and an explicit `pages` forces OCR on those pages into `ocr/<stem>-pNNN.md` sidecars, leaving the Markdown byte-identical to the same selected-page call without OCR. `words: true` (CLI `--words`, per-call only - no settings key) writes `<stem>.words.json` with every word's bbox per selected PDF/image page (`source` `text` or `ocr`), plus `ocr/<stem>-pNNN.words.json` beside each forced-OCR sidecar; it never triggers OCR. |
-| `extensions/message-timestamps.ts` | - | Show the newest saved message's local date and time in the shared terminal footer. ON by default. |
+| `extensions/message-timestamps.ts` | `/timestamps` | Show the newest saved message time in the shared footer (on by default). Add dim time lines after prompts and settled runs (off by default). |
 | `extensions/session-name.ts` | `/session-name` | Manual + opt-in automatic session naming, naming rules and deny list, long-session revisits, and Ghostty/Herdr tab rename. OFF by default. |
 | `extensions/sword-header.ts` | `/builtin-header` | Themed ASCII startup header replacing pi's default logo. OFF by default. |
 | `extensions/fast-mode.ts` | `/fast` | Inject Anthropic fast-mode (`speed: "fast"`, plus `anthropic-beta: fast-mode-2026-02-01` where the model needs it) into every Claude Fable 5.2 / Mythos 5.2 / Opus 5.5 / Opus 5 / Opus 4.8 request, any thinking level. `--fast` flag + `/fast [on\|off\|status]`. OFF by default. |
@@ -84,7 +84,7 @@ Full routing rules, size-gate mechanics, and config: [doc/fetch.md](doc/fetch.md
 | Size gate | Text/Markdown/JSON output over 32 KB or 1000 lines spills to a temp file with a 60-line preview instead of inlining. |
 | Content routing | HTML -> Markdown, binary -> untouched file, GitHub URLs -> `gh` CLI (failed runs/jobs get failed-step logs appended), everything else -> the size gate. |
 | Graceful degradation | Optional binaries (`gh`, `uv`, LibreOffice) are never hard install-time deps; each has a defined, documented fallback or failure mode. |
-| Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` do nothing until explicitly enabled in `settings.json`. The timestamp footer is on without setup. |
+| Opt-in extensions | `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, and `slack` do nothing until explicitly enabled in `settings.json`. The timestamp footer is on without setup; transcript lines are opt-in. |
 | Provider stall recovery | The watchdog detects a missing first stream event and missing parsed semantic progress, not network liveness. The pre-first-event tier covers every mode and origin; the mid-stream tier is TUI-only. |
 
 ## When to use
@@ -146,7 +146,16 @@ None is a hard install-time dependency of the package; they are tools you provid
 
 ### Message timestamps
 
-The `message-timestamps` footer is on by default in the terminal UI. Set `quiver.messageTimestamps.footer` to `false` in `settings.json` to hide it.
+The two displays work only in the terminal UI. Set them independently under `quiver.messageTimestamps` in `settings.json`:
+
+| Switch | What it shows |
+|---|---|
+| `footer` (default `true`) | The newest saved message's local date and time on the shared footer row. Tool and shell results and saved custom messages count; timestamp records do not. |
+| `transcript` (default `false`) | A dim local date and time after each prompt delivered to the model and after each settled run. The records stay in the session file and never reach the model. |
+
+Use `/timestamps` to see both settings. `/timestamps footer on` and `/timestamps footer off` change the footer immediately. `/timestamps transcript on` and `/timestamps transcript off` control new lines from the next message. These commands apply only to the current session; reloading or switching sessions restores the settings from disk.
+
+Changing the transcript switch does not redraw the chat. After switching it off, Ctrl+O hides lines that pi redraws. After switching it on, a stored line that was not drawn needs a transcript rebuild (such as `/tree`) to appear.
 
 ### Opt-in extension config
 
