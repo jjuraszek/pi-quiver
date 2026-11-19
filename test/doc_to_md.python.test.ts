@@ -621,7 +621,7 @@ test("primary failure after native completion: fallback retains native metadata 
 	assert.deepStrictEqual(readdirSyncSafe(join(tmp, "images")), ["single-image-page-p1-1.jpeg"]);
 	assert.deepStrictEqual((keepPages as Record<string, string[]>)["1"], ["single-image-page-p1-1.jpeg"]);
 	assert.match(r.output, /^Native-Images: page 1 /m);
-	linksResolve(r.details.savedTo);
+	assert.match(linksResolve(r.details.savedTo), /!\[page 1\]\(images\/single-image-page-p1-1\.jpeg\)/);
 });
 
 const words = (r: { details: { wordsPath: string | null } }) => {

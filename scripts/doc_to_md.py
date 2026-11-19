@@ -741,7 +741,7 @@ def mode_pdf_fallback(o):
     try:
         for n in pages:
             stats.append(page_stats(doc, n))
-            links = [f"![](images/{f})" for f in keep.get(n, [])]
+            links = []
             text = ""
             page_pic = None
             meta = {}
@@ -754,7 +754,10 @@ def mode_pdf_fallback(o):
                     ocr_info["textless"].append(n)
                     if status is None:
                         status = ocr_status(False, lang)
-                if n not in keep:
+                if n in keep:
+                    alt = "" if text else f"page {n}"
+                    links = [f"![{alt}](images/{f})" for f in keep[n]]
+                else:
                     d = page_dir(staging, n)
                     if not text:
                         pic, meta = textless_picture(worker, page, n, d, o, notes, render=not o.get("pageImages"))
