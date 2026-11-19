@@ -278,12 +278,12 @@ test("queued prompt gets its own record", async (t) => {
 	session.setFollowUpMode("all");
 	const live: unknown[] = [];
 	t.after(session.subscribe((event) => {
-		if (event.type === "message_end") {
-			const message = event.message;
-			if (message.role === "user") live.push(message.content);
-			if (message.role === "custom") live.push(message.customType);
-			if (message.role === "assistant") live.push(message.stopReason);
+		// InteractiveMode mounts user and custom messages on the public start event, before persistence.
+		if (event.type === "message_start") {
+			if (event.message.role === "user") live.push(event.message.content);
+			if (event.message.role === "custom") live.push(event.message.customType);
 		}
+		if (event.type === "message_end" && event.message.role === "assistant") live.push(event.message.stopReason);
 		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(event.entry.customType);
 	}));
 	faux.setResponses([async () => {
@@ -358,13 +358,15 @@ test("footer shows the saved entry time", async (t) => {
 	faux.setResponses([fauxAssistantMessage("Done.")]);
 	await session.prompt("Save this");
 	const live = statuses.get("message-timestamps");
-	const reopened = await timestampSession(t, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd });
-	const reply = reopened.sessionManager.getLeafEntry();
-	assert.ok(reply?.type === "message" && reply.message.role === "assistant");
-	assert.ok(beforeSave);
-	assert.notEqual(formatTime(beforeSave), formatTime(new Date(reply.timestamp)));
-	assert.equal(live, `last message ${formatTime(new Date(reply.timestamp))}`);
-	assert.equal(reopened.statuses.get("message-timestamps"), live);
+	await t.test("reopened footer matches the live saved time", async (subtest) => {
+		const reopened = await timestampSession(subtest, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd });
+		const reply = reopened.sessionManager.getLeafEntry();
+		assert.ok(reply?.type === "message" && reply.message.role === "assistant");
+		assert.ok(beforeSave);
+		assert.notEqual(formatTime(beforeSave), formatTime(new Date(reply.timestamp)));
+		assert.equal(live, `last message ${formatTime(new Date(reply.timestamp))}`);
+		assert.equal(reopened.statuses.get("message-timestamps"), live);
+	});
 });
 
 test("replay before session_start uses the destination settings", async (t) => {
