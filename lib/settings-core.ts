@@ -42,6 +42,7 @@ export const QUIVER_CONFIG_KEYS: Record<string, readonly string[]> = {
 	providerStallWatchdog: ["enabled", "firstEventMs", "warningMs", "recoveryMs", "maxStallRetries", "models"],
 	slack: ["enabled", "cachePath", "policyPath", "userTokenEnv", "userTokenCommand", "userTokenCommandTimeoutSeconds", "botTokenEnv", "uploadThresholdChars"],
 	docToMd: DOC_TO_MD_OPTIONS.filter((o) => o.settable).map((o) => o.key),
+	messageTimestamps: ["footer", "transcript"],
 };
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
