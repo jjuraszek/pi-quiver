@@ -508,13 +508,14 @@ export interface CoreDeps {
 
 const CODE_OR_MENTION = /```[\s\S]*?(?:```|$)|`[^`\r\n]*`|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>|<!subteam\^[A-Z0-9]+(?:\|@?([^>]+))?>/g;
 
-function compactUserMention(id: string, names?: UserNames): string {
+function compactUserMention(id: string, names: UserNames | undefined, token = `<@${id}>`): string {
 	const name = names?.get(id);
-	return name === undefined ? `@user(${id})` : `@${name}`;
+	return name === undefined ? token : `@${name}`;
 }
+
 export function renderMentionTokens(text: string, userNames?: UserNames): string {
 	return text.replace(CODE_OR_MENTION, (token, userId: string | undefined, handle: string | undefined) => {
-		if (userId !== undefined) return compactUserMention(userId, userNames);
+		if (userId !== undefined) return compactUserMention(userId, userNames, token);
 		return handle === undefined ? token : `@${handle}`;
 	});
 }

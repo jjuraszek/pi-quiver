@@ -415,9 +415,10 @@ Compact output resolves typed `rich_text` mentions and tokens in `mrkdwn`,
 search text, and thread fallback text. It leaves `plain_text` (including
 headers), inline and fenced code, and preformatted or code-styled rich text
 literal. A user mention becomes `@Display Name` (falling back to real name,
-then username) when the user is in the name cache, or `@user(U01ALICE)`
-when only the ID is known. A `rich_text` `usergroup`
-element renders as `<!subteam^S...>`, and a group mention Slack labeled
+then username) when the user is in the name cache. On a miss, a text token
+stays verbatim, including any label (e.g. `<@U09GHOST|ghost>`), and a typed
+`rich_text` user renders as `<@ID>`. A `rich_text` `usergroup` element
+renders as `<!subteam^S...>`, and a group mention Slack labeled
 (`<!subteam^S...|@handle>`) becomes `@handle`. Unlabeled group mentions stay
 verbatim. The lookup reads the cache file
 only and never calls Slack. `raw: true` text and structured results keep

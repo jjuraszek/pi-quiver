@@ -1517,9 +1517,9 @@ test("slack_search and slack_thread use valid names from the authenticated works
 						const result = await defs.find((d) => d.name === name)!.execute("tc1", params as never, undefined, () => {}, undefined as never);
 						return result.content[0].type === "text" ? result.content[0].text : "";
 					};
-					for (const [cacheTeam, alice] of [["T1", "@user(U01ALICE)"], ["T2", "@Alice"]]) {
+					for (const [cacheTeam, alice] of [["T1", "<@U01ALICE>"], ["T2", "@Alice"]]) {
 						writeMentionCache(cacheFile, cacheTeam, { broken: null });
-						const rendered = `${alice} and @ops-oncall ping @user(U09GHOST)`;
+						const rendered = `${alice} and @ops-oncall ping <@U09GHOST>`;
 						assert.equal(await run("slack_search", { query: "ping" }), `bob | #general | 1.1 | p | ${rendered}\n\ntotal: 1 | page: 1 of 1`);
 						assert.equal(await run("slack_thread", { channel: "C12345678", ts: "1.1" }), `U02BOB | 1.1 | ${rendered}\n\ncomplete: true`);
 					}

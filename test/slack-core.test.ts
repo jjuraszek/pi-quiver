@@ -769,7 +769,7 @@ test("renderBlocks: rich_text containers recurse; six named inline elements; unl
 	];
 	assert.equal(
 		renderBlocks(blocks, MENTION_NAMES),
-		"Hello @user(U1) <#C9> <!subteam^S7> A https://b :wave: [date] one @Alice Example quoted code",
+		"Hello <@U1> <#C9> <!subteam^S7> A https://b :wave: [date] one @Alice Example quoted code",
 	);
 });
 
@@ -821,19 +821,19 @@ test("readThread: message with blocks renders flattened blocks; empty flatten fa
 	);
 });
 
-test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, uncached users retain their IDs", () => {
+test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, uncached user tokens stay verbatim", () => {
 	assert.equal(
 		renderMentionTokens(
 			"<@U01ALICE> <@U01ALICE|alice> <@U09GHOST> <!subteam^S01OPS|@ops-oncall> <!subteam^S02DEV> <#C9> <!here>",
 			MENTION_NAMES,
 		),
-		"@Alice Example @Alice Example @user(U09GHOST) @ops-oncall <!subteam^S02DEV> <#C9> <!here>",
+		"@Alice Example @Alice Example <@U09GHOST> @ops-oncall <!subteam^S02DEV> <#C9> <!here>",
 	);
-	assert.equal(renderMentionTokens("<@U01ALICE> <!subteam^S01OPS|@ops-oncall>"), "@user(U01ALICE) @ops-oncall");
+	assert.equal(renderMentionTokens("<@U01ALICE> <!subteam^S01OPS|@ops-oncall>"), "<@U01ALICE> @ops-oncall");
 });
 
-const MENTION_TEXT = "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST>, not `<@U01ALICE>` or ```\n<!subteam^S01OPS|@ops-oncall>\n```";
-const COMPACT_MENTION_TEXT = "@Alice Example and @ops-oncall: ask @user(U09GHOST), not `<@U01ALICE>` or ``` <!subteam^S01OPS|@ops-oncall> ```";
+const MENTION_TEXT = "<@U01ALICE> and <!subteam^S01OPS|@ops-oncall>: ask <@U09GHOST|ghost>, not `<@U01ALICE>` or ```\n<!subteam^S01OPS|@ops-oncall>\n```";
+const COMPACT_MENTION_TEXT = "@Alice Example and @ops-oncall: ask <@U09GHOST|ghost>, not `<@U01ALICE>` or ``` <!subteam^S01OPS|@ops-oncall> ```";
 
 test("searchMessages: compact text renders mentions outside code and keeps the original match", async () => {
 	const apiCall: ApiCall = async () => ({
@@ -903,14 +903,16 @@ test("readThread: compact lines render cached mentions from text and rich_text b
 	];
 	const apiCall: ApiCall = async () => ({ ok: true, messages, has_more: false, response_metadata: { next_cursor: "" } });
 	const deps = { apiCall, token: "t", userNames: MENTION_NAMES };
+	const original = structuredClone(messages);
 	const compact = await readThread({ channel: "C1", ts: "1.1" }, deps);
+	assert.deepEqual(compact.messages, original);
 	assert.equal(
 		compact.output,
 		`U2 | 1.1 | ${COMPACT_MENTION_TEXT}\nU3 | 1.2 | <@U01ALICE> / ${COMPACT_MENTION_TEXT} <@U01ALICE> / ` +
-			"@Alice Example @user(U09GHOST) <!subteam^S02DEV> literal: <@U01ALICE>, code: <@U01ALICE> <@U01ALICE>",
+			"@Alice Example <@U09GHOST> <!subteam^S02DEV> literal: <@U01ALICE>, code: <@U01ALICE> <@U01ALICE>",
 	);
 	const raw = await readThread({ channel: "C1", ts: "1.1", raw: true }, deps);
-	assert.equal(raw.output, JSON.stringify(messages, null, 2));
+	assert.equal(raw.output, JSON.stringify(original, null, 2));
 });
 
 test("readThread raw: output is a pure JSON array, each message deep-equals the API response (blocks untouched)", async () => {
