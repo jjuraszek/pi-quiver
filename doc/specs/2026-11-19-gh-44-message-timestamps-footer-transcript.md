@@ -209,6 +209,7 @@ None. The tests script the model in process. Approving this spec authorizes no o
 ## Errors and edge cases
 
 - A `footer` or `transcript` value that is not a boolean is ignored in its settings layer: the last valid layer stays in effect, and the built-in default applies only when no layer supplies a valid value. Global `transcript: true` with a non-boolean project value resolves to `true`.
+- Known limitation: a global `settings.json` that starts with a byte order mark. Pi strips the mark before parsing (`core/settings-manager.js:269`); the shared reader `readSettings` does not and returns nothing for that file (`lib/settings-core.ts:18-24`). Its values still reach the switches through pi's merged settings, so the file works on its own. They are lost only where a later layer holds a non-boolean value for the same switch: global `transcript: true` in such a file under a trusted project's non-boolean `transcript` resolves to `false`, not `true`. The gap belongs to the shared reader, which this change does not alter, and every extension that reads `quiver.*` settings shares it.
 - Bad `/timestamps` arguments print the usage line and change nothing. Outside the terminal UI the command returns silently: no notification, no switch change, no settings read.
 - Interrupted run (Esc): the settle line is still written; the footer shows the last saved message, not the prompt.
 - Behavior follows the delivered message, not the slash prefix. A local command that delivers no message (`/timestamps`) writes no line and leaves the footer alone. A slash prompt template (the shipped `/elevator`) expands into a delivered user prompt and uses the normal triggers of both displays. A `!` shell command delivers no prompt and writes no line; its saved result is a counted message for the footer.
@@ -258,6 +259,7 @@ Design, error, and edge clauses:
 - `formatTime(new Date("2026-11-19T14:59:00Z"), "en-US", "UTC")` is `Nov 19, 02:59 PM` - `formatTime renders date and time`
 - `parseArgs` returns status for empty input, set for the four forms, usage for everything else including `footer` alone - `parseArgs accepts five forms`
 - Non-boolean `footer` or `transcript` settings are ignored per layer: with no valid layer the defaults apply, and global `transcript: true` with a non-boolean project value resolves to `true` - `coerce keeps booleans only`
+- A global settings file that starts with a byte order mark - none: a known limitation of the shared reader, recorded in `## Errors and edge cases`
 - `newestMessageTime` counts `bashExecution` messages and `custom_message` entries, skips `custom` entries (the `message-timestamp` records included), and returns `undefined` for a branch with no counted message - `newestMessageTime counts every saved message`
 - Bad arguments notify the usage line and change neither switch - `command rejects bad input`; the command outside the terminal UI - covered by `non-tui modes are inert`
 - An aborted run leaves one prompt record and one settle record, and the footer equals the last saved counted message's time, not the prompt's - `aborted run still writes the settle record`
@@ -295,6 +297,7 @@ Bar and template: `reference/documentation-impact.md`.
 - A today/older format distinction or a timer that refreshes the footer.
 - A pi version guard or feature detection.
 - Copying code from the gist.
+- Stripping a byte order mark in the shared settings reader (`lib/settings-core.ts`). It is a known limitation and no follow-up is tracked.
 
 ## Open questions
 
