@@ -84,20 +84,22 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// message_end precedes persistence. Flush after the prompt's save, before the next sibling or model request.
-	function afterMessageSave(_event: unknown, ctx: ExtensionContext) {
+	function flushPromptRecord(_event: unknown, ctx: ExtensionContext) {
 		if (ctx.mode !== "tui") return;
 		if (promptPending && config.transcript) pi.appendEntry(recordType);
 		promptPending = false;
-		refreshFooter(ctx);
 	}
-	pi.on("message_start", afterMessageSave);
-	pi.on("context", afterMessageSave);
-	pi.on("turn_end", refresh);
+	pi.on("message_start", flushPromptRecord);
+	pi.on("context", flushPromptRecord);
 	pi.on("agent_settled", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		if (config.transcript) pi.appendEntry(recordType);
-		refreshFooter(ctx);
 	});
+
+	pi.on("message_start", refresh);
+	pi.on("context", refresh);
+	pi.on("turn_end", refresh);
+	pi.on("agent_settled", refresh);
 
 	pi.registerCommand("timestamps", {
 		description: "Show or toggle footer and transcript timestamps",
