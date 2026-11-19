@@ -3,9 +3,9 @@
 base: 73bd90c390ef0fddb170645795ab4391710b3599
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 5
+iterations: 6
 allowance: 10
-returned: 10 | home | a17ba415ef826a00687c4142e2b9a19984b05dba
+returned: 10 | home | ae93f8e5e5cc8dcf2725a909aede9b361c616c63
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -18,7 +18,7 @@ returned: 10 | home | a17ba415ef826a00687c4142e2b9a19984b05dba
 | 7 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 5 passed; footer false in project settings suppressed the status throughout the turn |
 | 8 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 12 passed; without settings the saved turn contained no timestamp record and no timestamp entry reached the live transcript |
 | 9 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 13 passed; three tool calls produced two dim lines in live and saved order, after the prompt and the final reply |
-| 10 | failed | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 21 passed, 1 failed; resume and reload replayed both original times in place before session_start; live chat receives the settle line before deferred shell output, but replay shows the shell output first |
+| 10 | failed | 2 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 21 passed, 1 failed; live chat showed the 04:00 PM settle line before the shell output while replay showed it after; Pi waits for all extension settle handlers before it moves shell output into chat, so even a setImmediate append can arrive first |
 | 11 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 17 passed; four tool-loop requests and the first request after reopening contained neither timestamp entries nor their displayed times |
 | 12 | open | 0 | |
 | 13 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 20 passed; with both switches configured, print, json and rpc wrote no records, sent no UI updates and read no settings |
@@ -52,3 +52,4 @@ row 11 done | None of the four requests in the tool loop or the first request af
 row 13 done | Print, json and rpc sessions ignored the timestamp settings and command and saved no timestamp records. | Pass a mode to timestampSession to exercise real non-TUI turns and inspect their saved entries.
 row 19 done | README documents both timestamp defaults, the session commands and when existing transcript lines change. | Link to README.md#message-timestamps for settings, toggle examples and redraw behavior.
 row 10 failed | Resume and reload show both original times in place, but the live settle line still precedes deferred shell output. | Keep the replay fix; use the deferred-shell test to check a host hook after the TUI moves shell output into chat, or amend the live-order requirement.
+row 10 failed | The deferred-shell test shows that even a setImmediate append can display the settle time before shell output while Pi awaits another extension. | Do not delay the append with a timer; move the shell flush before the extension settle hook in Pi, or amend the live-order requirement and keep shell-first replay.

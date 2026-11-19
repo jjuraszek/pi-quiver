@@ -7,13 +7,19 @@ import { test, type TestContext } from "node:test";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
 	createAgentSession, DefaultResourceLoader, FooterComponent, initTheme, ModelRuntime, SessionManager, SettingsManager,
-	type AgentSession, type CustomEntry, type ExtensionContext, type ExtensionUIContext, type Theme,
+	type AgentSession, type CustomEntry, type ExtensionContext, type ExtensionFactory, type ExtensionUIContext, type Theme,
 } from "@earendil-works/pi-coding-agent";
 
 import { formatTime } from "../extensions/message-timestamps.ts";
 
 async function timestampSession(t: TestContext, managerFor: (cwd: string) => SessionManager = SessionManager.inMemory,
-	options: { cwd?: string; tools?: string[]; mode?: ExtensionContext["mode"]; beforeBind?: (session: AgentSession) => void } = {}) {
+	options: {
+		cwd?: string;
+		tools?: string[];
+		mode?: ExtensionContext["mode"];
+		beforeBind?: (session: AgentSession) => void;
+		extensionFactories?: ExtensionFactory[];
+	} = {}) {
 	const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), "message-timestamps-"));
 	const agentDir = join(cwd, "agent");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -30,7 +36,7 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 	const settingsManager = options.beforeBind ? SettingsManager.create(cwd, agentDir) : SettingsManager.inMemory();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true,
-		noThemes: true, noContextFiles: true,
+		noThemes: true, noContextFiles: true, extensionFactories: options.extensionFactories,
 		additionalExtensionPaths: [join(import.meta.dirname, "../extensions/message-timestamps.ts")],
 	});
 	await resourceLoader.reload();
@@ -181,7 +187,11 @@ test("deferred shell output precedes the settle line live and on replay", async 
 	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
 		projectSettings(cwd, { transcript: true });
 		return SessionManager.create(cwd, join(cwd, "sessions"));
-	});
+	}, { extensionFactories: [(pi) => {
+		// Pi awaits other extensions before it tells the TUI to move the shell output into chat.
+		pi.on("agent_settled", () => new Promise<void>((resolve) => setImmediate(resolve)));
+	}] });
+	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
 	const live: string[] = [];
 	let output = "";
 	t.after(session.subscribe((event) => {
@@ -192,6 +202,7 @@ test("deferred shell output precedes the settle line live and on replay", async 
 	faux.setResponses([async () => {
 		output = (await session.executeBash("echo deferred")).output.trim();
 		assert.ok(session.hasPendingBashMessages);
+		t.mock.timers.tick(60_000);
 		return fauxAssistantMessage("Done.");
 	}]);
 	await session.prompt("Wait for my shell command.");
@@ -200,6 +211,7 @@ test("deferred shell output precedes the settle line live and on replay", async 
 		entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message.output.trim()] : []);
 	assert.equal(replay.length, 3);
 	assert.equal(replay[1], "deferred");
+	assert.notEqual(replay[0], replay[2]);
 	assert.deepEqual(live, replay);
 });
 
