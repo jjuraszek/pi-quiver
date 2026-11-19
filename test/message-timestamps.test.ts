@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import {
 	AgentSessionRuntime, createAgentSession, DefaultResourceLoader, FooterComponent, initTheme, InteractiveMode, ModelRuntime,
 	SessionManager, SettingsManager, type AgentSession, type CreateAgentSessionRuntimeFactory, type CustomEntry,
@@ -34,8 +34,15 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 		if (!options.cwd) rmSync(cwd, { recursive: true, force: true });
 	});
 	const faux = fauxProvider();
+	const requests: string[] = [];
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-	modelRuntime.registerNativeProvider(faux.provider);
+	modelRuntime.registerNativeProvider({
+		...faux.provider,
+		streamSimple(model, context, options) {
+			requests.push(JSON.stringify(context.messages));
+			return faux.provider.streamSimple(model, context, options);
+		},
+	});
 	const create = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: Parameters<CreateAgentSessionRuntimeFactory>[0], projectTrusted = true) => {
 		const settingsManager = options.mode && options.mode !== "tui" ?
 			SettingsManager.inMemory({ quiver: { messageTimestamps: enabledSwitches } } as Parameters<typeof SettingsManager.inMemory>[0]) :
@@ -72,7 +79,7 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 		} as unknown as ExtensionUIContext,
 	});
 	await bind(session);
-	return { ...created, create, bind, sessionManager, faux, statuses, setStatus, notify, cwd };
+	return { ...created, create, bind, sessionManager, faux, statuses, setStatus, notify, cwd, requests };
 }
 
 test("formatTime renders date and time", () => {
@@ -139,7 +146,7 @@ function renderRecord(session: AgentSession, entry: CustomEntry) {
 }
 
 test("multi-tool run writes two records in order", async (t) => {
-	const { session, sessionManager, faux, statuses, cwd } = await timestampSession(t, (cwd) => {
+	const { session, sessionManager, faux, statuses, cwd, requests } = await timestampSession(t, (cwd) => {
 		projectSettings(cwd, { transcript: true });
 		return SessionManager.create(cwd, join(cwd, "sessions"));
 	}, { tools: ["read"] });
@@ -156,15 +163,10 @@ test("multi-tool run writes two records in order", async (t) => {
 		}
 	}));
 	const toolStatuses: (string | undefined)[] = [];
-	const requests: string[] = [];
-	const capture = (context: TranscriptContext) => requests.push(JSON.stringify(context.messages));
 	faux.setResponses([
-		...[1, 2, 3].map((id) => (context: TranscriptContext) => {
-			capture(context);
-			return fauxAssistantMessage(fauxToolCall("read", { path: ".pi/settings.json" }, { id: `read-${id}` }), { stopReason: "toolUse" });
-		}),
-		async (context) => {
-			capture(context);
+		...[1, 2, 3].map((id) =>
+			fauxAssistantMessage(fauxToolCall("read", { path: ".pi/settings.json" }, { id: `read-${id}` }), { stopReason: "toolUse" })),
+		async () => {
 			toolStatuses.push(statuses.get("message-timestamps"));
 			for (const state of ["off", "on"]) {
 				await session.prompt(`/timestamps footer ${state}`);
@@ -203,17 +205,15 @@ test("multi-tool run writes two records in order", async (t) => {
 
 	await t.test("no record reaches the model, including after resume", async (t) => {
 		const reopened = await timestampSession(t, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd });
-		reopened.faux.setResponses([(context) => {
-			capture(context);
-			return fauxAssistantMessage("Done again.");
-		}]);
+		reopened.faux.setResponses([fauxAssistantMessage("Done again.")]);
 		await reopened.session.prompt("What did you read?");
-		assert.equal(requests.length, 5);
-		assert.ok(requests.at(-1)!.includes("Read the settings three times."));
+		const allRequests = [...requests, ...reopened.requests];
+		assert.equal(allRequests.length, 5);
+		assert.ok(allRequests.at(-1)!.includes("Read the settings three times."));
 		const savedTimes = reopened.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "message-timestamp")
 			.map((entry) => formatTime(new Date(entry.timestamp)));
 		assert.equal(savedTimes.length, 4);
-		for (const request of requests) {
+		for (const request of allRequests) {
 			assert.doesNotMatch(request, /"message-timestamp"|"(?:role|type)":"custom(?:_message)?"/);
 			for (const time of savedTimes) assert.equal(request.includes(time), false, time);
 		}
@@ -304,7 +304,7 @@ test("queued prompt gets its own record", async (t) => {
 });
 
 test("retry writes no second prompt record", async (t) => {
-	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
+	const { session, sessionManager, faux, requests } = await timestampSession(t, (cwd) => {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
 		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({
 			quiver: { messageTimestamps: { transcript: true } }, retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
@@ -321,6 +321,7 @@ test("retry writes no second prompt record", async (t) => {
 		fauxAssistantMessage("Recovered.")]);
 	await session.prompt("Retry me");
 	assert.equal(faux.state.callCount, 2);
+	assert.deepEqual(requests.map((request) => request.includes("Retry me")), [true, true]);
 	assert.deepEqual(events, ["entry_appended", "auto_retry_start", "entry_appended"]);
 	assert.deepEqual(runOrder(SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries()),
 		[[{ type: "text", text: "Retry me" }], "message-timestamp", "error", "stop", "message-timestamp"]);
