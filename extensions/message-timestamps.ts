@@ -1,8 +1,10 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import { Text } from "@earendil-works/pi-tui";
 
 import { resolveConfig } from "../lib/extension-config.ts";
+import { resolveConfigFrom } from "../lib/settings-core.ts";
 
 export const DEFAULT_CONFIG = { footer: true, transcript: false };
 
@@ -41,13 +43,20 @@ export function parseArgs(args: string) {
 }
 
 export default function (pi: ExtensionAPI) {
-	let config = { ...DEFAULT_CONFIG };
+	let config: { footer: boolean; transcript?: boolean } = { footer: DEFAULT_CONFIG.footer };
 	let promptPending = false;
 
 	const recordType = "message-timestamp";
-	pi.registerEntryRenderer(recordType, (entry, _options, theme) => config.transcript
-		? new Text(theme.fg("dim", formatTime(new Date(entry.timestamp))), 1, 0)
-		: undefined);
+	pi.registerEntryRenderer(recordType, (entry, _options, theme) => {
+		if (config.transcript === undefined) {
+			// Reload and session replacement bind the destination's core settings before replay, but emit session_start after it.
+			const { quiver } = pi.getSettings() as { quiver?: { messageTimestamps?: unknown } };
+			// A malformed project value can mask a valid global boolean in pi's merged settings.
+			config.transcript = coerce(quiver?.messageTimestamps)?.transcript ??
+				resolveConfigFrom([join(getAgentDir(), "settings.json")], "messageTimestamps", DEFAULT_CONFIG, coerce).transcript;
+		}
+		return config.transcript ? new Text(theme.fg("dim", formatTime(new Date(entry.timestamp))), 1, 0) : undefined;
+	});
 
 	function refreshFooter(ctx: ExtensionContext) {
 		const timestamp = config.footer ? newestMessageTime(ctx.sessionManager.getBranch()) : undefined;
@@ -69,7 +78,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_end", (event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		if (event.message.role === "user") promptPending = config.transcript;
+		if (event.message.role === "user") promptPending = config.transcript === true;
 	});
 
 	// message_end precedes persistence. Flush after the prompt's save, before the next sibling or model request.

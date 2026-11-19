@@ -3,9 +3,9 @@
 base: 73bd90c390ef0fddb170645795ab4391710b3599
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 4
+iterations: 5
 allowance: 10
-returned: 9 | home | 1360633249bc128fc77e80260d0a0ed1f3c09cd3
+returned: 10 | home | a17ba415ef826a00687c4142e2b9a19984b05dba
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -18,7 +18,7 @@ returned: 9 | home | 1360633249bc128fc77e80260d0a0ed1f3c09cd3
 | 7 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 5 passed; footer false in project settings suppressed the status throughout the turn |
 | 8 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 12 passed; without settings the saved turn contained no timestamp record and no timestamp entry reached the live transcript |
 | 9 | done | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 13 passed; three tool calls produced two dim lines in live and saved order, after the prompt and the final reply |
-| 10 | open | 0 | |
+| 10 | failed | 1 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 21 passed, 1 failed; resume and reload replayed both original times in place before session_start; live chat receives the settle line before deferred shell output, but replay shows the shell output first |
 | 11 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 17 passed; four tool-loop requests and the first request after reopening contained neither timestamp entries nor their displayed times |
 | 12 | open | 0 | |
 | 13 | done | 0 | timeout -k 30 60 node --test test/message-timestamps.test.ts; 20 passed; with both switches configured, print, json and rpc wrote no records, sent no UI updates and read no settings |
@@ -51,3 +51,4 @@ row 18 done | Changing either switch leaves project settings byte-identical, and
 row 11 done | None of the four requests in the tool loop or the first request after resume included a record or its rendered time. | Reuse the faux provider request capture in the multi-tool test to inspect exactly what reaches the model.
 row 13 done | Print, json and rpc sessions ignored the timestamp settings and command and saved no timestamp records. | Pass a mode to timestampSession to exercise real non-TUI turns and inspect their saved entries.
 row 19 done | README documents both timestamp defaults, the session commands and when existing transcript lines change. | Link to README.md#message-timestamps for settings, toggle examples and redraw behavior.
+row 10 failed | Resume and reload show both original times in place, but the live settle line still precedes deferred shell output. | Keep the replay fix; use the deferred-shell test to check a host hook after the TUI moves shell output into chat, or amend the live-order requirement.

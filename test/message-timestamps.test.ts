@@ -13,7 +13,7 @@ import {
 import { formatTime } from "../extensions/message-timestamps.ts";
 
 async function timestampSession(t: TestContext, managerFor: (cwd: string) => SessionManager = SessionManager.inMemory,
-	options: { cwd?: string; tools?: string[]; mode?: ExtensionContext["mode"] } = {}) {
+	options: { cwd?: string; tools?: string[]; mode?: ExtensionContext["mode"]; beforeBind?: (session: AgentSession) => void } = {}) {
 	const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), "message-timestamps-"));
 	const agentDir = join(cwd, "agent");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -26,14 +26,14 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 	const faux = fauxProvider();
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
 	modelRuntime.registerNativeProvider(faux.provider);
-	const settingsManager = SettingsManager.inMemory();
+	const sessionManager = managerFor(cwd);
+	const settingsManager = options.beforeBind ? SettingsManager.create(cwd, agentDir) : SettingsManager.inMemory();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true,
 		noThemes: true, noContextFiles: true,
 		additionalExtensionPaths: [join(import.meta.dirname, "../extensions/message-timestamps.ts")],
 	});
 	await resourceLoader.reload();
-	const sessionManager = managerFor(cwd);
 	const { session } = await createAgentSession({
 		cwd, agentDir, modelRuntime, model: faux.getModel(), resourceLoader, sessionManager, settingsManager, tools: options.tools ?? [],
 	});
@@ -44,6 +44,7 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 		else statuses.set(key, text);
 	});
 	const notify = t.mock.fn();
+	options.beforeBind?.(session);
 	await session.bindExtensions({
 		mode: options.mode ?? "tui",
 		uiContext: {
@@ -143,6 +144,20 @@ test("multi-tool run writes two records in order", async (t) => {
 	assert.deepEqual(toolStatuses, [expected, undefined, expected]);
 	assert.equal(requests.length, 4);
 
+	await t.test("resume replays records with original times", async (subtest) => {
+		t.mock.timers.tick(86_400_000);
+		const times = rendered.map((lines) => lines![0]);
+		const expected = live.slice(live.indexOf("user")).map((item) => item === "message-timestamp" ? times.shift()! : item);
+		const checkReplay = (session: AgentSession) => {
+			const rows = session.sessionManager.buildContextEntries().flatMap((entry) => entry.type === "custom" ? renderRecord(session, entry) ?? [] :
+				entry.type === "message" ? [entry.message.role] : []);
+			assert.deepEqual(rows.slice(rows.indexOf("user")), expected);
+		};
+		const reopened = await timestampSession(subtest, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd, beforeBind: checkReplay });
+		await reopened.session.prompt("/timestamps transcript off");
+		await reopened.session.reload({ beforeSessionStart: () => checkReplay(reopened.session) });
+	});
+
 	await t.test("no record reaches the model, including after resume", async (t) => {
 		const reopened = await timestampSession(t, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd });
 		reopened.faux.setResponses([(context) => {
@@ -160,6 +175,32 @@ test("multi-tool run writes two records in order", async (t) => {
 			for (const time of savedTimes) assert.equal(request.includes(time), false, time);
 		}
 	});
+});
+
+test("deferred shell output precedes the settle line live and on replay", async (t) => {
+	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
+		projectSettings(cwd, { transcript: true });
+		return SessionManager.create(cwd, join(cwd, "sessions"));
+	});
+	const live: string[] = [];
+	let output = "";
+	t.after(session.subscribe((event) => {
+		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(...renderRecord(session, event.entry) ?? []);
+		// InteractiveMode moves pending shell components into chat on this session event, not on the extension hook.
+		if (event.type === "agent_settled") live.push(output);
+	}));
+	faux.setResponses([async () => {
+		output = (await session.executeBash("echo deferred")).output.trim();
+		assert.ok(session.hasPendingBashMessages);
+		return fauxAssistantMessage("Done.");
+	}]);
+	await session.prompt("Wait for my shell command.");
+	const replay = SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries().flatMap((entry) =>
+		entry.type === "custom" ? renderRecord(session, entry) ?? [] :
+		entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message.output.trim()] : []);
+	assert.equal(replay.length, 3);
+	assert.equal(replay[1], "deferred");
+	assert.deepEqual(live, replay);
 });
 
 test("resume shows the newest message time", async (t) => {
