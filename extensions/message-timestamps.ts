@@ -3,19 +3,24 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type SessionEntr
 
 import { Text } from "@earendil-works/pi-tui";
 
-import { resolveConfig } from "../lib/extension-config.ts";
 import { resolveConfigFrom } from "../lib/settings-core.ts";
 
 export const DEFAULT_CONFIG = { footer: true, transcript: false };
 
 type Config = typeof DEFAULT_CONFIG;
 
-export function coerce(raw: unknown): Partial<Config> | undefined {
+function coerce(raw: unknown): Partial<Config> | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const patch: Partial<Config> = {};
 	if ("footer" in raw && typeof raw.footer === "boolean") patch.footer = raw.footer;
 	if ("transcript" in raw && typeof raw.transcript === "boolean") patch.transcript = raw.transcript;
 	return patch;
+}
+
+export function resolveTimestampConfig(settings: ReturnType<ExtensionAPI["getSettings"]>, warn?: (message: string) => void): Config {
+	const global = resolveConfigFrom([join(getAgentDir(), "settings.json")], "messageTimestamps", DEFAULT_CONFIG, coerce, warn);
+	const { quiver } = settings as { quiver?: { messageTimestamps?: unknown } };
+	return { ...global, ...coerce(quiver?.messageTimestamps) };
 }
 
 export function formatTime(date: Date, locale?: string, timeZone?: string): string {
@@ -50,10 +55,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerEntryRenderer(recordType, (entry, _options, theme) => {
 		if (config.transcript === undefined) {
 			// Reload and session replacement bind the destination's core settings before replay, but emit session_start after it.
-			const { quiver } = pi.getSettings() as { quiver?: { messageTimestamps?: unknown } };
-			// A malformed project value can mask a valid global boolean in pi's merged settings.
-			config.transcript = coerce(quiver?.messageTimestamps)?.transcript ??
-				resolveConfigFrom([join(getAgentDir(), "settings.json")], "messageTimestamps", DEFAULT_CONFIG, coerce).transcript;
+			config = resolveTimestampConfig(pi.getSettings());
 		}
 		return config.transcript ? new Text(theme.fg("dim", formatTime(new Date(entry.timestamp))), 1, 0) : undefined;
 	});
@@ -67,7 +69,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		promptPending = false;
-		config = resolveConfig(ctx.cwd, "messageTimestamps", DEFAULT_CONFIG, coerce, (m) => ctx.ui.notify(m, "warning"));
+		config = resolveTimestampConfig(pi.getSettings(), (m) => ctx.ui.notify(m, "warning"));
 		refreshFooter(ctx);
 	});
 

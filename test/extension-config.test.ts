@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { QUIVER_CONFIG_KEYS, resolveConfig } from "../lib/extension-config.ts";
-import { DEFAULT_CONFIG as messageTimestampDefaults, coerce as coerceTimestamps } from "../extensions/message-timestamps.ts";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_CONFIG as messageTimestampDefaults, resolveTimestampConfig } from "../extensions/message-timestamps.ts";
 import { DEFAULT_CONFIG as fastModeDefaults } from "../extensions/fast-mode.ts";
 import { DEFAULT_CONFIG as sessionNameDefaults } from "../extensions/session-name.ts";
 import { DEFAULT_CONFIG as swordHeaderDefaults, coerce as swordCoerce } from "../extensions/sword-header.ts";
@@ -80,12 +81,15 @@ test("registry: every extension default-config key is registered; docToMd equals
 });
 
 test("timestamp settings keep only booleans from each layer", () => {
-	withSettings({ quiver: { messageTimestamps: { footer: "no", transcript: true } } },
-		{ quiver: { messageTimestamps: { transcript: 0 } } }, (cwd) => {
-			assert.deepEqual(resolveConfig(cwd, "messageTimestamps", messageTimestampDefaults, coerceTimestamps),
-				{ footer: true, transcript: true });
+	for (const { global, project, expected } of [
+		{ global: { footer: "no", transcript: true }, project: { transcript: 0 }, expected: { footer: true, transcript: true } },
+		{ global: {}, project: true, expected: { footer: true, transcript: false } },
+	]) {
+		withSettings({ quiver: { messageTimestamps: global } }, { quiver: { messageTimestamps: project } }, (cwd) => {
+			const settings = SettingsManager.create(cwd).getSettings();
+			assert.deepEqual(resolveTimestampConfig(settings), expected);
 		});
-	assert.equal(coerceTimestamps(true), undefined);
+	}
 });
 
 test("docToMd: a stale maxCellsPerSheet key is linted as unknown (migration signal)", () => {

@@ -6,11 +6,13 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import {
-	createAgentSession, DefaultResourceLoader, FooterComponent, initTheme, ModelRuntime, SessionManager, SettingsManager,
-	type AgentSession, type CustomEntry, type ExtensionContext, type ExtensionFactory, type ExtensionUIContext, type Theme,
+	AgentSessionRuntime, createAgentSession, DefaultResourceLoader, FooterComponent, initTheme, InteractiveMode, ModelRuntime,
+	SessionManager, SettingsManager, type AgentSession, type CreateAgentSessionRuntimeFactory, type CustomEntry,
+	type ExtensionContext, type ExtensionFactory, type ExtensionUIContext, type SessionEntry, type Theme,
 } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
 
-import { formatTime } from "../extensions/message-timestamps.ts";
+import { formatTime, newestMessageTime, parseArgs } from "../extensions/message-timestamps.ts";
 
 async function timestampSession(t: TestContext, managerFor: (cwd: string) => SessionManager = SessionManager.inMemory,
 	options: {
@@ -32,18 +34,26 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 	const faux = fauxProvider();
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
 	modelRuntime.registerNativeProvider(faux.provider);
+	const create = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: Parameters<CreateAgentSessionRuntimeFactory>[0], projectTrusted = true) => {
+		const settingsManager = options.mode && options.mode !== "tui" ? SettingsManager.inMemory() :
+			SettingsManager.create(cwd, agentDir, { projectTrusted });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true,
+			noThemes: true, noContextFiles: true, extensionFactories: options.extensionFactories,
+			additionalExtensionPaths: [join(import.meta.dirname, "../extensions/message-timestamps.ts")],
+		});
+		await resourceLoader.reload();
+		const created = await createAgentSession({
+			cwd, agentDir, modelRuntime, model: faux.getModel(), resourceLoader, sessionManager, settingsManager,
+			tools: options.tools ?? [], sessionStartEvent,
+		});
+		t.after(() => created.session.dispose());
+		const services = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] };
+		return { ...created, services, diagnostics: [] };
+	};
 	const sessionManager = managerFor(cwd);
-	const settingsManager = options.beforeBind ? SettingsManager.create(cwd, agentDir) : SettingsManager.inMemory();
-	const resourceLoader = new DefaultResourceLoader({
-		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true,
-		noThemes: true, noContextFiles: true, extensionFactories: options.extensionFactories,
-		additionalExtensionPaths: [join(import.meta.dirname, "../extensions/message-timestamps.ts")],
-	});
-	await resourceLoader.reload();
-	const { session } = await createAgentSession({
-		cwd, agentDir, modelRuntime, model: faux.getModel(), resourceLoader, sessionManager, settingsManager, tools: options.tools ?? [],
-	});
-	t.after(() => session.dispose());
+	const created = await create({ cwd, agentDir, sessionManager });
+	const { session } = created;
 	const statuses = new Map<string, string>();
 	const setStatus = t.mock.fn((key: string, text?: string) => {
 		if (text === undefined) statuses.delete(key);
@@ -51,15 +61,39 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 	});
 	const notify = t.mock.fn();
 	options.beforeBind?.(session);
-	await session.bindExtensions({
+	const bind = (session: AgentSession) => session.bindExtensions({
 		mode: options.mode ?? "tui",
 		uiContext: {
 			theme: { fg: (_color: string, text: string) => text },
 			setStatus, notify,
 		} as unknown as ExtensionUIContext,
 	});
-	return { session, sessionManager, faux, statuses, setStatus, notify, cwd };
+	await bind(session);
+	return { ...created, create, bind, sessionManager, faux, statuses, setStatus, notify, cwd };
 }
+
+test("formatTime renders date and time", () => {
+	assert.equal(formatTime(new Date("2026-11-19T14:59:00Z"), "en-US", "UTC"), "Nov 19, 02:59 PM");
+});
+
+test("newestMessageTime counts every saved message", (t) => {
+	t.mock.timers.enable({ apis: ["Date"] });
+	const manager = SessionManager.inMemory();
+	manager.appendCustomEntry("message-timestamp");
+	assert.equal(newestMessageTime(manager.getBranch()), undefined);
+	const shell = manager.appendMessage({
+		role: "bashExecution", command: "echo saved", output: "saved", exitCode: 0,
+		cancelled: false, truncated: false, timestamp: Date.now(),
+	});
+	t.mock.timers.tick(60_000);
+	manager.appendCustomEntry("message-timestamp");
+	assert.equal(newestMessageTime(manager.getBranch()), manager.getEntry(shell)!.timestamp);
+	t.mock.timers.tick(60_000);
+	const custom = manager.appendCustomMessageEntry("notice", "Saved notice", true);
+	t.mock.timers.tick(60_000);
+	manager.appendCustomEntry("message-timestamp");
+	assert.equal(newestMessageTime(manager.getBranch()), manager.getEntry(custom)!.timestamp);
+});
 
 test("footer follows the prompt and the final reply", async (t) => {
 	const { session, sessionManager, faux, statuses } = await timestampSession(t);
@@ -183,38 +217,198 @@ test("multi-tool run writes two records in order", async (t) => {
 	});
 });
 
+function transcriptFile(cwd: string) {
+	projectSettings(cwd, { transcript: true });
+	return SessionManager.create(cwd, join(cwd, "sessions"));
+}
+
 test("deferred shell output follows the settle line live but precedes it on replay", async (t) => {
-	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
-		projectSettings(cwd, { transcript: true });
-		return SessionManager.create(cwd, join(cwd, "sessions"));
-	}, { extensionFactories: [(pi) => {
-		// Pi awaits other extensions before it tells the TUI to move the shell output into chat.
-		pi.on("agent_settled", () => new Promise<void>((resolve) => setImmediate(resolve)));
-	}] });
+	const { session, sessionManager, faux, statuses } = await timestampSession(t, transcriptFile);
 	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	const appendMessage = sessionManager.appendMessage.bind(sessionManager);
+	// Pi flushes the shell result and settles without waiting between the two saves.
+	t.mock.method(sessionManager, "appendMessage", (message: Parameters<SessionManager["appendMessage"]>[0]) => {
+		if (message.role !== "bashExecution") return appendMessage(message);
+		t.mock.timers.tick(60_000);
+		const id = appendMessage(message);
+		t.mock.timers.tick(60_000);
+		return id;
+	});
 	const live: string[] = [];
 	const promptLine = `dim:${formatTime(new Date())}`;
-	let output = "";
 	t.after(session.subscribe((event) => {
 		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(...renderRecord(session, event.entry) ?? []);
 		// InteractiveMode moves pending shell components into chat on this session event, not on the extension hook.
-		if (event.type === "agent_settled") live.push(output);
+		if (event.type === "agent_settled") live.push("deferred");
 	}));
-	faux.setResponses([async () => {
-		output = (await session.executeBash("echo deferred")).output.trim();
+	faux.setResponses([() => {
+		session.recordBashResult("echo deferred", { output: "deferred", exitCode: 0, cancelled: false, truncated: false });
 		assert.ok(session.hasPendingBashMessages);
 		t.mock.timers.tick(60_000);
 		return fauxAssistantMessage("Done.");
 	}]);
 	await session.prompt("Wait for my shell command.");
-	const settleLine = `dim:${formatTime(new Date())}`;
-	assert.notEqual(promptLine, settleLine);
+	const [reply, shell, settle] = sessionManager.getBranch().slice(-3);
+	assert.ok(reply.type === "message" && reply.message.role === "assistant");
+	assert.ok(shell.type === "message" && shell.message.role === "bashExecution");
+	assert.ok(settle.type === "custom" && settle.customType === "message-timestamp");
+	const [replyTime, shellTime, settleTime] = [reply, shell, settle].map((entry) => formatTime(new Date(entry.timestamp)));
+	assert.equal(new Set([replyTime, shellTime, settleTime]).size, 3);
+	assert.equal(statuses.get("message-timestamps"), `last message ${shellTime}`);
+	const settleLine = `dim:${settleTime}`;
 	assert.deepEqual(live, [promptLine, settleLine, "deferred"]);
 	t.mock.timers.tick(86_400_000);
 	const replay = SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries().flatMap((entry) =>
 		entry.type === "custom" ? renderRecord(session, entry) ?? [] :
 		entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message.output.trim()] : []);
 	assert.deepEqual(replay, [promptLine, "deferred", settleLine]);
+});
+
+function runOrder(entries: readonly SessionEntry[]) {
+	return entries.flatMap((entry) => entry.type === "custom" ? [entry.customType] :
+		entry.type === "custom_message" ? [entry.customType] :
+		entry.type === "message" && entry.message.role === "user" ? [entry.message.content] :
+		entry.type === "message" && entry.message.role === "assistant" ? [entry.message.stopReason] : []);
+}
+
+test("queued prompt gets its own record", async (t) => {
+	const { session, sessionManager, faux } = await timestampSession(t, transcriptFile, { extensionFactories: [(pi) => {
+		pi.on("before_agent_start", () => ({ message: { customType: "sibling", content: "Context", display: true } }));
+	}] });
+	session.setFollowUpMode("all");
+	const live: unknown[] = [];
+	t.after(session.subscribe((event) => {
+		if (event.type === "message_end") {
+			const message = event.message;
+			if (message.role === "user") live.push(message.content);
+			if (message.role === "custom") live.push(message.customType);
+			if (message.role === "assistant") live.push(message.stopReason);
+		}
+		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(event.entry.customType);
+	}));
+	faux.setResponses([async () => {
+		await session.followUp("Second");
+		await session.followUp("Third");
+		return fauxAssistantMessage("Done.");
+	}, fauxAssistantMessage("Done again.")]);
+	await session.prompt("First");
+	const prompt = (text: string) => [{ type: "text", text }];
+	const expected = [prompt("First"), "message-timestamp", "sibling", "stop",
+		prompt("Second"), "message-timestamp", prompt("Third"), "message-timestamp", "stop", "message-timestamp"];
+	assert.equal(faux.state.callCount, 2);
+	assert.deepEqual(live, expected);
+	assert.deepEqual(runOrder(SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries()), expected);
+});
+
+test("retry writes no second prompt record", async (t) => {
+	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({
+			quiver: { messageTimestamps: { transcript: true } }, retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+		}));
+		return SessionManager.create(cwd, join(cwd, "sessions"));
+	});
+	const events: string[] = [];
+	t.after(session.subscribe((event) => {
+		if (event.type === "auto_retry_start" || event.type === "entry_appended" && event.entry.type === "custom") {
+			events.push(event.type);
+		}
+	}));
+	faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 Service Unavailable" }),
+		fauxAssistantMessage("Recovered.")]);
+	await session.prompt("Retry me");
+	assert.equal(faux.state.callCount, 2);
+	assert.deepEqual(events, ["entry_appended", "auto_retry_start", "entry_appended"]);
+	assert.deepEqual(runOrder(SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries()),
+		[[{ type: "text", text: "Retry me" }], "message-timestamp", "error", "stop", "message-timestamp"]);
+});
+
+test("aborted run still writes the settle record", async (t) => {
+	const { session, sessionManager, faux, statuses } = await timestampSession(t, transcriptFile);
+	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	let promptStatus: string | undefined;
+	let abort: Promise<void> | undefined;
+	faux.setResponses([() => {
+		promptStatus = statuses.get("message-timestamps");
+		t.mock.timers.tick(60_000);
+		abort = session.abort();
+		return fauxAssistantMessage("Interrupted.");
+	}]);
+	await session.prompt("Cancel me");
+	await abort;
+	const entries = SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries();
+	assert.deepEqual(runOrder(entries), [[{ type: "text", text: "Cancel me" }], "message-timestamp", "aborted", "message-timestamp"]);
+	const expected = `last message ${formatTime(new Date(entries.at(-2)!.timestamp))}`;
+	assert.notEqual(expected, promptStatus);
+	assert.equal(statuses.get("message-timestamps"), expected);
+});
+
+test("footer shows the saved entry time", async (t) => {
+	let beforeSave: Date | undefined;
+	const { session, sessionManager, faux, statuses, cwd } = await timestampSession(t,
+		(cwd) => SessionManager.create(cwd, join(cwd, "sessions")), { extensionFactories: [(pi) => {
+			pi.on("message_end", async (event) => {
+				if (event.message.role !== "assistant") return;
+				beforeSave = new Date();
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				t.mock.timers.tick(60_000);
+			});
+		}] });
+	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	faux.setResponses([fauxAssistantMessage("Done.")]);
+	await session.prompt("Save this");
+	const live = statuses.get("message-timestamps");
+	const reopened = await timestampSession(t, () => SessionManager.open(sessionManager.getSessionFile()!), { cwd });
+	const reply = reopened.sessionManager.getLeafEntry();
+	assert.ok(reply?.type === "message" && reply.message.role === "assistant");
+	assert.ok(beforeSave);
+	assert.notEqual(formatTime(beforeSave), formatTime(new Date(reply.timestamp)));
+	assert.equal(live, `last message ${formatTime(new Date(reply.timestamp))}`);
+	assert.equal(reopened.statuses.get("message-timestamps"), live);
+});
+
+test("replay before session_start uses the destination settings", async (t) => {
+	for (const { name, launchOn, destinationOn, projectTrusted, expected } of [
+		{ name: "off to on", launchOn: false, destinationOn: true, projectTrusted: true, expected: true },
+		{ name: "on to off", launchOn: true, destinationOn: false, projectTrusted: true, expected: false },
+		{ name: "untrusted destination", launchOn: true, destinationOn: true, projectTrusted: false, expected: false },
+	]) {
+		await t.test(name, async (t) => {
+			const launch = await timestampSession(t, (cwd) => {
+				projectSettings(cwd, { transcript: launchOn });
+				writeTimestampSettings(join(cwd, "agent"), { transcript: false });
+				return SessionManager.inMemory(cwd);
+			});
+			const destination = join(launch.cwd, "destination");
+			projectSettings(destination, { transcript: destinationOn });
+			const saved = SessionManager.create(destination, join(launch.cwd, "sessions"));
+			saved.appendMessage(fauxAssistantMessage("Done."));
+			const record = saved.getEntry(saved.appendCustomEntry("message-timestamp"));
+			assert.ok(record?.type === "custom");
+
+			const checkReplay = (session: AgentSession, operation: string) => {
+				assert.equal(session.sessionManager.getCwd(), destination);
+				assert.equal(renderRecord(session, record) !== undefined, expected, operation);
+			};
+			const checkBound = async (session: AgentSession, value: boolean) => {
+				await session.prompt("/timestamps");
+				assert.deepEqual(launch.notify.mock.calls.at(-1)?.arguments,
+					[`Message timestamps: footer on, transcript ${value ? "on" : "off"}`, "info"]);
+			};
+			await checkBound(launch.session, launchOn);
+			const runtime = new AgentSessionRuntime(launch.session, launch.services, (options) => launch.create(options, projectTrusted));
+			runtime.setRebindSession(async (session) => {
+				checkReplay(session, "/resume");
+				await launch.bind(session);
+			});
+			assert.deepEqual(await runtime.switchSession(saved.getSessionFile()!), { cancelled: false });
+			await checkBound(runtime.session, expected);
+
+			await runtime.session.prompt(`/timestamps transcript ${expected ? "off" : "on"}`);
+			await runtime.session.reload({ beforeSessionStart: () => checkReplay(runtime.session, "/reload") });
+			await checkBound(runtime.session, expected);
+		});
+	}
 });
 
 test("transcript off hides stored records and writes none", async (t) => {
@@ -224,8 +418,7 @@ test("transcript off hides stored records and writes none", async (t) => {
 		assert.deepEqual(records(session.sessionManager).map((entry) => renderRecord(session, entry)), [undefined, undefined]);
 	};
 	const { session, sessionManager, faux } = await timestampSession(t, (cwd) => {
-		mkdirSync(join(cwd, "agent"), { recursive: true });
-		writeFileSync(join(cwd, "agent", "settings.json"), JSON.stringify({ quiver: { messageTimestamps: { transcript: true } } }));
+		writeTimestampSettings(join(cwd, "agent"), { transcript: true });
 		projectSettings(cwd, { transcript: false });
 		const saved = SessionManager.create(cwd, join(cwd, "sessions"));
 		saved.appendMessage({ role: "user", content: "First prompt", timestamp: Date.now() });
@@ -244,6 +437,42 @@ test("transcript off hides stored records and writes none", async (t) => {
 	assert.ok(last?.type === "message" && last.message.role === "assistant");
 	assert.deepEqual(last.message.content, [{ type: "text", text: "Second reply" }]);
 	assert.deepEqual(records(reopened), original);
+});
+
+test("mounted and omitted lines follow host redraw and rebuild rules", async (t) => {
+	initTheme();
+	const { session, services, create, sessionManager } = await timestampSession(t, (cwd) => {
+		projectSettings(cwd, { transcript: true });
+		const saved = SessionManager.inMemory(cwd);
+		saved.appendCustomEntry("message-timestamp");
+		return saved;
+	});
+	const mode = new InteractiveMode(new AgentSessionRuntime(session, services, create)) as unknown as {
+		chatContainer: Container;
+		showStatus: (message: string) => void;
+		toggleToolOutputExpansion: () => void;
+		rebuildChatFromMessages: () => void;
+	};
+	t.mock.method(mode, "showStatus", () => {});
+	const time = formatTime(new Date(sessionManager.getLeafEntry()!.timestamp));
+	const showsTime = () => mode.chatContainer.render(80).some((line) => line.includes(time));
+	mode.rebuildChatFromMessages();
+	assert.equal(mode.chatContainer.children.length, 1);
+	assert.ok(showsTime());
+
+	await session.prompt("/timestamps transcript off");
+	assert.ok(showsTime(), "the toggle does not redraw the mounted line");
+	mode.toggleToolOutputExpansion(); // Ctrl+O
+	assert.equal(showsTime(), false);
+	assert.equal(mode.chatContainer.children.length, 1, "redraw does not unmount the component");
+
+	mode.rebuildChatFromMessages();
+	assert.equal(mode.chatContainer.children.length, 0, "rebuild while off omits the component");
+	await session.prompt("/timestamps transcript on");
+	mode.toggleToolOutputExpansion();
+	assert.deepEqual(mode.chatContainer.render(80), []);
+	mode.rebuildChatFromMessages();
+	assert.ok(showsTime());
 });
 
 test("resume shows the newest message time", async (t) => {
@@ -286,10 +515,25 @@ test("empty session shows no time", async (t) => {
 	assert.equal(statuses.has("message-timestamps"), false);
 });
 
-function projectSettings(cwd: string, switches: Record<string, unknown>) {
-	mkdirSync(join(cwd, ".pi"), { recursive: true });
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ quiver: { messageTimestamps: switches } }));
+function writeTimestampSettings(dir: string, switches: Record<string, boolean>) {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "settings.json"), JSON.stringify({ quiver: { messageTimestamps: switches } }));
 }
+
+function projectSettings(cwd: string, switches: Record<string, boolean>) {
+	writeTimestampSettings(join(cwd, ".pi"), switches);
+}
+
+test("parseArgs accepts five forms", () => {
+	for (const [args, expected] of [
+		["", { kind: "status" }],
+		["  footer on ", { kind: "set", target: "footer", on: true }],
+		["footer off", { kind: "set", target: "footer", on: false }],
+		["transcript on", { kind: "set", target: "transcript", on: true }],
+		["transcript off", { kind: "set", target: "transcript", on: false }],
+		["footer", { kind: "usage" }],
+	] as const) assert.deepEqual(parseArgs(args), expected, args);
+});
 
 test("command reports both switches and changes only the requested one", async (t) => {
 	const { session, sessionManager, statuses, notify, cwd } = await timestampSession(t, (cwd) => {
@@ -356,7 +600,7 @@ for (const mode of ["print", "json", "rpc"] as const) {
 		syncBuiltinESMExports();
 		t.after(() => { reads.mock.restore(); syncBuiltinESMExports(); });
 		const { session, sessionManager, faux, setStatus, notify, cwd } = await timestampSession(t, (cwd) => {
-			projectSettings(cwd, { footer: true, transcript: true });
+			writeTimestampSettings(join(cwd, "agent"), { footer: true, transcript: true });
 			return SessionManager.create(cwd, join(cwd, "sessions"));
 		}, { mode });
 		await session.prompt("/timestamps footer off");
