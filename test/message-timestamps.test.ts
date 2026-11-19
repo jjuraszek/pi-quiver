@@ -14,6 +14,8 @@ import { Container } from "@earendil-works/pi-tui";
 
 import { formatTime, newestMessageTime, parseArgs } from "../extensions/message-timestamps.ts";
 
+const enabledSwitches = { footer: true, transcript: true };
+
 async function timestampSession(t: TestContext, managerFor: (cwd: string) => SessionManager = SessionManager.inMemory,
 	options: {
 		cwd?: string;
@@ -35,7 +37,8 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
 	modelRuntime.registerNativeProvider(faux.provider);
 	const create = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: Parameters<CreateAgentSessionRuntimeFactory>[0], projectTrusted = true) => {
-		const settingsManager = options.mode && options.mode !== "tui" ? SettingsManager.inMemory() :
+		const settingsManager = options.mode && options.mode !== "tui" ?
+			SettingsManager.inMemory({ quiver: { messageTimestamps: enabledSwitches } } as Parameters<typeof SettingsManager.inMemory>[0]) :
 			SettingsManager.create(cwd, agentDir, { projectTrusted });
 		const resourceLoader = new DefaultResourceLoader({
 			cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true,
@@ -601,10 +604,12 @@ for (const mode of ["print", "json", "rpc"] as const) {
 		const reads = t.mock.method(fs, "readFileSync");
 		syncBuiltinESMExports();
 		t.after(() => { reads.mock.restore(); syncBuiltinESMExports(); });
-		const { session, sessionManager, faux, setStatus, notify, cwd } = await timestampSession(t, (cwd) => {
-			writeTimestampSettings(join(cwd, "agent"), { footer: true, transcript: true });
+		const { session, sessionManager, faux, setStatus, notify, cwd, services } = await timestampSession(t, (cwd) => {
+			writeTimestampSettings(join(cwd, "agent"), enabledSwitches);
 			return SessionManager.create(cwd, join(cwd, "sessions"));
 		}, { mode });
+		const { quiver } = services.settingsManager.getSettings() as { quiver?: unknown };
+		assert.deepEqual(quiver, { messageTimestamps: enabledSwitches });
 		await session.prompt("/timestamps footer off");
 		faux.setResponses([fauxAssistantMessage("Done.")]);
 		await session.prompt("What time is it?");
