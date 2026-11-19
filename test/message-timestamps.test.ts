@@ -150,16 +150,23 @@ test("multi-tool run writes two records in order", async (t) => {
 		projectSettings(cwd, { transcript: true });
 		return SessionManager.create(cwd, join(cwd, "sessions"));
 	}, { tools: ["read"] });
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:58:00Z") });
+	const appendMessage = sessionManager.appendMessage.bind(sessionManager);
+	// Pi emits message_end before saving and has no post-save event for ordinary messages.
+	t.mock.method(sessionManager, "appendMessage", (message: Parameters<SessionManager["appendMessage"]>[0]) => {
+		const id = appendMessage(message);
+		t.mock.timers.tick(60_000);
+		return id;
+	});
 	const live: string[] = [];
 	const rendered: (string[] | undefined)[] = [];
 	t.after(session.subscribe((event) => {
 		if (event.type === "message_end") {
 			live.push(event.message.role);
-			t.mock.timers.tick(60_000);
 		} else if (event.type === "entry_appended" && event.entry.type === "custom") {
 			live.push(event.entry.customType);
 			rendered.push(renderRecord(session, event.entry));
+			t.mock.timers.tick(60_000);
 		}
 	}));
 	const toolStatuses: (string | undefined)[] = [];
@@ -179,7 +186,12 @@ test("multi-tool run writes two records in order", async (t) => {
 	const branch = sessionManager.getBranch();
 	const start = branch.findIndex((entry) => entry.type === "message" && entry.message.role === "user");
 	const order = ["user", "message-timestamp", "assistant", "toolResult", "assistant", "toolResult", "assistant", "toolResult", "assistant", "message-timestamp"];
-	assert.deepEqual(branch.slice(start).map((entry) => entry.type === "message" ? entry.message.role : entry.type === "custom" ? entry.customType : entry.type), order);
+	const run = branch.slice(start);
+	assert.deepEqual(run.map((entry) => entry.type === "message" ? entry.message.role : entry.type === "custom" ? entry.customType : entry.type), order);
+	assert.deepEqual(run.map((entry) => formatTime(new Date(entry.timestamp), "en-US", "UTC")), [
+		"Nov 19, 02:59 PM", "Nov 19, 03:00 PM", "Nov 19, 03:01 PM", "Nov 19, 03:02 PM", "Nov 19, 03:03 PM",
+		"Nov 19, 03:04 PM", "Nov 19, 03:05 PM", "Nov 19, 03:06 PM", "Nov 19, 03:07 PM", "Nov 19, 03:08 PM",
+	]);
 	assert.deepEqual(live.slice(live.indexOf("user")), order);
 	const records = branch.filter((entry) => entry.type === "custom" && entry.customType === "message-timestamp");
 	assert.deepEqual(rendered, records.map((entry) => [`dim:${formatTime(new Date(entry.timestamp))}`]));
