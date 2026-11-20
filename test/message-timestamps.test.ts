@@ -146,10 +146,13 @@ function renderRecord(session: AgentSession, entry: CustomEntry) {
 }
 
 test("multi-tool run writes two records in order", async (t) => {
+	const callingReplyStatuses: (string | undefined)[] = [];
 	const { session, sessionManager, faux, statuses, cwd, requests } = await timestampSession(t, (cwd) => {
 		projectSettings(cwd, { transcript: true });
 		return SessionManager.create(cwd, join(cwd, "sessions"));
-	}, { tools: ["read"] });
+	}, { tools: ["read"], extensionFactories: [(pi) => {
+		pi.on("tool_call", () => { callingReplyStatuses.push(statuses.get("message-timestamps")); });
+	}] });
 	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:58:00Z") });
 	const appendMessage = sessionManager.appendMessage.bind(sessionManager);
 	// Pi emits message_end before saving and has no post-save event for ordinary messages.
@@ -195,6 +198,8 @@ test("multi-tool run writes two records in order", async (t) => {
 	assert.deepEqual(live.slice(live.indexOf("user")), order);
 	const records = branch.filter((entry) => entry.type === "custom" && entry.customType === "message-timestamp");
 	assert.deepEqual(rendered, records.map((entry) => [`dim:${formatTime(new Date(entry.timestamp))}`]));
+	const callingReplies = run.filter((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "toolUse");
+	assert.deepEqual(callingReplyStatuses, callingReplies.map((entry) => `last message ${formatTime(new Date(entry.timestamp))}`));
 	const results = branch.filter((entry) => entry.type === "message" && entry.message.role === "toolResult");
 	assert.ok(results.every((entry) => entry.type === "message" && entry.message.role === "toolResult" && !entry.message.isError));
 	const expected = `last message ${formatTime(new Date(results.at(-1)!.timestamp))}`;

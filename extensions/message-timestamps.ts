@@ -98,6 +98,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_start", refresh);
 	pi.on("context", refresh);
+	pi.on("tool_execution_start", refresh);
 	pi.on("turn_end", refresh);
 	pi.on("agent_settled", refresh);
 
