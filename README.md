@@ -153,7 +153,9 @@ The two displays work only in the terminal UI. Set them independently under `qui
 | `footer` (default `true`) | The newest saved message's local date and time on the shared footer row. Tool and shell results and saved custom messages count; timestamp records do not. |
 | `transcript` (default `false`) | A dim local date and time after each prompt delivered to the model and after each settled run. The records stay in the session file and never reach the model. |
 
-If you run a `!` shell command during a model run, its output can appear below the final time line in live chat. On resume, the output appears above that line; the time stays the same. A shell result or custom message saved while pi is idle updates the footer time on the next prompt, `/tree`, `/timestamps footer on`, or session start.
+If you run a `!` shell command during a model run, its output can appear below the final time line in live chat. On resume, the output appears above that line; the time stays the same.
+
+A shell result or custom message saved while pi is idle updates the footer time on the next prompt, `/tree`, `/timestamps footer on`, or session start. During a run, another extension can queue several custom messages for the end of the turn. Pi saves them in one batch. At the next refresh, the footer shows only the newest message's time. The extension adds no timer or polling.
 
 Use `/timestamps` to see both settings. `/timestamps footer on` and `/timestamps footer off` change the footer immediately. `/timestamps transcript on` and `/timestamps transcript off` control new lines from the next message. These commands apply only to the current session; reloading or switching sessions restores the settings from disk.
 
