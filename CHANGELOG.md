@@ -3,6 +3,10 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
+## Unreleased
+
+- `message-timestamps` shows the newest saved message's local date and time in pi's shared terminal footer by default. Set `quiver.messageTimestamps.transcript` to `true` for dim time lines after prompts and settled runs, or use `/timestamps` to change either display for the current session. (#44)
+
 ## v6.16.4 - 2026-11-19
 
 - `slack_search` and `slack_thread` compact text renders `<@U...>` as `@Display Name` when the user is in the name cache, and a labeled `<!subteam^S...|@handle>` as `@handle`. A `rich_text` `usergroup` element renders as `<!subteam^S...>` instead of `[usergroup]`. Uncached user tokens keep their original spelling and optional label; uncached `rich_text` users render as `<@ID>`. Literal text, code, raw output, and structured results keep Slack's tokens. (#42)

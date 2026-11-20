@@ -1,6 +1,6 @@
 # pi-quiver
 
-Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`, plus the `/rebase-worktree` and `/elevator` prompt templates (`prompts/`, listed in `pi.prompts`); everything except `fetch` and `doc_to_md` is OFF by default and reads its config from `settings.json` under `quiver.<key>` via `lib/extension-config.ts`.
+Pack of Pi coding-agent extensions, published to npm as `pi-quiver` (`pi install npm:pi-quiver`). Each extension is a standalone default-exported function in `extensions/`, discovered through the single manifest entry `./extensions` in `package.json` `pi.extensions`. Ships `fetch`, `doc_to_md`, `message-timestamps`, `session-name`, `sword-header`, `fast-mode`, `provider-stall-watchdog`, `slack`, plus the `/rebase-worktree` and `/elevator` prompt templates (`prompts/`, listed in `pi.prompts`); everything except `fetch`, `doc_to_md`, and the `message-timestamps` footer is OFF by default. Extension settings live under `quiver.<key>` in `settings.json`.
 
 <!-- agents-core:begin v9 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
 ## Ground Truth Before Reasoning

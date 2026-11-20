@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { QUIVER_CONFIG_KEYS, resolveConfig } from "../lib/extension-config.ts";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_CONFIG as messageTimestampDefaults, resolveTimestampConfig } from "../extensions/message-timestamps.ts";
 import { DEFAULT_CONFIG as fastModeDefaults } from "../extensions/fast-mode.ts";
 import { DEFAULT_CONFIG as sessionNameDefaults } from "../extensions/session-name.ts";
 import { DEFAULT_CONFIG as swordHeaderDefaults, coerce as swordCoerce } from "../extensions/sword-header.ts";
@@ -73,8 +75,21 @@ test("registry: every extension default-config key is registered; docToMd equals
 	for (const field of Object.keys(slackDefaults)) {
 		assert.ok(QUIVER_CONFIG_KEYS.slack.includes(field), `slack.${field} missing from QUIVER_CONFIG_KEYS`);
 	}
+	assert.deepEqual(QUIVER_CONFIG_KEYS.messageTimestamps, Object.keys(messageTimestampDefaults));
 	assert.deepEqual([...QUIVER_CONFIG_KEYS.docToMd], Object.keys(docToMdDefaults));
 	assert.ok(QUIVER_CONFIG_KEYS.docToMd.includes("ocrMaxPages"));
+});
+
+test("timestamp settings keep only booleans from each layer", () => {
+	for (const { global, project, expected } of [
+		{ global: { footer: "no", transcript: true }, project: { transcript: 0 }, expected: { footer: true, transcript: true } },
+		{ global: {}, project: true, expected: { footer: true, transcript: false } },
+	]) {
+		withSettings({ quiver: { messageTimestamps: global } }, { quiver: { messageTimestamps: project } }, (cwd) => {
+			const settings = SettingsManager.create(cwd).getSettings();
+			assert.deepEqual(resolveTimestampConfig(settings), expected);
+		});
+	}
 });
 
 test("docToMd: a stale maxCellsPerSheet key is linted as unknown (migration signal)", () => {
@@ -219,7 +234,7 @@ test("non-legacy key in both shapes: flat is ignored silently, nested unknown bl
 		const cfg = resolveConfig(cwd, "slackDup", DEFAULTS, coerceCfg, (m) => warnings.push(m));
 		assert.equal(cfg.enabled, true, "nested still resolves");
 		assert.deepEqual(warnings, [
-			`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}\n  "quiver.slackDup" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd`,
+			`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}\n  "quiver.slackDup" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd, messageTimestamps`,
 		]);
 	});
 });
@@ -281,7 +296,7 @@ test("lint: flat, unknown block, unknown field - one message, category order, ac
 				`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}`,
 				`  "swordHeader" at top level - move under "quiver"`,
 				`  "fastMode" at top level - move under "quiver"`,
-				`  "quiver.bogusBlock" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd`,
+				`  "quiver.bogusBlock" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd, messageTimestamps`,
 				`  "quiver.fastMode.enabld" - unknown; accepted: enabled`,
 			].join("\n"),
 		]);
@@ -323,7 +338,7 @@ test("lint: non-object block value and unknown-block object value produce no fie
 		const warnings: string[] = [];
 		resolveConfig(cwd, "fastMode", DEFAULTS, coerceCfg, (m) => warnings.push(m));
 		assert.deepEqual(warnings, [
-			`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}\n  "quiver.nope" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd`,
+			`pi-quiver settings (${files.projectFile}): ${HEADER_TAIL}\n  "quiver.nope" - unknown block; accepted: fastMode, sessionAutoName, swordHeader, providerStallWatchdog, slack, docToMd, messageTimestamps`,
 		]);
 	});
 });
