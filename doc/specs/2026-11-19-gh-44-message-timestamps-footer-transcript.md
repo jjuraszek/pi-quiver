@@ -1,5 +1,7 @@
 # Message timestamps: last-message time in the footer, time lines in the transcript
 
+> **Superseded by:** [doc/specs/2026-11-22-footer-timestamp-label-24h.md](./2026-11-22-footer-timestamp-label-24h.md) - "Time format" section, the status text clause of "Footer", the questionary "Time format" decision, and the Tests row for the old `formatTime` signature and output
+
 **Goal:** A new `message-timestamps` extension shows the time of the newest saved message on pi's shared footer status row (on by default) and, when switched on, saves a dim time line after each prompt that reaches the model and after each settled run (off by default); the two displays are independent, each has a `quiver.messageTimestamps` switch and a session-only `/timestamps` toggle, no time record ever reaches the model, and nothing is written or shown outside the terminal UI.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
 **Engine:** loop
