@@ -83,7 +83,10 @@ async function timestampSession(t: TestContext, managerFor: (cwd: string) => Ses
 }
 
 test("formatTime renders date and time", () => {
-	assert.equal(formatTime(new Date("2026-11-19T14:59:00Z"), "en-US", "UTC"), "Nov 19, 02:59 PM");
+	for (const [date, expected] of [
+		[new Date(2026, 10, 19, 14, 59), "2026-11-19 14:59"],
+		[new Date(2026, 0, 2, 0, 5), "2026-01-02 00:05"],
+	] as const) assert.equal(formatTime(date), expected);
 });
 
 test("newestMessageTime counts every saved message", (t) => {
@@ -107,7 +110,7 @@ test("newestMessageTime counts every saved message", (t) => {
 
 test("footer follows the prompt and the final reply", async (t) => {
 	const { session, sessionManager, faux, statuses } = await timestampSession(t);
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 19, 14, 58).getTime() });
 	let promptStatus: string | undefined;
 	faux.setResponses([() => {
 		promptStatus = statuses.get("message-timestamps");
@@ -117,10 +120,7 @@ test("footer follows the prompt and the final reply", async (t) => {
 	await session.prompt("What time is it?");
 	const messages = sessionManager.getBranch().filter((entry) => entry.type === "message").slice(-2);
 	assert.deepEqual(messages.map((entry) => entry.message.role), ["user", "assistant"]);
-	const format = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-	const expected = messages.map((entry) => `last message ${format.format(new Date(entry.timestamp))}`);
-	assert.notEqual(expected[0], expected[1]);
-	assert.deepEqual([promptStatus, statuses.get("message-timestamps")], expected);
+	assert.deepEqual([promptStatus, statuses.get("message-timestamps")], ["2026-11-19 14:58", "2026-11-19 14:59"]);
 });
 
 test("default writes no record", async (t) => {
@@ -153,7 +153,7 @@ test("multi-tool run writes two records in order", async (t) => {
 	}, { tools: ["read"], extensionFactories: [(pi) => {
 		pi.on("tool_call", () => { callingReplyStatuses.push(statuses.get("message-timestamps")); });
 	}] });
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:58:00Z") });
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 19, 14, 58).getTime() });
 	const appendMessage = sessionManager.appendMessage.bind(sessionManager);
 	// Pi emits message_end before saving and has no post-save event for ordinary messages.
 	t.mock.method(sessionManager, "appendMessage", (message: Parameters<SessionManager["appendMessage"]>[0]) => {
@@ -191,18 +191,18 @@ test("multi-tool run writes two records in order", async (t) => {
 	const order = ["user", "message-timestamp", "assistant", "toolResult", "assistant", "toolResult", "assistant", "toolResult", "assistant", "message-timestamp"];
 	const run = branch.slice(start);
 	assert.deepEqual(run.map((entry) => entry.type === "message" ? entry.message.role : entry.type === "custom" ? entry.customType : entry.type), order);
-	assert.deepEqual(run.map((entry) => formatTime(new Date(entry.timestamp), "en-US", "UTC")), [
-		"Nov 19, 02:59 PM", "Nov 19, 03:00 PM", "Nov 19, 03:01 PM", "Nov 19, 03:02 PM", "Nov 19, 03:03 PM",
-		"Nov 19, 03:04 PM", "Nov 19, 03:05 PM", "Nov 19, 03:06 PM", "Nov 19, 03:07 PM", "Nov 19, 03:08 PM",
+	assert.deepEqual(run.map((entry) => formatTime(new Date(entry.timestamp))), [
+		"2026-11-19 14:59", "2026-11-19 15:00", "2026-11-19 15:01", "2026-11-19 15:02", "2026-11-19 15:03",
+		"2026-11-19 15:04", "2026-11-19 15:05", "2026-11-19 15:06", "2026-11-19 15:07", "2026-11-19 15:08",
 	]);
 	assert.deepEqual(live.slice(live.indexOf("user")), order);
 	const records = branch.filter((entry) => entry.type === "custom" && entry.customType === "message-timestamp");
 	assert.deepEqual(rendered, records.map((entry) => [`dim:${formatTime(new Date(entry.timestamp))}`]));
 	const callingReplies = run.filter((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "toolUse");
-	assert.deepEqual(callingReplyStatuses, callingReplies.map((entry) => `last message ${formatTime(new Date(entry.timestamp))}`));
+	assert.deepEqual(callingReplyStatuses, callingReplies.map((entry) => formatTime(new Date(entry.timestamp))));
 	const results = branch.filter((entry) => entry.type === "message" && entry.message.role === "toolResult");
 	assert.ok(results.every((entry) => entry.type === "message" && entry.message.role === "toolResult" && !entry.message.isError));
-	const expected = `last message ${formatTime(new Date(results.at(-1)!.timestamp))}`;
+	const expected = formatTime(new Date(results.at(-1)!.timestamp));
 	assert.deepEqual(toolStatuses, [expected, undefined, expected]);
 	assert.equal(requests.length, 4);
 
@@ -244,7 +244,7 @@ function transcriptFile(cwd: string) {
 
 test("deferred shell output follows the settle line live but precedes it on replay", async (t) => {
 	const { session, sessionManager, faux, statuses } = await timestampSession(t, transcriptFile);
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 19, 14, 59).getTime() });
 	const appendMessage = sessionManager.appendMessage.bind(sessionManager);
 	// Pi flushes the shell result and settles without waiting between the two saves.
 	t.mock.method(sessionManager, "appendMessage", (message: Parameters<SessionManager["appendMessage"]>[0]) => {
@@ -255,7 +255,7 @@ test("deferred shell output follows the settle line live but precedes it on repl
 		return id;
 	});
 	const live: string[] = [];
-	const promptLine = `dim:${formatTime(new Date())}`;
+	const promptLine = "dim:2026-11-19 14:59";
 	t.after(session.subscribe((event) => {
 		if (event.type === "entry_appended" && event.entry.type === "custom") live.push(...renderRecord(session, event.entry) ?? []);
 		// InteractiveMode moves pending shell components into chat on this session event, not on the extension hook.
@@ -274,7 +274,7 @@ test("deferred shell output follows the settle line live but precedes it on repl
 	assert.ok(settle.type === "custom" && settle.customType === "message-timestamp");
 	const [replyTime, shellTime, settleTime] = [reply, shell, settle].map((entry) => formatTime(new Date(entry.timestamp)));
 	assert.equal(new Set([replyTime, shellTime, settleTime]).size, 3);
-	assert.equal(statuses.get("message-timestamps"), `last message ${shellTime}`);
+	assert.equal(statuses.get("message-timestamps"), shellTime);
 	const settleLine = `dim:${settleTime}`;
 	assert.deepEqual(live, [promptLine, settleLine, "deferred"]);
 	t.mock.timers.tick(86_400_000);
@@ -371,7 +371,7 @@ test("aborted run still writes the settle record", async (t) => {
 	await abort;
 	const entries = SessionManager.open(sessionManager.getSessionFile()!).buildContextEntries();
 	assert.deepEqual(runOrder(entries), [[{ type: "text", text: "Cancel me" }], "message-timestamp", "aborted", "message-timestamp"]);
-	const expected = `last message ${formatTime(new Date(entries.at(-2)!.timestamp))}`;
+	const expected = formatTime(new Date(entries.at(-2)!.timestamp));
 	assert.notEqual(expected, promptStatus);
 	assert.equal(statuses.get("message-timestamps"), expected);
 });
@@ -397,7 +397,7 @@ test("footer shows the saved entry time", async (t) => {
 		assert.ok(reply?.type === "message" && reply.message.role === "assistant");
 		assert.ok(beforeSave);
 		assert.notEqual(formatTime(beforeSave), formatTime(new Date(reply.timestamp)));
-		assert.equal(live, `last message ${formatTime(new Date(reply.timestamp))}`);
+		assert.equal(live, formatTime(new Date(reply.timestamp)));
 		assert.equal(reopened.statuses.get("message-timestamps"), live);
 	});
 });
@@ -523,7 +523,7 @@ test("resume shows the newest message time", async (t) => {
 		saved.appendCustomEntry("message-timestamp");
 		return SessionManager.open(saved.getSessionFile()!);
 	});
-	assert.equal(statuses.get("message-timestamps"), `last message ${formatTime(new Date(latest))}`);
+	assert.equal(statuses.get("message-timestamps"), formatTime(new Date(latest)));
 });
 
 test("tree navigation updates the footer", async (t) => {
@@ -538,7 +538,7 @@ test("tree navigation updates the footer", async (t) => {
 		tree.appendMessage(fauxAssistantMessage("Second choice."));
 		return tree;
 	});
-	const expected = `last message ${formatTime(new Date(sessionManager.getEntry(earlier)!.timestamp))}`;
+	const expected = formatTime(new Date(sessionManager.getEntry(earlier)!.timestamp));
 	assert.notEqual(statuses.get("message-timestamps"), expected);
 	await session.navigateTree(earlier);
 	assert.equal(statuses.get("message-timestamps"), expected);
@@ -689,7 +689,7 @@ for (const { title, otherStatus } of [
 				}).render(120);
 				heights.push(rows.length);
 				if (otherStatus) assert.ok(rows.at(-1)!.includes(otherStatus));
-				assert.equal(rows.at(-1)!.includes("last message "), footer);
+				assert.equal(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(rows.at(-1)!), footer);
 			});
 		}
 		assert.equal(heights[1] - heights[0], otherStatus ? 0 : 1);

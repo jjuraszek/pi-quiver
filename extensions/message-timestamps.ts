@@ -23,10 +23,13 @@ export function resolveTimestampConfig(settings: ReturnType<ExtensionAPI["getSet
 	return { ...global, ...coerce(quiver?.messageTimestamps) };
 }
 
-export function formatTime(date: Date, locale?: string, timeZone?: string): string {
-	return new Intl.DateTimeFormat(locale, {
-		month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone,
-	}).format(date);
+export function formatTime(date: Date): string {
+	const year = String(date.getFullYear()).padStart(4, "0");
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	const hour = String(date.getHours()).padStart(2, "0");
+	const minute = String(date.getMinutes()).padStart(2, "0");
+	return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
 export function newestMessageTime(branch: readonly SessionEntry[]): string | undefined {
@@ -63,7 +66,7 @@ export default function (pi: ExtensionAPI) {
 	function refreshFooter(ctx: ExtensionContext) {
 		const timestamp = config.footer ? newestMessageTime(ctx.sessionManager.getBranch()) : undefined;
 		ctx.ui.setStatus("message-timestamps", timestamp === undefined ? undefined :
-			ctx.ui.theme.fg("dim", `last message ${formatTime(new Date(timestamp))}`));
+			ctx.ui.theme.fg("dim", formatTime(new Date(timestamp))));
 	}
 
 	pi.on("session_start", (_event, ctx) => {
