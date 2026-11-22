@@ -3,7 +3,7 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-## Unreleased
+## v6.17.1 - 2026-11-22
 
 - `message-timestamps` shows times as `2026-11-22 15:24` (`YYYY-MM-DD HH:mm`, local time zone, same for every system language) in the footer and the transcript. The footer no longer prefixes the time with `last message`.
 
