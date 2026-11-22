@@ -107,7 +107,7 @@ test("newestMessageTime counts every saved message", (t) => {
 
 test("footer follows the prompt and the final reply", async (t) => {
 	const { session, sessionManager, faux, statuses } = await timestampSession(t);
-	t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T14:59:00Z") });
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 19, 14, 58).getTime() });
 	let promptStatus: string | undefined;
 	faux.setResponses([() => {
 		promptStatus = statuses.get("message-timestamps");
@@ -117,10 +117,7 @@ test("footer follows the prompt and the final reply", async (t) => {
 	await session.prompt("What time is it?");
 	const messages = sessionManager.getBranch().filter((entry) => entry.type === "message").slice(-2);
 	assert.deepEqual(messages.map((entry) => entry.message.role), ["user", "assistant"]);
-	const format = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-	const expected = messages.map((entry) => `last message ${format.format(new Date(entry.timestamp))}`);
-	assert.notEqual(expected[0], expected[1]);
-	assert.deepEqual([promptStatus, statuses.get("message-timestamps")], expected);
+	assert.deepEqual([promptStatus, statuses.get("message-timestamps")], ["2026-11-19 14:58", "2026-11-19 14:59"]);
 });
 
 test("default writes no record", async (t) => {
