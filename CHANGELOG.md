@@ -3,6 +3,10 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
+## Unreleased
+
+- `message-timestamps` shows times as `2026-11-22 15:24` (`YYYY-MM-DD HH:mm`, local time zone, same for every system language) in the footer and the transcript. The footer no longer prefixes the time with `last message`.
+
 ## v6.17.0 - 2026-11-20
 
 - `message-timestamps` shows the newest saved message's local date and time in pi's shared terminal footer by default. Set `quiver.messageTimestamps.transcript` to `true` for dim time lines after prompts and settled runs, or use `/timestamps` to change either display for the current session. (#44)
