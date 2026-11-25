@@ -143,6 +143,6 @@ Run the elevator eval by hand against the sibling pi-gauntlet checkout pinned in
 | `doc_to_md` backend ladder, bundle protocol, child contract, CLI | [`doc/doc-to-md.md`](doc/doc-to-md.md) |
 | `provider-stall-watchdog` recovery flow, retry budget, TUI/RPC wait, manual repro | [`doc/provider-stall-watchdog.md`](doc/provider-stall-watchdog.md) |
 | `slack` CLI, config, tokens, cache, announce protocol, migration, smoke checklist | [`doc/slack.md`](doc/slack.md) |
-| pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
+| pi-gauntlet skill overrides for this repo | [`.pi/gauntlet.md`](.pi/gauntlet.md) |
 | Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
 | Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |
