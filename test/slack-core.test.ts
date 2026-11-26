@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { chmodSync, lstatSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { ReadableStream } from "node:stream/web";
 import {
 	makeApiCall,
@@ -520,7 +520,7 @@ test("downloadFile: cancel a sign-in page unread but save a real HTML file", asy
 	assert.equal(cancelled, 2);
 });
 
-test("downloadFile: default parent must be safe and the saved path is absolute", async (t) => {
+test("downloadFile: default saves use fresh absolute folders under a safe parent", async (t) => {
 	const root = mkdtempSync(resolve(tmpdir(), "quiver-download-parent-"));
 	const cwd = process.cwd();
 	process.chdir(root);
@@ -534,7 +534,7 @@ test("downloadFile: default parent must be safe and the saved path is absolute",
 		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
 	}
 	assert.equal(tmpdir(), ".");
-	const parent = join(root, "pi-slack");
+	const parent = resolve(tmpdir(), "pi-slack");
 	const bytes = Buffer.from([255]);
 	let requests = 0;
 	const deps = fileDeps(hostedFile, async () => {
@@ -553,13 +553,21 @@ test("downloadFile: default parent must be safe and the saved path is absolute",
 	await rejected("symlink");
 	rmSync(parent);
 
-	const result = await downloadFile(args, deps);
-	assert.ok(isAbsolute(result.path), `expected an absolute path, got ${result.path}`);
-	assert.deepEqual(readFileSync(result.path), bytes);
+	const first = await downloadFile(args, deps);
 	if (process.platform !== "win32") {
 		assert.equal(lstatSync(parent).mode & 0o077, 0, "new parent is private");
 		chmodSync(parent, 0o775);
-		await downloadFile(args, deps);
+	}
+	const second = await downloadFile(args, deps);
+	for (const { path } of [first, second]) {
+		assert.ok(isAbsolute(path), `expected an absolute path, got ${path}`);
+		const folder = dirname(path);
+		assert.equal(dirname(folder), parent);
+		assert.match(basename(folder), /^download-/);
+	}
+	assert.notEqual(dirname(first.path), dirname(second.path));
+	assert.deepEqual(readFileSync(first.path), bytes);
+	if (process.platform !== "win32") {
 		chmodSync(parent, 0o777);
 		await rejected("world-writable");
 		chmodSync(parent, 0o775);
