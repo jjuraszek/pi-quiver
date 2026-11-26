@@ -1,5 +1,7 @@
 # slack_thread: Block Kit flattening + raw JSON mode
 
+> **Superseded by:** [doc/specs/2026-11-26-gh-47-slack-attachment-download.md](./2026-11-26-gh-47-slack-attachment-download.md) - the `author | ts | body` envelope sentence in Design section 2 only (a message with attached files gains a ` | files: ...` suffix)
+
 **Issue:** jjuraszek/pi-quiver#21
 **Date:** 2026-09-15
 **Status:** approved at design review, pending spec gate
