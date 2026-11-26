@@ -821,6 +821,26 @@ test("readThread: message with blocks renders flattened blocks; empty flatten fa
 	);
 });
 
+test("readThread compact: lists attached file names and IDs on parent and reply lines", async () => {
+	const messages = [
+		{
+			user: "U1", ts: "1.1", text: "query and results",
+			files: [{ id: "F1", name: "query.sql" }, { name: "no ID" }, { id: "F2", title: "results\n\tchart.png" }],
+		},
+		{ user: "U2", ts: "1.2", thread_ts: "1.1", text: "", files: [{ id: "F3" }] },
+	];
+	const original = structuredClone(messages);
+	const deps = { apiCall: async () => ({ messages }), token: "t" };
+	const args = { channel: "C1", ts: "1.1" };
+	const result = await readThread(args, deps);
+	assert.equal(result.output, [
+		"U1 | 1.1 | query and results | files: query.sql (F1), results chart.png (F2)",
+		"U2 | 1.2 |  | files: untitled (F3)",
+	].join("\n"));
+	assert.deepEqual(result.messages, original);
+	assert.deepEqual(JSON.parse((await readThread({ ...args, raw: true }, deps)).output), original);
+});
+
 test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, uncached user tokens stay verbatim", () => {
 	assert.equal(
 		renderMentionTokens(
