@@ -936,7 +936,7 @@ export function parseFileRef(input: string): string {
 function checkedFileUrl(file: Record<string, unknown>): string {
 	const refuse = (reason: string): never => {
 		const page = typeof file.permalink === "string" ? URL.parse(file.permalink) : null;
-		throw new SlackError("file_not_downloadable", `${reason}${page ? ` (${page.origin}${page.pathname})` : ""}`);
+		throw new SlackError("file_not_downloadable", `${reason}${page ? ` (${page.origin}${page.pathname}${page.search})` : ""}`);
 	};
 	if (file.mode === "external" || file.is_external === true) refuse("Slack does not host this external file.");
 	if (file.is_hidden_by_limit) refuse("Slack hides this file under the workspace plan limit.");

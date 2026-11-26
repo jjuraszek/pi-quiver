@@ -416,14 +416,16 @@ test("downloadFile: binary bytes, safe names and exclusive destinations", async 
 
 test("downloadFile: file metadata decides whether the token can reach the file host", async () => {
 	let requests = 0;
-	for (const [file, code] of [
-		[{ ...hostedFile, mode: "external" }, "file_not_downloadable"], [{ ...hostedFile, is_external: true }, "file_not_downloadable"],
-		[{ ...hostedFile, is_hidden_by_limit: true }, "file_not_downloadable"], [{}, "file_not_downloadable"],
+	const permalink = "https://workspace.slack.com/files/U1/F123/report?team=T1";
+	for (const [file, code, message] of [
+		[{ is_hidden_by_limit: true, permalink }, "file_not_downloadable", `Slack hides this file under the workspace plan limit. (${permalink})`],
+		[{ mode: "external", permalink, url_private: `${hostedFile.url_private}?private=secret` }, "file_not_downloadable", `Slack does not host this external file. (${permalink})`],
+		[{ ...hostedFile, is_external: true }, "file_not_downloadable"], [{}, "file_not_downloadable"],
 		...['https://other.example/', 'http://files.slack.com/', 'https://files.slack.com:444/'].map((url) => [{ url_private: url }, "file_not_downloadable"] as const),
 		[{ ...hostedFile, size: DOWNLOAD_MAX_BYTES + 1 }, "file_too_large"],
 	] as const) {
 		const deps = fileDeps(file, async () => { requests++; throw new Error("unexpected request"); });
-		await assert.rejects(downloadFile({ fileId: "F123" }, deps), { code });
+		await assert.rejects(downloadFile({ fileId: "F123" }, deps), { code, ...(message === undefined ? {} : { message }) });
 	}
 	assert.equal(requests, 0);
 });
