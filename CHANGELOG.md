@@ -3,7 +3,7 @@
 Format follows sibling pi packages (e.g. [`pi-condense`](https://github.com/jjuraszek/pi-condense/blob/main/CHANGELOG.md)):
 one entry per `vX.Y.Z` tag, newest first, terse bullets, dated.
 
-## Unreleased
+## v6.18.0 - 2026-11-26
 
 - `slack_thread` lists attachment names and file IDs on their message lines. `slack_download` saves one file by ID or Slack file link to a fresh temp folder or a directory you choose. (#47)
 - On Windows, `doc_to_md` retries briefly locked staging deletes on Node 24.21.0 or later in the 24.x line and on Node 26.8.0 or later, so timed-out PDF conversions can fall back to text extraction. On older supported Node versions, the first locked delete fails the conversion.
