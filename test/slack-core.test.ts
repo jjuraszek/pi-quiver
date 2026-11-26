@@ -397,10 +397,12 @@ test("downloadFile: binary bytes, safe names and exclusive destinations", async 
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const dir = join(root, "missing");
 	const bytes = Uint8Array.of(0, 255, 13, 10);
-	const downloadBytes: DownloadBytes = async () => ({ contentType: undefined, body: ReadableStream.from([bytes]), cancel: async () => {} });
+	const downloadBytes: DownloadBytes = async () => ({
+		contentType: undefined, body: ReadableStream.from([bytes.subarray(0, 1), bytes.subarray(1)]), cancel: async () => {},
+	});
 	for (const [i, [name, saved]] of [["a/b\\c:|<>?*\"\t. ", "a_b_c________"], ["NuL.txt", "F123"], ["..", "F123"], ["", "F123"]].entries()) {
 		const folder = join(dir, String(i));
-		const result = await downloadFile({ fileId: "F123", dir: folder }, fileDeps({ ...hostedFile, name }, downloadBytes));
+		const result = await downloadFile({ fileId: "F123", dir: folder }, fileDeps({ ...hostedFile, name, size: bytes.length }, downloadBytes));
 		assert.deepEqual(result, { path: join(folder, saved), file_id: "F123", name: name || "F123", size: 4 });
 		assert.deepEqual(readFileSync(result.path), Buffer.from(bytes));
 	}
