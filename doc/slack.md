@@ -411,6 +411,12 @@ spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
 
+A compact thread line lists its attachments in Slack's order, for example
+`alice | 1.1 | review these | files: query.sql (F123), chart.png (F456)`.
+Entries without a file ID are skipped. If no entry has an ID, the line ends
+at the message body. Reading the attached file's contents requires the
+`files:read` scope on the Slack user token.
+
 Compact output resolves typed `rich_text` mentions and tokens in `mrkdwn`,
 search text, and thread fallback text. It leaves `plain_text` (including
 headers), inline and fenced code, and preformatted or code-styled rich text

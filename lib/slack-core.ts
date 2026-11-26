@@ -687,12 +687,23 @@ export function renderBlocks(blocks: unknown[], userNames?: UserNames): string {
 		.replace(/\r?\n/g, " ");
 }
 
+function threadFilesSuffix(files: unknown): string {
+	if (!Array.isArray(files)) return "";
+	const labels: string[] = [];
+	for (const file of files) {
+		if (typeof file?.id !== "string" || !file.id) continue;
+		const name = [file.name, file.title].find((s) => typeof s === "string" && s.length > 0) ?? "untitled";
+		labels.push(`${name.replace(/[\s\p{Cc}]+/gu, " ")} (${file.id})`);
+	}
+	return labels.length ? ` | files: ${labels.join(", ")}` : "";
+}
+
 function renderThreadLine(message: Record<string, unknown>, userNames?: UserNames): string {
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
 	const flattened = Array.isArray(message.blocks) ? renderBlocks(message.blocks, userNames) : "";
 	const body = flattened || compactMessageText(message, userNames);
-	return `${author} | ${ts} | ${body}`;
+	return `${author} | ${ts} | ${body}${threadFilesSuffix(message.files)}`;
 }
 
 export async function readThread(
