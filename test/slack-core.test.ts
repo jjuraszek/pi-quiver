@@ -416,7 +416,7 @@ test("downloadFile: binary bytes, safe names and exclusive destinations", async 
 
 test("downloadFile: file metadata decides whether the token can reach the file host", async () => {
 	let requests = 0;
-	const permalink = "https://workspace.slack.com/files/U1/F123/report?team=T1";
+	const permalink = "https://workspace.slack.com/files/U1/F123/report?team=T1#section-2";
 	for (const [file, code, message] of [
 		[{ is_hidden_by_limit: true, permalink }, "file_not_downloadable", `Slack hides this file under the workspace plan limit. (${permalink})`],
 		[{ mode: "external", permalink, url_private: `${hostedFile.url_private}?private=secret` }, "file_not_downloadable", `Slack does not host this external file. (${permalink})`],
