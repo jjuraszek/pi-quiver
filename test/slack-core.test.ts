@@ -455,6 +455,27 @@ test("downloadFile: file host refusals and redirects never deliver bytes or foll
 	assert.equal(followed, 0);
 });
 
+test("defaultDownloadBytes: cancel releases the body before or during iteration", async (t) => {
+	for (const scenario of ["unread", "partial read"] as const) {
+		await t.test(scenario, async (t) => {
+			const chunk = new Uint8Array([1]);
+			let cancelled = false;
+			const stream = new globalThis.ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(chunk); },
+				cancel() { cancelled = true; },
+			});
+			t.mock.method(globalThis, "fetch", async () => new Response(stream));
+			const response = await defaultDownloadBytes("https://files.slack.com/file", "fixture-token");
+			if (scenario === "partial read") {
+				const iterator = response.body[Symbol.asyncIterator]();
+				assert.deepEqual(await iterator.next(), { value: chunk, done: false });
+			}
+			await response.cancel();
+			assert.deepEqual({ cancelled, locked: stream.locked }, { cancelled: true, locked: false });
+		});
+	}
+});
+
 test("downloadFile: missing_scope names files:read without fetching bytes", async (t) => {
 	const slack = await serve((_req, res) => res.end(JSON.stringify({ ok: false, error: "missing_scope", needed: "files:read" })));
 	t.after(slack.close);

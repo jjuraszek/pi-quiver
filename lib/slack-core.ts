@@ -466,7 +466,14 @@ export const defaultDownloadBytes: DownloadBytes = async (url, token, opts) => {
 		url, { method: "GET", headers: { authorization: `Bearer ${token}` }, redirect: "manual" },
 		opts?.signal, DOWNLOAD_TIMEOUT_MS, () => "Slack file request failed or timed out.",
 	);
-	const cancel = async () => { await res.body?.cancel().catch(() => {}); };
+	const stream = res.body ?? ReadableStream.from<Uint8Array>([]);
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	const cancel = async () => {
+		const cancelling = reader ? reader.cancel() : stream.cancel();
+		reader?.releaseLock();
+		reader = undefined;
+		await cancelling.catch(() => {});
+	};
 	if (res.status !== 200) {
 		await cancel();
 		if (res.status >= 300 && res.status < 400) {
@@ -476,7 +483,19 @@ export const defaultDownloadBytes: DownloadBytes = async (url, token, opts) => {
 		}
 		throw new SlackError(`http_${res.status}`, `Slack file host returned HTTP ${res.status}.`);
 	}
-	return { contentType: res.headers.get("content-type") ?? undefined, body: res.body ?? ReadableStream.from([]), cancel };
+	const body = (async function* () {
+		reader = stream.getReader();
+		try {
+			while (reader) {
+				const chunk = await reader.read();
+				if (chunk.done) return;
+				yield chunk.value;
+			}
+		} finally {
+			await cancel();
+		}
+	})();
+	return { contentType: res.headers.get("content-type") ?? undefined, body, cancel };
 };
 
 /**
