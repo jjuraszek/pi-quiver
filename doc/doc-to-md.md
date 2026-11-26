@@ -301,7 +301,7 @@ Worst-case wall time before bundle cleanup: PDF `warmTimeoutMs (first call) + pr
 
 Deprecated environment mappings are `PI_DOC_TO_MD_CONVERT_TIMEOUT_MS` -> `primaryTimeoutMs`, `PI_DOC_TO_MD_SOFFICE_TIMEOUT_MS` -> `sofficeTimeoutMs`, `PI_DOC_TO_MD_WARM_TIMEOUT_MS` -> `warmTimeoutMs`, and `PI_DOC_TO_MD_PYMUPDF_VERSION` -> `pymupdfVersion`.
 
-`warmTimeoutMs` is an absolute discovery deadline, including all attempted backend probes and bootstrap work. Every child runs through a capped runner. Timeout or output-cap termination tree-kills the process group on POSIX and uses `taskkill /T` on Windows; its grace period is `KILL_GRACE_MS` (2000 ms). This boundary exists because MuPDF and PDF.js can spin uninterruptibly. On Windows, bundle staging cleanup retries transient delete errors up to three times because a killed child can briefly retain file handles.
+`warmTimeoutMs` is an absolute discovery deadline, including all attempted backend probes and bootstrap work. Every child runs through a capped runner. Timeout or output-cap termination tree-kills the process group on POSIX and uses `taskkill /T` on Windows; its grace period is `KILL_GRACE_MS` (2000 ms). This boundary exists because MuPDF and PDF.js can spin uninterruptibly. On Windows, bundle staging cleanup retries briefly locked deletes up to three times on Node 24.21.0 or later in the 24.x line and on Node 26.8.0 or later. On older supported Node versions, the first locked delete fails the conversion.
 
 ## Optional: Tesseract for OCR
 
