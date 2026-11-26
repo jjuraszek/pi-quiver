@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { ReadableStream } from "node:stream/web";
 import {
 	makeApiCall,
 	REQUEST_TIMEOUT_MS,
@@ -15,6 +16,11 @@ import {
 	resolveToken,
 	DEFAULT_SLACK_CONFIG,
 	defaultUploadBytes,
+	parseFileRef,
+	downloadFile,
+	defaultDownloadBytes,
+	DOWNLOAD_MAX_BYTES,
+	type DownloadBytes,
 	type ApiCall,
 	parsePermalink,
 	searchMessages,
@@ -361,6 +367,253 @@ test("apiCall: mid-flight abort rejects with SlackError code aborted, not transp
 	} finally {
 		srv.close();
 	}
+});
+
+test("parseFileRef: Slack links supply only the ID", () => {
+	for (const ref of [" F123 ", "https://a.b.slack.com/files/user/F123/query.sql", "https://files.slack.com/files-pri/T1-F123/query.sql",
+		"https://files.slack.com/files-pri/T1-F123/download/query.sql", "https://slack-files.com/T1-F123-secret"]) {
+		assert.equal(parseFileRef(ref), "F123");
+	}
+	for (const ref of ["F", "f123", "https://example.org/files/U/F123/name", "http://a.slack.com/files/U/F123/name", "https://a.slack.com/archives/C123/p12345678"]) {
+		assert.throws(() => parseFileRef(ref), { code: "invalid_file_ref" });
+	}
+});
+
+const hostedFile = { name: "query.sql", url_private: "https://files.slack.com/files-pri/T1-F123/query.sql" };
+
+function fileDeps(file: Record<string, unknown>, downloadBytes: DownloadBytes) {
+	const apiCall: ApiCall = async (method, token, params, opts) => {
+		assert.equal(method, "files.info");
+		assert.equal(token, "fixture-token");
+		assert.deepEqual(params, { file: "F123" });
+		assert.equal(opts?.retry, true);
+		return { ok: true, file };
+	};
+	return { token: "fixture-token", apiCall, downloadBytes };
+}
+
+test("downloadFile: binary bytes, safe names and exclusive destinations", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "quiver-download-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const dir = join(root, "missing");
+	const bytes = Uint8Array.of(0, 255, 13, 10);
+	const downloadBytes: DownloadBytes = async () => ({
+		contentType: undefined, body: ReadableStream.from([bytes.subarray(0, 1), bytes.subarray(1)]), cancel: async () => {},
+	});
+	for (const [i, [name, saved]] of [["a/b\\c:|<>?*\"\t. ", "a_b_c________"], ["NuL.txt", "F123"], ["..", "F123"], ["", "F123"]].entries()) {
+		const folder = join(dir, String(i));
+		const result = await downloadFile({ fileId: "F123", dir: folder }, fileDeps({ ...hostedFile, name, size: bytes.length }, downloadBytes));
+		assert.deepEqual(result, { path: join(folder, saved), file_id: "F123", name: name || "F123", size: 4 });
+		assert.deepEqual(readFileSync(result.path), Buffer.from(bytes));
+	}
+	const args = { fileId: "F123", dir };
+	const deps = fileDeps(hostedFile, downloadBytes);
+	const existing = join(dir, "query.sql");
+	writeFileSync(existing, "original");
+	assert.equal((await downloadFile(args, deps)).path, join(dir, "query-F123.sql"));
+	await assert.rejects(downloadFile(args, deps), { code: "file_exists" });
+	assert.equal(readFileSync(existing, "utf8"), "original");
+	await assert.rejects(downloadFile({ ...args, dir: existing }, deps), { code: "invalid_dir" });
+});
+
+test("downloadFile: file metadata decides whether the token can reach the file host", async () => {
+	let requests = 0;
+	const permalink = "https://workspace.slack.com/files/U1/F123/report?team=T1#section-2";
+	for (const [file, code, message] of [
+		[{ is_hidden_by_limit: true, permalink }, "file_not_downloadable", `Slack hides this file under the workspace plan limit. (${permalink})`],
+		[{ mode: "external", permalink, url_private: `${hostedFile.url_private}?private=secret` }, "file_not_downloadable", `Slack does not host this external file. (${permalink})`],
+		[{ ...hostedFile, is_external: true }, "file_not_downloadable"], [{}, "file_not_downloadable"],
+		...['https://other.example/', 'http://files.slack.com/', 'https://files.slack.com:444/'].map((url) => [{ url_private: url }, "file_not_downloadable"] as const),
+		[{ ...hostedFile, size: DOWNLOAD_MAX_BYTES + 1 }, "file_too_large"],
+	] as const) {
+		const deps = fileDeps(file, async () => { requests++; throw new Error("unexpected request"); });
+		await assert.rejects(downloadFile({ fileId: "F123" }, deps), { code, ...(message === undefined ? {} : { message }) });
+	}
+	assert.equal(requests, 0);
+});
+
+test("defaultDownloadBytes: authenticated GET returns exact bytes; refusals and redirects never deliver bytes", async (t) => {
+	let followed = 0;
+	const signIn = await serve((_req, res) => { followed++; res.end("sign in"); });
+	t.after(signIn.close);
+	const bytes = Buffer.from([0, 255, 13, 10]);
+	let request: { method?: string; authorization?: string } | undefined;
+	const target = await serve((req, res) => {
+		if (req.url === "/200") {
+			request = { method: req.method, authorization: req.headers.authorization };
+			res.end(bytes);
+			return;
+		}
+		res.writeHead(Number(req.url!.slice(1)), { Location: `${signIn.url}/login?private-query` });
+		res.end("not a whole file");
+	});
+	t.after(target.close);
+	const { body } = await defaultDownloadBytes(`${target.url}/200`, "fixture-token");
+	const chunks: Uint8Array[] = [];
+	for await (const chunk of body) chunks.push(chunk);
+	assert.deepEqual(request, { method: "GET", authorization: "Bearer fixture-token" });
+	assert.deepEqual(Buffer.concat(chunks), bytes);
+
+	const dir = mkdtempSync(join(tmpdir(), "quiver-download-http-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	for (const [status, code] of [[403, "http_403"], [206, "http_206"], [302, "file_auth_redirect"]] as const) {
+		const deps = fileDeps(hostedFile, (_url, token, opts) => defaultDownloadBytes(`${target.url}/${status}`, token, opts));
+		await assert.rejects(downloadFile({ fileId: "F123", dir }, deps), (err: unknown) => {
+			assert.ok(err instanceof SlackError);
+			assert.equal(err.code, code);
+			if (status === 302) assert.ok(err.message.includes(new URL(signIn.url).host));
+			assert.doesNotMatch(err.message, /login|private-query|fixture-token/);
+			return true;
+		});
+		assert.deepEqual(readdirSync(dir), []);
+	}
+	assert.equal(followed, 0);
+});
+
+test("defaultDownloadBytes: cancel releases the body before or during iteration", async (t) => {
+	for (const scenario of ["unread", "partial read"] as const) {
+		await t.test(scenario, async (t) => {
+			const chunk = new Uint8Array([1]);
+			let cancelled = false;
+			const stream = new globalThis.ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(chunk); },
+				cancel() { cancelled = true; },
+			});
+			t.mock.method(globalThis, "fetch", async () => new Response(stream));
+			const response = await defaultDownloadBytes("https://files.slack.com/file", "fixture-token");
+			if (scenario === "partial read") {
+				const iterator = response.body[Symbol.asyncIterator]();
+				assert.deepEqual(await iterator.next(), { value: chunk, done: false });
+			}
+			await response.cancel();
+			assert.deepEqual({ cancelled, locked: stream.locked }, { cancelled: true, locked: false });
+		});
+	}
+});
+
+test("downloadFile: missing_scope names files:read without fetching bytes", async (t) => {
+	const slack = await serve((_req, res) => res.end(JSON.stringify({ ok: false, error: "missing_scope", needed: "files:read" })));
+	t.after(slack.close);
+	let requests = 0;
+	await assert.rejects(downloadFile({ fileId: "F123" }, {
+		token: "fixture-token", apiCall: makeApiCall(slack.url), downloadBytes: async () => { requests++; throw new Error("unexpected byte request"); },
+	}), { code: "missing_scope", message: /files:read/ });
+	assert.equal(requests, 0);
+});
+
+test("downloadFile: cancel a sign-in page unread but save a real HTML file", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "quiver-download-html-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	let cancelled = 0, reads = 0;
+	const html = "<p>Hello</p>";
+	const downloadBytes: DownloadBytes = async () => ({
+		contentType: "Text/HTML; charset=utf-8", cancel: async () => { cancelled++; },
+		body: (async function* () { reads++; yield Buffer.from(html); })(),
+	});
+	for (const mimetype of ["text/plain", undefined]) {
+		await assert.rejects(downloadFile({ fileId: "F123", dir }, fileDeps({ ...hostedFile, mimetype }, downloadBytes)), { code: "file_auth_redirect" });
+		assert.deepEqual(readdirSync(dir), []);
+	}
+	assert.equal(reads, 0);
+	assert.equal(cancelled, 2);
+	const result = await downloadFile({ fileId: "F123", dir }, fileDeps({ ...hostedFile, mimetype: " TEXT/HTML ; charset=UTF-8" }, downloadBytes));
+	assert.equal(readFileSync(result.path, "utf8"), html);
+	assert.equal(reads, 1);
+	assert.equal(cancelled, 2);
+});
+
+test("downloadFile: default saves use fresh absolute folders under a safe parent", async (t) => {
+	const root = mkdtempSync(resolve(tmpdir(), "quiver-download-parent-"));
+	const cwd = process.cwd();
+	process.chdir(root);
+	t.after(() => {
+		process.chdir(cwd);
+		rmSync(root, { recursive: true, force: true });
+	});
+	for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+		const previous = process.env[key];
+		process.env[key] = ".";
+		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+	}
+	assert.equal(tmpdir(), ".");
+	const parent = resolve(tmpdir(), "pi-slack");
+	const bytes = Buffer.from([255]);
+	let requests = 0;
+	const deps = fileDeps(hostedFile, async () => {
+		requests++;
+		return { contentType: undefined, body: ReadableStream.from([bytes]), cancel: async () => {} };
+	});
+	const args = { fileId: "F123" };
+	const rejected = async (scenario: string) => {
+		const previous = requests;
+		await assert.rejects(downloadFile(args, deps), { code: "invalid_dir" }, scenario);
+		assert.equal(requests, previous, scenario);
+	};
+
+	const target = mkdtempSync(join(root, "target-"));
+	symlinkSync(target, parent, "junction");
+	await rejected("symlink");
+	rmSync(parent);
+
+	const first = await downloadFile(args, deps);
+	if (process.platform !== "win32") {
+		assert.equal(lstatSync(parent).mode & 0o077, 0, "new parent is private");
+		chmodSync(parent, 0o775);
+	}
+	const second = await downloadFile(args, deps);
+	for (const { path } of [first, second]) {
+		assert.ok(isAbsolute(path), `expected an absolute path, got ${path}`);
+		const folder = dirname(path);
+		assert.equal(dirname(folder), parent);
+		assert.match(basename(folder), /^download-/);
+	}
+	assert.notEqual(dirname(first.path), dirname(second.path));
+	assert.deepEqual(readFileSync(first.path), bytes);
+	if (process.platform !== "win32") {
+		chmodSync(parent, 0o777);
+		await rejected("world-writable");
+		chmodSync(parent, 0o775);
+		const uid = lstatSync(parent).uid;
+		const getuid = process.getuid;
+		process.getuid = () => uid + 1;
+		try {
+			await rejected("different owner");
+		} finally {
+			process.getuid = getuid;
+		}
+	}
+});
+
+test("downloadFile: interrupted, oversized and short transfers remove partial files and temp folders", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "quiver-download-body-"));
+	for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+		const previous = process.env[key];
+		process.env[key] = root;
+		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+	}
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	for (const [scenario, code] of [["aborted", "aborted"], ["body error", "transport"], ["cap", "file_too_large"], ["short", "transport"]]) {
+		const controller = new AbortController();
+		let cancelled = false;
+		const deps = fileDeps({ ...hostedFile, size: 2 }, async () => ({
+			contentType: undefined, cancel: async () => { cancelled = true; },
+			body: (async function* () {
+				yield Buffer.from("x");
+				if (scenario === "short") return;
+				if (scenario === "cap") yield new Uint8Array(DOWNLOAD_MAX_BYTES);
+				if (scenario === "aborted") controller.abort();
+				throw new Error("broken stream");
+			})(),
+		}));
+		await assert.rejects(downloadFile({ fileId: "F123" }, { ...deps, signal: controller.signal }), { code });
+		assert.equal(cancelled, scenario !== "short");
+		assert.deepEqual(readdirSync(join(root, "pi-slack")), []);
+	}
+	const result = await downloadFile({ fileId: "F123" }, fileDeps({ ...hostedFile, size: 0 }, async () => ({
+		contentType: undefined, body: ReadableStream.from([]), cancel: async () => {},
+	})));
+	assert.equal(result.size, 0);
+	assert.equal(readFileSync(result.path).length, 0);
 });
 
 test("uploadBytes: raw POST, exact bytes, no authorization header, resolves on 200", async () => {
@@ -819,6 +1072,28 @@ test("readThread: message with blocks renders flattened blocks; empty flatten fa
 		result.output,
 		"U1 | 1.1 | line1 line2\nU2 | 1.2 | only text\nU3 | 1.3 | degenerate\nU4 | 1.4 | plain old",
 	);
+});
+
+test("readThread compact: lists attached file names and IDs on parent and reply lines", async () => {
+	const messages = [
+		{
+			user: "U1", ts: "1.1", text: "query and results",
+			files: [{ id: "F1", name: "query.sql" }, { name: "no ID" }, { id: "F2", title: "results\n\tchart.png" }],
+		},
+		{ user: "U2", ts: "1.2", thread_ts: "1.1", text: "", files: [{ id: "F3" }] },
+		{ user: "U3", ts: "1.3", thread_ts: "1.1", text: "plain", files: [{ name: "no ID" }] },
+	];
+	const original = structuredClone(messages);
+	const deps = { apiCall: async () => ({ messages }), token: "t" };
+	const args = { channel: "C1", ts: "1.1" };
+	const result = await readThread(args, deps);
+	assert.equal(result.output, [
+		"U1 | 1.1 | query and results | files: query.sql (F1), results chart.png (F2)",
+		"U2 | 1.2 |  | files: untitled (F3)",
+		"U3 | 1.3 | plain",
+	].join("\n"));
+	assert.deepEqual(result.messages, original);
+	assert.deepEqual(JSON.parse((await readThread({ ...args, raw: true }, deps)).output), original);
 });
 
 test("renderMentionTokens: known user IDs become @Display Name, labeled groups become @handle, uncached user tokens stay verbatim", () => {

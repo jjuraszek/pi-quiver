@@ -12,7 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type StagedPage, type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
+import { type StagedPage, type Bundle, abortBundle, commitBundle, openBundle, publishAttachments, publishSidecars, publishWords, writePageStats, publishPageImages, publishSheetCsvs, publishSheetImages, publishStaged, removeStaging, rewriteLinks, tempBundleRoot, validateImageLinks } from "./doc-to-md-bundle.ts";
 import { type BackendKind, type NativeImage, type Engine, type HandleData, type InfoData, type OcrInfo, type PageStat, type Tier, formatHandle, formatInfoHandle, scanOutline, type SheetInfo, type TocEntry } from "./doc-to-md-handle.ts";
 import { type DocToMdOptions, type InputType, IMAGE_EXTS, TUNABLE_DEFAULTS, UsageError, classifyInput, sanitizeStem } from "./doc-to-md-options.ts";
 
@@ -472,7 +472,7 @@ export const DOCX_PAGES_OFFICE = `--pages on a DOCX needs the Python DOCX backen
 const docxRemedy = `Remedy: install uv, or ${DOCX_PIP} into a Python that already has pymupdf4llm`;
 const backendState = (b: Backend, missing: string) => b.kind === "none" ? b.reason : missing;
 const lacksDocx = (b: Backend) => b.kind === "none" || !b.docx;
-const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdirSync(b.stagingDir)) rmSync(join(b.stagingDir, f), { recursive: true, force: true }); };
+const clearStaging = (b: Pick<Bundle, "stagingDir">) => { for (const f of readdirSync(b.stagingDir)) removeStaging(join(b.stagingDir, f)); };
 export const EXCEL_REMEDY = "Remedy: install uv, or pip install openpyxl xlrd pillow";
 
 export type Mode = "html" | "image" | "info" | "pdf-primary" | "pdf-fallback" | "xlsx" | "pdf-text" | "render-pages" | "docx" | "email" | "ocr-pages";
@@ -762,7 +762,7 @@ export async function convertDocument(o: DocToMdOptions, signal?: AbortSignal, s
 				else {
 					if (signal?.aborted) throw new Error("aborted");
 					const keepPages = Object.fromEntries([...kept.entries()].map(([k, v]) => [String(k), v.files]));
-					rmSync(b.pagesStagingDir, { recursive: true, force: true });
+					removeStaging(b.pagesStagingDir);
 					const f = await s.runTier("pdf-fallback", { ...pdfBase, keepPages }, b, signal, o.fallbackTimeoutMs, backend);
 					publishStaged(b);
 					if (f.ok && f.json.pageImages?.length) publishPageImages(b, f.json.pageCount ?? 0);

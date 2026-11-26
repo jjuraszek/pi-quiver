@@ -14,7 +14,7 @@ const { createCodemodeExtension } = await import(new URL(
 ).href);
 
 const directSlackTools = [
-	"slack_search", "slack_thread", "slack_post", "slack_update", "slack_delete", "slack_pin", "slack_upload",
+	"slack_search", "slack_thread", "slack_post", "slack_update", "slack_delete", "slack_pin", "slack_upload", "slack_download",
 ];
 
 for (const mode of ["on", "only"] as const) {

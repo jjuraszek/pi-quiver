@@ -2,7 +2,7 @@
 
 Pi registration is opt-in, default-off. The [CLI](#cli) instead treats an
 explicit invocation as opt-in, without enabling pi tools. Enable
-`quiver.slack` in `settings.json` and the next session registers eight `slack_*` tools (search, thread reads, post/announce,
+`quiver.slack` in `settings.json` and the next session registers nine `slack_*` tools (search, thread reads, download, post/announce,
 update, delete, pin, upload, cache refresh). Disabled - the default - means
 zero tools in the system prompt, no `.env` read, no network call, no cache
 I/O.
@@ -396,6 +396,7 @@ returned by `slack_post { as: "bot" }` is not readable there
 |---|---|---|---|
 | `slack_search` | always user | `query`, `count` (<=100), `page` | `search.messages` with Slack's operator grammar (`in:#chan`, `from:@name`); one page per call, size-gated output |
 | `slack_thread` | always user | `channel`+`ts`, or `permalink`, optional `cursor` to resume, optional `raw` | `conversations.replies`, cursor-paginated to completion or a 50-page/5000-message cap (returns `next_cursor` when capped); default Block Kit flattening or raw JSON; size-gated |
+| `slack_download` | always user | `file`, optional `dir` | Saves one Slack-hosted attachment and returns its absolute path; see [Attachment downloads](#attachment-downloads) |
 | `slack_post` | `as` | `channel`, `text`/`blocks`, optional `thread_ts`, optional `thread_body`, optional `unfurl_links`/`unfurl_media` | plain post, existing-thread reply (no headline), or announce (`text` headline + detail `blocks` with `thread_body` fallback) - see below |
 | `slack_update` | `as` | `channel`, `ts`, `text`/`blocks` | `chat.update`; only the original poster's identity can edit |
 | `slack_delete` | `as` | `channel`, `ts` | `chat.delete`; same ownership constraint |
@@ -410,6 +411,12 @@ blocks it renders the named inline elements. Embedded newlines collapse to
 spaces to preserve the one-line-per-message format. Other types render as
 `[<type>]`; blocks join with ` / `. If flattening produces no content, the
 message falls back to `text`.
+
+A compact thread line lists its attachments in Slack's order, for example
+`alice | 1.1 | review these | files: query.sql (F123), chart.png (F456)`.
+Entries without a file ID are skipped. If no entry has an ID, the line ends
+at the message body. Reading the attached file's contents requires the
+`files:read` scope on the Slack user token.
 
 Compact output resolves typed `rich_text` mentions and tokens in `mrkdwn`,
 search text, and thread fallback text. It leaves `plain_text` (including
@@ -431,17 +438,53 @@ array has no in-content completeness signal. Codemode scripts use the
 structured fields below instead of parsing text or making a second call
 in compact mode.
 
+### Attachment downloads
+
+Start from a message permalink with `slack_thread`, then pass a listed ID to
+`slack_download`, for example `{ "file": "F123" }`. The tool also accepts an
+HTTPS Slack file page (`/files/U.../F.../name`), private content link
+(`/files-pri/T...-F.../name`, with or without `/download/` before the name),
+or public permalink (`https://slack-files.com/T...-F...-secret`). A link
+supplies only the ID. The tool looks up `files.info` with the configured user
+token and sends that credential only to the Slack API and the HTTPS byte
+endpoint on `files.slack.com`. Only the address from `files.info` is fetched.
+
+Open the returned path with a file-read tool. By default, each call gets a
+new `download-` directory under `tmpdir()/pi-slack`. Set `dir` to save
+elsewhere; a relative directory starts at the session's working directory,
+and missing directories are created. The tool replaces unsafe filename
+characters, uses the file ID for reserved device names, and never overwrites:
+if `query.sql` exists, it tries `query-F123.sql`, then returns `file_exists`.
+Completed downloads stay on disk. `invalid_dir` means `dir` is not a directory
+or cannot be created, or the default temp folder cannot be created or its
+`pi-slack` parent is unsafe. The default parent must be a real directory, not
+a symlink; on POSIX it must belong to the current user and must not be
+world-writable. `write_failed` means a file creation or write error, and
+`invalid_file_ref` means a malformed ID or link. External, hidden, or unhosted files return
+`file_not_downloadable`; the tool does not substitute previews or exports.
+
+The byte transfer has a 120 s deadline and a 50,000,000-byte cap, independent
+of the text spill gate. Exceeding the cap returns `file_too_large`, not a
+truncated file. A short body or network failure returns `transport`, and a
+caller cancellation returns `aborted`. Failed downloads leave no partial file.
+The tool never follows redirects. A redirect, or an HTML response for a
+file Slack did not identify as HTML, returns `file_auth_redirect`. Other
+non-200 responses return `http_<status>` (for example `http_403`). Slack
+API errors keep their codes: `missing_scope` names the needed scope and the
+acting identity before any byte request.
+
 ### Structured results
 
-On Pi 0.99.0 or later, `slack_thread` and `slack_search` declare an
-`outputSchema` and return `structuredContent` to codemode scripts. Their
-direct-call text stays unchanged. `raw` changes only thread text, never
+On Pi 0.99.0 or later, `slack_thread`, `slack_search`, and `slack_download` declare an
+`outputSchema` and return `structuredContent` to codemode scripts. `raw`
+changes only thread text, never
 the structured messages or pagination metadata.
 
 | Call | Inline shape | Spilled shape |
 |---|---|---|
 | `await tools.slack_thread({ channel, ts })` | `messages: SlackMessage[]`, `complete: boolean`, `message_count: number`, optional `next_cursor: string`, `caveat: string` | `file: string` replaces `messages`; all metadata stays |
 | `await tools.slack_search({ query })` | `matches: SlackMessage[]`, `total: number`, `page: number`, `page_count: number` | `file: string` replaces `matches`; all metadata stays |
+| `await tools.slack_download({ file })` | `path: string`, `file_id: string`, `name: string`, optional `mimetype: string`, `size: number` (bytes written) | No spill: contents are saved, never returned inline |
 
 `SlackMessage` is the raw Slack object, including `blocks` and unknown
 fields. The schema requires string `ts` and `text`; it types optional
@@ -713,7 +756,8 @@ and model authoring samples do not verify live Slack client rendering.
 - Delete a message.
 - Pin a message.
 - Search for a message.
-- Read a thread.
+- Read a reply's permalink with `slack_thread`; for a known text attachment,
+  download the listed ID and compare the saved bytes with the known contents.
 - Run `await tools.slack_cache_refresh({})` from a codemode script and confirm
   the channel/user counts.
 - Set `policyPath` to a real file and confirm the `<slack-policy>` block

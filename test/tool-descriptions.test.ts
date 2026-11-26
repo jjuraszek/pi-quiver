@@ -21,7 +21,7 @@ const DEFAULT_CEILING = 2500;
 
 const expectedNames = [
 	"doc_to_md", "fetch", "slack_search", "slack_thread", "slack_post", "slack_update",
-	"slack_delete", "slack_pin", "slack_upload", "slack_cache_refresh",
+	"slack_delete", "slack_pin", "slack_upload", "slack_download", "slack_cache_refresh",
 ];
 
 test("production tool descriptions", async (t) => {
@@ -107,7 +107,7 @@ test("production tool descriptions", async (t) => {
 		] },
 		{ name: "slack_thread", patterns: [
 			/`messages`.*`file`/i, /`complete`/, /`next_cursor`/, /`message_count`/, /`caveat`/,
-			/passing `next_cursor` as `cursor`/i,
+			/passing `next_cursor` as `cursor`/i, /files:.*slack_download/i,
 		] },
 		{ name: "slack_post", patterns: [/re-invoke with `thread_ts` set.*second headline is never sent/i] },
 	]) {

@@ -1,23 +1,26 @@
 /**
  * Slack extension: opt-in, default-off. On `session_start` resolves
  * `quiver.slack`; if not enabled, registers zero tools (no `.env` read, no
- * network, no cache I/O). If enabled, registers the eight `slack_*` tools as
+ * network, no cache I/O). If enabled, registers the nine `slack_*` tools as
  * thin wrappers over lib/slack-core.ts and lib/slack-cache.ts.
  *
  * Toggling takes effect at the next session (registration-time gate, same
  * convention as the other opt-in extensions).
  */
 
-import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { formatSize, getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
 	defaultApiCall,
+	defaultDownloadBytes,
+	downloadFile,
+	parseFileRef,
 	defaultUploadBytes,
 	INLINE_MAX_BYTES,
 	INLINE_MAX_LINES,
@@ -346,7 +349,7 @@ export default function slackExtension(pi: ExtensionAPI) {
 				Type.Object({ file: Type.String(), ...threadFields }),
 			]),
 			description:
-				'Read a Slack thread via conversations.replies. Always uses the "user" identity (no `as` param). Provide either `channel` (#name, channel ID, @name, or user ID (DM)) plus `ts`, or a `permalink` (parsed for channel+ts). Paginates by cursor until Slack reports no more replies or a cap of 50 pages / 5,000 messages is hit; the result carries a `complete` flag and a resumable `next_cursor` when capped. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. Compact lines render cached user mentions as `@Display Name` and labeled groups as `@handle`. Uncached user tokens keep their original text, including any label; an uncached rich-text user renders as `<@ID>`. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
+				'Read a Slack thread as the user. Pass `permalink` or `channel` plus `ts`. Paginates to 50 pages / 5,000 messages; capped reads return a resumable cursor. A `files:` suffix lists each attachment by name and ID; slack_download saves one. Caveat: since 2025-05-29, conversations.replies is rate-limited to ~1 request/minute (limit capped at 15) for apps that are neither Marketplace-listed nor classified internal - hitting that throttle mid-pagination returns the messages collected so far plus a caveat and a resumable cursor instead of spinning. Default output is one line per message; messages with Block Kit blocks render those blocks flattened (blocks joined by " / ") instead of the text fallback. Compact lines render cached user mentions as `@Display Name` and labeled groups as `@handle`. Uncached user tokens keep their original text, including any label; an uncached rich-text user renders as `<@ID>`. `raw: true` changes only the text to a pure JSON array for block extraction and slack_update round-trips. Structured results carry `messages` (raw Slack objects) or `file` (a JSON array spill), plus `complete`, `next_cursor` when capped, `message_count`, and `caveat` when throttled, in either mode. Resume a capped read by passing `next_cursor` as `cursor`. Text and structured results are size-gated independently at 32KB/1000 lines; over the cap each writes its own temp file.',
 			parameters: Type.Object({
 				channel: Type.Optional(Type.String({ description: "#name, channel ID, @name, or user ID (DM)" })),
 				ts: Type.Optional(Type.String({ description: "Thread parent timestamp" })),
@@ -377,6 +380,36 @@ export default function slackExtension(pi: ExtensionAPI) {
 				}, "user");
 			},
 			renderCall: (args, theme) => oneLine(theme, "slack_thread", args.permalink ?? args.channel ?? ""),
+			renderResult: renderToolResult,
+		});
+
+		pi.registerTool({
+			name: "slack_download",
+			label: "Slack Download",
+			promptSnippet: "Save a Slack attachment by file ID or link",
+			description: "Save one Slack-hosted file as the user. Pass a file ID from slack_thread or a Slack file link. Open the saved path with a file-read tool; contents are never inlined.",
+			parameters: Type.Object({
+				file: Type.String({ description: "Slack file ID or file link" }),
+				dir: Type.Optional(Type.String({ description: "Destination directory, relative to cwd or absolute. Defaults to a new temp directory." })),
+			}),
+			outputSchema: Type.Object({
+				path: Type.String(), file_id: Type.String(), name: Type.String(), mimetype: Type.Optional(Type.String()), size: Type.Number(),
+			}),
+			async execute(_toolCallId, params, signal) {
+				return guarded(async () => {
+					const fileId = parseFileRef(params.file);
+					const { deps } = await resolveCall("user", cfg, ctx, signal, repoRoot);
+					const dir = params.dir === undefined ? undefined : resolve(ctx.cwd, params.dir);
+					const result = await downloadFile({ fileId, dir }, { ...deps, downloadBytes: defaultDownloadBytes });
+					const name = result.name.replace(/[\s\p{Cc}]+/gu, " ");
+					const escapeLineBreaks = (value: string) => value.replace(/[\n\r\v\f\u0085\u2028\u2029]/g,
+						(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+					const type = result.mimetype ? `, ${escapeLineBreaks(result.mimetype)}` : "";
+					const text = `Saved ${name} (${fileId}${type}, ${formatSize(result.size)}) to ${escapeLineBreaks(result.path)}`;
+					return { content: [{ type: "text" as const, text }], structuredContent: result, details: result };
+				}, "user");
+			},
+			renderCall: (_args, theme) => oneLine(theme, "slack_download", ""),
 			renderResult: renderToolResult,
 		});
 

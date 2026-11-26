@@ -12,8 +12,10 @@
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
+import { ReadableStream } from "node:stream/web";
 import { resolveConfigFrom, settingsPathsFor } from "./settings-core.ts";
 
 export interface SlackConfig {
@@ -283,8 +285,7 @@ export async function resolveCredential(
 }
 
 /**
- * Data-plane transport: every Slack API call and file upload funnels through
- * these two injectable functions so tests script responses without network.
+ * The JSON and byte transports are injectable so tests can script responses without network.
  * Retry policy lives with the caller (`opts.retry`), not the transport.
  */
 
@@ -305,6 +306,15 @@ export type ApiCall = (
 ) => Promise<Record<string, unknown>>;
 
 export type UploadBytes = (url: string, bytes: Uint8Array, opts?: { signal?: AbortSignal }) => Promise<void>;
+
+export const DOWNLOAD_MAX_BYTES = 50_000_000;
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
+
+export type DownloadBytes = (url: string, token: string, opts?: { signal?: AbortSignal }) => Promise<{
+	contentType: string | undefined;
+	body: AsyncIterable<Uint8Array>;
+	cancel: () => Promise<void>;
+}>;
 
 const JSON_METHODS = new Set(["chat.postMessage", "chat.update", "canvases.edit"]);
 
@@ -449,6 +459,43 @@ export const defaultUploadBytes: UploadBytes = async (url, bytes, opts) => {
 	if (!res.ok) {
 		throw new SlackError(`http_${res.status}`, `Upload returned HTTP ${res.status}.`);
 	}
+};
+
+export const defaultDownloadBytes: DownloadBytes = async (url, token, opts) => {
+	const res = await fetchOrTransportError(
+		url, { method: "GET", headers: { authorization: `Bearer ${token}` }, redirect: "manual" },
+		opts?.signal, DOWNLOAD_TIMEOUT_MS, () => "Slack file request failed or timed out.",
+	);
+	const stream = res.body ?? ReadableStream.from<Uint8Array>([]);
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	const cancel = async () => {
+		const cancelling = reader ? reader.cancel() : stream.cancel();
+		reader?.releaseLock();
+		reader = undefined;
+		await cancelling.catch(() => {});
+	};
+	if (res.status !== 200) {
+		await cancel();
+		if (res.status >= 300 && res.status < 400) {
+			const location = res.headers.get("location");
+			const host = location ? URL.parse(location, url)?.host : undefined;
+			throw new SlackError("file_auth_redirect", `Slack file host returned a redirect${host ? ` to ${host}` : ""}.`);
+		}
+		throw new SlackError(`http_${res.status}`, `Slack file host returned HTTP ${res.status}.`);
+	}
+	const body = (async function* () {
+		reader = stream.getReader();
+		try {
+			while (reader) {
+				const chunk = await reader.read();
+				if (chunk.done) return;
+				yield chunk.value;
+			}
+		} finally {
+			await cancel();
+		}
+	})();
+	return { contentType: res.headers.get("content-type") ?? undefined, body, cancel };
 };
 
 /**
@@ -687,12 +734,23 @@ export function renderBlocks(blocks: unknown[], userNames?: UserNames): string {
 		.replace(/\r?\n/g, " ");
 }
 
+function threadFilesSuffix(files: unknown): string {
+	if (!Array.isArray(files)) return "";
+	const labels: string[] = [];
+	for (const file of files) {
+		if (typeof file?.id !== "string" || !file.id) continue;
+		const name = [file.name, file.title].find((s) => typeof s === "string" && s.length > 0) ?? "untitled";
+		labels.push(`${name.replace(/[\s\p{Cc}]+/gu, " ")} (${file.id})`);
+	}
+	return labels.length ? ` | files: ${labels.join(", ")}` : "";
+}
+
 function renderThreadLine(message: Record<string, unknown>, userNames?: UserNames): string {
 	const author = typeof message.user === "string" ? message.user : String(message.username ?? "unknown");
 	const ts = String(message.ts ?? "");
 	const flattened = Array.isArray(message.blocks) ? renderBlocks(message.blocks, userNames) : "";
 	const body = flattened || compactMessageText(message, userNames);
-	return `${author} | ${ts} | ${body}`;
+	return `${author} | ${ts} | ${body}${threadFilesSuffix(message.files)}`;
 }
 
 export async function readThread(
@@ -874,6 +932,133 @@ export async function pinMessage(args: { channel: string; ts: string }, deps: Co
 	await deps.apiCall("pins.add", deps.token, { channel: args.channel, timestamp: args.ts }, { retry: true, signal: deps.signal });
 	const { permalink, warning } = await withPermalink(deps, args.channel, args.ts);
 	return { channel: args.channel, ts: args.ts, permalink, warning };
+}
+
+export function parseFileRef(input: string): string {
+	const ref = input.trim();
+	if (/^F[A-Z0-9]+$/.test(ref)) return ref;
+	const url = URL.parse(ref);
+	if (url?.protocol === "https:") {
+		const path = url.pathname;
+		if (url.host === "slack.com" || url.host.endsWith(".slack.com")) {
+			const id = /^\/files\/[^/]+\/(F[A-Z0-9]+)(?:\/|$)/.exec(path)?.[1]
+				?? /^\/files-pri\/[^/-]+-(F[A-Z0-9]+)(?:\/|$)/.exec(path)?.[1];
+			if (id) return id;
+		} else if (url.host === "slack-files.com") {
+			const id = /^\/[^/-]+-(F[A-Z0-9]+)-[^/]+/.exec(path)?.[1];
+			if (id) return id;
+		}
+	}
+	throw new SlackError("invalid_file_ref", "Expected a Slack file ID or file link. For a message permalink, use slack_thread first.");
+}
+
+function checkedFileUrl(file: Record<string, unknown>): string {
+	const refuse = (reason: string): never => {
+		const permalink = file.permalink;
+		const page = typeof permalink === "string" && URL.canParse(permalink) ? ` (${permalink})` : "";
+		throw new SlackError("file_not_downloadable", `${reason}${page}`);
+	};
+	if (file.mode === "external" || file.is_external === true) refuse("Slack does not host this external file.");
+	if (file.is_hidden_by_limit) refuse("Slack hides this file under the workspace plan limit.");
+	const address = [file.url_private_download, file.url_private].find((v): v is string => typeof v === "string" && v.length > 0);
+	if (!address) return refuse("Slack returned no content address.");
+	const url = URL.parse(address);
+	if (url?.protocol !== "https:" || url.host !== "files.slack.com" || url.username || url.password) {
+		return refuse(`Expected HTTPS on files.slack.com, got ${url?.host || "an invalid address"}.`);
+	}
+	return url.href;
+}
+
+function safeDownloadName(name: string, id: string): string {
+	const segment = name.replace(/[/\\<>:"|?*\p{Cc}]/gu, "_").replace(/[. ]+$/, "");
+	// Windows device names stay reserved even with an extension.
+	return !segment || /^(?:CON|PRN|AUX|NUL|(?:COM|LPT)[1-9\u00b9\u00b2\u00b3])(?:\.|$)/i.test(segment) ? id : segment;
+}
+
+function writeError(err: unknown): SlackError {
+	return new SlackError("write_failed", `Could not save Slack file: ${(err as Error).message}`);
+}
+
+async function createDownload(dir: string, name: string, id: string) {
+	const ext = extname(name);
+	for (const filename of [name, `${name.slice(0, name.length - ext.length)}-${id}${ext}`]) {
+		const path = join(dir, filename);
+		try {
+			return { path, handle: await open(path, "wx", 0o600) };
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw writeError(err);
+		}
+	}
+	throw new SlackError("file_exists", "Both download names are taken. Choose another dir.");
+}
+
+export async function downloadFile(
+	args: { fileId: string; dir?: string }, deps: CoreDeps & { downloadBytes: DownloadBytes },
+) {
+	const { fileId } = args;
+	const data = await deps.apiCall("files.info", deps.token, { file: fileId }, { retry: true, signal: deps.signal });
+	const file = (data.file ?? {}) as Record<string, unknown>;
+	const url = checkedFileUrl(file);
+	const tooLarge = () => new SlackError("file_too_large", `Slack file exceeds ${DOWNLOAD_MAX_BYTES} bytes.`);
+	if (typeof file.size === "number" && file.size > DOWNLOAD_MAX_BYTES) throw tooLarge();
+	const name = [file.name, file.title].find((v): v is string => typeof v === "string" && v.length > 0) ?? fileId;
+	const mimetype = typeof file.mimetype === "string" ? file.mimetype : undefined;
+	let dir = args.dir ?? resolve(tmpdir(), "pi-slack");
+	try {
+		if (args.dir === undefined) {
+			try {
+				await mkdir(dir, { mode: 0o700 });
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			}
+			const parent = await lstat(dir);
+			if (!parent.isDirectory() || (process.getuid && (parent.uid !== process.getuid() || (parent.mode & 0o002) !== 0))) {
+				throw new Error(`Unsafe temp parent: ${dir} must be a real directory and, on POSIX, owned by the current user and not world-writable.`);
+			}
+			dir = await mkdtemp(join(dir, "download-"));
+		} else {
+			await mkdir(dir, { recursive: true });
+		}
+	} catch (err) {
+		throw new SlackError("invalid_dir", `Cannot create download directory: ${(err as Error).message}`);
+	}
+
+	let response: Awaited<ReturnType<DownloadBytes>> | undefined;
+	let completeBody = false;
+	let ownedPath: string | undefined;
+	try {
+		response = await deps.downloadBytes(url, deps.token, { signal: deps.signal });
+		const isHtml = (type?: string) => type?.split(";", 1)[0].trim().toLowerCase() === "text/html";
+		if (isHtml(response.contentType) && !isHtml(mimetype)) {
+			throw new SlackError("file_auth_redirect", "Slack returned an HTML page instead of the requested file.");
+		}
+		const { path, handle } = await createDownload(dir, safeDownloadName(name, fileId), fileId);
+		ownedPath = path;
+		let size = 0;
+		try {
+			for await (const chunk of response.body) {
+				size += chunk.byteLength;
+				if (size > DOWNLOAD_MAX_BYTES) throw tooLarge();
+				await handle.writeFile(chunk).catch((err) => { throw writeError(err); });
+			}
+			completeBody = true;
+		} catch (err) {
+			if (err instanceof SlackError) throw err;
+			if (deps.signal?.aborted) throw new SlackError("aborted", "Request was cancelled.");
+			throw new SlackError("transport", "Slack file transfer failed or timed out.");
+		} finally {
+			await handle.close().catch((err) => { throw writeError(err); });
+		}
+		if (typeof file.size === "number" && Number.isInteger(file.size) && file.size >= 0 && size !== file.size) {
+			throw new SlackError("transport", `Expected ${file.size} bytes, received ${size}.`);
+		}
+		return { path, file_id: fileId, name, ...(mimetype !== undefined ? { mimetype } : {}), size };
+	} catch (err) {
+		if (!completeBody && response) await response.cancel();
+		if (ownedPath) await rm(ownedPath, { force: true });
+		if (args.dir === undefined) await rmdir(dir);
+		throw err;
+	}
 }
 
 export async function uploadFile(

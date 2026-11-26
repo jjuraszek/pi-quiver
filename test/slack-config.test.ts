@@ -862,7 +862,7 @@ test("bot credential resolution ignores userTokenCommand and keeps the env workf
 
 // --- 18: registration gate (conditional tool registration from session_start) ---
 
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import slackExtension, {
 	formatToolError,
@@ -876,6 +876,7 @@ import slackExtension, {
 const EXPECTED_TOOL_NAMES = [
 	"slack_search",
 	"slack_thread",
+	"slack_download",
 	"slack_post",
 	"slack_update",
 	"slack_delete",
@@ -961,12 +962,12 @@ test("registration gate: quiver.slack.enabled = false -> zero registerTool calls
 	});
 });
 
-test("registration gate: quiver.slack.enabled = true -> exactly 8 tools, self-sufficient", async () => {
+test("registration gate: quiver.slack.enabled = true -> exactly 9 tools, self-sufficient", async () => {
 	await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
 		const { api, defs, handlers } = makeMockApi();
 		slackExtension(api);
 		await handlers.session_start({}, makeFakeCtx(cwd));
-		assert.equal(defs.length, 8);
+		assert.equal(defs.length, 9);
 		assert.deepEqual(
 			defs.map((d) => d.name),
 			EXPECTED_TOOL_NAMES,
@@ -1019,12 +1020,12 @@ test("Slack posting tools share conditional formatting guidance without policyPa
 	});
 });
 
-test("registration gate: boolean shorthand quiver.slack = true -> 8 tools", async () => {
+test("registration gate: boolean shorthand quiver.slack = true -> 9 tools", async () => {
 	await withSettingsAsync({}, { quiver: { slack: true } }, async (cwd) => {
 		const { api, defs, handlers } = makeMockApi();
 		slackExtension(api);
 		await handlers.session_start({}, makeFakeCtx(cwd));
-		assert.equal(defs.length, 8);
+		assert.equal(defs.length, 9);
 	});
 });
 
@@ -1044,13 +1045,13 @@ test("registration gate: disabled session performs no fs side effects", async ()
 	}
 });
 
-test("registration gate: second session_start with enabled config still yields exactly 8 registrations (guard)", async () => {
+test("registration gate: second session_start with enabled config still yields exactly 9 registrations (guard)", async () => {
 	await withSettingsAsync({}, { quiver: { slack: { enabled: true } } }, async (cwd) => {
 		const { api, defs, handlers } = makeMockApi();
 		slackExtension(api);
 		await handlers.session_start({}, makeFakeCtx(cwd));
 		await handlers.session_start({}, makeFakeCtx(cwd));
-		assert.equal(defs.length, 8);
+		assert.equal(defs.length, 9);
 	});
 });
 
@@ -1463,6 +1464,73 @@ test("slack_search structured results preserve matches, paging and independent s
 				"search.messages": () => ({ ok: false, error: "invalid_auth" }) }, async () => {
 				await assert.rejects(tool.execute("error", { query: "hello" }, undefined, () => {}, undefined as never), /invalid_auth/);
 			});
+		});
+	});
+});
+
+test("slack_download: permalink to thread read to saved contents", async (t) => {
+	const id = "F0ABC123";
+	const permalink = "https://example.slack.com/archives/C12345678/p1712345678000100";
+	const url = "https://files.slack.com/files-pri/T1-F0ABC123/download/query.sql";
+	const bytes = Buffer.from("select 42;\r\n");
+	const file = { id, name: "query\u2028.sql", size: bytes.length, url_private_download: url, mimetype: "text/plain;\r\ncharset=utf-8" };
+	const relativeDir = process.platform === "win32" ? "down\u2029loads" : "down\nloads";
+	const displayedDir = process.platform === "win32" ? "down\\u2029loads" : "down\\u000aloads";
+	const calls = t.mock.method(globalThis, "fetch", async (input: string, init: RequestInit) => {
+		assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-download");
+		switch (input) {
+			case "https://slack.com/api/auth.test": return Response.json({ ok: true, team_id: "T1" });
+			case "https://slack.com/api/conversations.replies": {
+				const params = new URLSearchParams(String(init.body));
+				assert.equal(params.get("channel"), "C12345678");
+				assert.equal(params.get("ts"), "1712345678.000100");
+				return Response.json({ ok: true, messages: [{ text: "try this", ts: params.get("ts"), files: [file] }] });
+			}
+			case "https://slack.com/api/files.info":
+				assert.equal(new URLSearchParams(String(init.body)).get("file"), id);
+				return Response.json({ ok: true, file });
+			case url:
+				assert.equal(init.method, "GET");
+				assert.equal(init.redirect, "manual");
+				return new Response(bytes);
+			default: throw new Error("unexpected fetch");
+		}
+	});
+	const config = { enabled: true, userTokenEnv: "DOWNLOAD_USER_FIXTURE", botTokenEnv: "ABSENT_BOT_FIXTURE" };
+	await withSettingsAsync({}, { quiver: { slack: config } }, async (cwd) => {
+		const { api, defs, handlers } = makeMockApi();
+		slackExtension(api);
+		await handlers.session_start({}, makeFakeCtx(cwd));
+		const download = defs.find((d) => d.name === "slack_download");
+		assert.ok(download, "the download tool must be registered");
+		const ctx: ExtensionToolContext = {
+			...makeFakeCtx(cwd),
+			tools: [],
+			executeTool: async () => { throw new Error("unexpected nested tool call"); },
+		};
+		const run = (tool: ToolDefinition, params: Record<string, unknown>) => tool.execute("test", params, undefined, () => {}, ctx);
+		await assert.rejects(run(download, { file: permalink }), /invalid_file_ref: .*slack_thread/);
+		assert.equal(calls.mock.callCount(), 0);
+		await withEnvToken(config.userTokenEnv, "fixture-download", async () => {
+			const thread = await run(defs.find((d) => d.name === "slack_thread")!, { permalink });
+			assert.equal(thread.content[0].type, "text");
+			const listed = /files: query \.sql \((F[A-Z0-9]+)\)/.exec(thread.content[0].text);
+			assert.ok(listed);
+			for (const params of [{ file: listed[1] }, { file: `https://slack-files.com/T1-${id}-secret`, dir: relativeDir }]) {
+				const result = await run(download, params);
+				const data = result.structuredContent as { path: string };
+				assert.ok(Value.Check(download.outputSchema as TSchema, data));
+				if (params.dir) assert.equal(data.path, join(cwd, params.dir, file.name));
+				else {
+					assert.equal(dirname(dirname(data.path)), join(tmpdir(), "pi-slack"));
+					assert.match(basename(dirname(data.path)), /^download-/);
+					t.after(() => rmSync(dirname(data.path), { recursive: true, force: true }));
+				}
+				assert.deepEqual(readFileSync(data.path), bytes);
+				assert.deepEqual(data, { path: data.path, file_id: id, name: file.name, size: bytes.length, mimetype: file.mimetype });
+				const displayedPath = join(params.dir ? join(cwd, displayedDir) : dirname(data.path), "query\\u2028.sql");
+				assert.deepEqual(result.content, [{ type: "text", text: `Saved query .sql (${id}, text/plain;\\u000d\\u000acharset=utf-8, ${bytes.length}B) to ${displayedPath}` }]);
+			}
 		});
 	});
 });

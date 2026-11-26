@@ -112,6 +112,11 @@ export function openBundle(root: string, requested: string, overwrite: boolean):
 export interface DoneMeta { native?: { file: string; width: number; height: number }; dpi?: number; requestedDpi?: number }
 export interface StagedPage { files: string[]; meta: DoneMeta }
 
+export function removeStaging(path: string): void {
+	// Windows can still hold staging handles after the child tree is killed.
+	fs.rmSync(path, { recursive: true, force: true, ...(process.platform === "win32" ? { maxRetries: 3 } : {}) });
+}
+
 /** Publish completed pages, retaining metadata with native filenames renamed; discard partial pages. */
 export function publishStaged(b: Bundle): Map<number, StagedPage> {
 	const out = new Map<number, StagedPage>();
@@ -120,7 +125,7 @@ export function publishStaged(b: Bundle): Map<number, StagedPage> {
 		const m = dir.match(/^p(\d+)$/);
 		if (!m) continue;
 		const pageDir = join(b.stagingDir, dir);
-		if (!existsSync(join(pageDir, ".done"))) { rmSync(pageDir, { recursive: true, force: true }); continue; }
+		if (!existsSync(join(pageDir, ".done"))) { removeStaging(pageDir); continue; }
 		const page = Number(m[1]);
 		const raw = readFileSync(join(pageDir, ".done"), "utf8").trim();
 		let meta: DoneMeta = {};
@@ -138,7 +143,7 @@ export function publishStaged(b: Bundle): Map<number, StagedPage> {
 			names.push(name);
 		});
 		if (meta.native) meta.native = { ...meta.native, file: names[files.indexOf(meta.native.file)] ?? meta.native.file };
-		rmSync(pageDir, { recursive: true, force: true });
+		removeStaging(pageDir);
 		out.set(page, { files: names, meta });
 	}
 	return out;
@@ -178,7 +183,7 @@ export function publishPageImages(b: Bundle, pageCount: number): void {
 		b.pageManifest.add(name);
 		b.sourceMap.set(`pages/${f}`, `pages/${name}`);
 	}
-	rmSync(b.pagesStagingDir, { recursive: true, force: true });
+	removeStaging(b.pagesStagingDir);
 }
 
 export function writePageStats(b: Bundle, stats: PageStat[]): void {
@@ -220,7 +225,7 @@ export function publishSidecars(b: Bundle): { sidecars: Map<number, string>; wor
 			wordSidecars.set(Number(m[1]), join(b.ocrDir, wfile));
 		}
 	}
-	rmSync(b.ocrStagingDir, { recursive: true, force: true });
+	removeStaging(b.ocrStagingDir);
 	return { sidecars, wordSidecars };
 }
 
@@ -234,7 +239,7 @@ export function publishAttachments(b: Bundle): void {
 		b.attachmentManifest.add(name);
 		b.sourceMap.set(`attachments/${f}`, `attachments/${name}`);
 	}
-	rmSync(b.attachmentsStagingDir, { recursive: true, force: true });
+	removeStaging(b.attachmentsStagingDir);
 }
 
 export function rewriteLinks(md: string, sourceMap: Map<string, string>): string {
@@ -268,11 +273,11 @@ export function commitBundle(b: Bundle, markdown: string): void {
 	const tmp = `${b.mdPath}.tmp`;
 	writeFileSync(tmp, markdown, "utf8");
 	renameSync(tmp, b.mdPath);
-	try { fs.rmSync(b.stagingDir, { recursive: true, force: true }); } catch { /* Markdown is published; cleanup is best-effort. */ }
-	try { fs.rmSync(b.sheetsStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-	try { fs.rmSync(b.pagesStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-	try { fs.rmSync(b.attachmentsStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-	try { fs.rmSync(b.ocrStagingDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+	try { removeStaging(b.stagingDir); } catch { /* Markdown is published; cleanup is best-effort. */ }
+	try { removeStaging(b.sheetsStagingDir); } catch { /* best-effort */ }
+	try { removeStaging(b.pagesStagingDir); } catch { /* best-effort */ }
+	try { removeStaging(b.attachmentsStagingDir); } catch { /* best-effort */ }
+	try { removeStaging(b.ocrStagingDir); } catch { /* best-effort */ }
 	try { fs.rmSync(b.lockPath, { force: true }); } catch { /* Markdown is published; cleanup is best-effort. */ }
 }
 
@@ -282,14 +287,14 @@ export function abortBundle(b: Bundle): void {
 	for (const f of b.pageManifest) rmSync(join(b.pagesDir, f), { force: true });
 	for (const f of b.attachmentManifest) rmSync(join(b.attachmentsDir, f), { force: true });
 	for (const f of b.ocrManifest) rmSync(join(b.ocrDir, f), { force: true });
-	rmSync(b.ocrStagingDir, { recursive: true, force: true });
+	removeStaging(b.ocrStagingDir);
 	rmSync(b.pageStatsPath, { force: true });
 	rmSync(b.wordsPath, { force: true });
 	rmSync(`${b.mdPath}.tmp`, { force: true });
-	rmSync(b.stagingDir, { recursive: true, force: true });
-	rmSync(b.sheetsStagingDir, { recursive: true, force: true });
-	rmSync(b.pagesStagingDir, { recursive: true, force: true });
-	rmSync(b.attachmentsStagingDir, { recursive: true, force: true });
+	removeStaging(b.stagingDir);
+	removeStaging(b.sheetsStagingDir);
+	removeStaging(b.pagesStagingDir);
+	removeStaging(b.attachmentsStagingDir);
 	rmSync(b.lockPath, { force: true });
 }
 
