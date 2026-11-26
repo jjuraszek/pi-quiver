@@ -1,0 +1,23 @@
+skill: gatekeep-pr
+session: 01a21758-fb65-74e1-bee3-86669e2fd0bc
+ts: 2026-11-26T10:14:11Z
+repo: jjuraszek/pi-quiver
+items:
+  - kind: pr
+    key: "#48@615b6168cc65ee3f92108eec822b458f7b8d2d7e"
+    ticket: "#47"
+    outcome: merged
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+gauntlet_version: 9.0.0
+models:
+  - anthropic-fable/claude-fable-5-2
+  - github-copilot/gpt-6.2-sol:medium
+  - anthropic-fable/claude-fable-5-2:high
+tokens:
+  input: 586
+  output: 243766
+  cache_read: 22045987
+  cache_write: 1467220
+cost: 26.0542984
