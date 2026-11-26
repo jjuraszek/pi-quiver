@@ -183,7 +183,7 @@ The host check lives in `downloadFile` (step 4), not in the transport, so a test
 
 ### 6. Destination and file name
 
-Without `dir`, the file lands in a fresh per-call folder made with `mkdtemp` under `join(tmpdir(), "pi-slack")` (prefix `download-`), the directory the read tools already spill to. The tool never deletes a completed download, the same as those spill files. With `dir`, the folder is that absolute path, created recursively when missing; `invalid_dir` when it exists and is not a folder, or cannot be created.
+Without `dir`, the file lands in a fresh per-call folder made with `mkdtemp` under `join(tmpdir(), "pi-slack")` (prefix `download-`), the directory the read tools already spill to. Before any byte request, an existing `pi-slack` parent must be a real directory (not a symlink) and, on POSIX, owned by the current user and not world-writable; otherwise the call fails with `invalid_dir`, because whoever controls that parent can replace the path the tool returns. A group-writable parent is accepted. The read tools' spill paths are unchanged. The tool never deletes a completed download, the same as those spill files. With `dir`, the folder is that absolute path, created recursively when missing; `invalid_dir` when it exists and is not a folder, or cannot be created.
 
 The saved name is Slack's `name` (else `title`, else the file ID) reduced to one safe path segment: `/`, `\`, the characters `< > : " | ? *`, and control characters each become `_`; trailing dots and spaces are trimmed; an empty result, `.`, or `..` becomes the file ID. After that, a name whose base - any extension removed, compared case-insensitively - is one of the reserved device names in Microsoft's "Naming Files, Paths, and Namespaces" also becomes the file ID; that page treats `NUL.txt` as the device `NUL`. The rule keys on the name, not the platform, so it holds and is testable on every CI platform. An overlong name is not truncated: the create fails and surfaces as `write_failed`.
 
@@ -222,7 +222,7 @@ The design names no paid or external action: automated tests stub the Slack API 
 | Zero-byte file answered with 200 | saves an empty file |
 | Network failure or the 120 s deadline, before or during the body | `transport`; partial file removed |
 | Caller cancels, before or during the body | `aborted`; partial file removed |
-| `dir` exists and is not a folder, or cannot be created | `invalid_dir` |
+| `dir` exists and is not a folder, or cannot be created; or, with no `dir`, the temp `pi-slack` parent is a symlink, owned by another user, or world-writable | `invalid_dir` |
 | Name taken in `dir` | saved as `<stem>-<file id><ext>`; `file_exists` when that is taken too |
 | Slack name is a Windows device name (`NUL`, `NUL.txt`) | saved under the file ID |
 | Name longer than the file system allows | `write_failed`; the name is not truncated |
@@ -257,7 +257,7 @@ All tests stub the Slack API and the file host; none calls live Slack.
 - Size cap: declared size above the cap fails before the byte request; a body that passes the cap fails mid-stream and leaves no file - `test/slack-core.test.ts`, "downloadFile: file_too_large on declared and received size"
 - Byte transport sends `authorization: Bearer <token>` and yields the exact body bytes - `test/slack-core.test.ts`, "defaultDownloadBytes: authenticated GET returns the body"
 - Body failure mid-stream maps to `transport`, caller cancellation mid-stream maps to `aborted`, and both remove the partial file and the per-call temp folder - `test/slack-core.test.ts`, "downloadFile: body failure cleans up"
-- Destination: default lands under `tmpdir()/pi-slack` in a fresh folder; `dir` is created when missing; a `dir` that is a file throws `invalid_dir` - `test/slack-core.test.ts`, "downloadFile: destination folder"
+- Destination: default lands under `tmpdir()/pi-slack` in a fresh folder; `dir` is created when missing; a `dir` that is a file throws `invalid_dir`; a world-writable or symlinked temp `pi-slack` parent throws `invalid_dir` before any byte request - `test/slack-core.test.ts`, "downloadFile: destination folder"
 - File name: separators, reserved characters, control characters, `..`, and an empty name are made safe; `NUL.txt` saves under the file ID; a taken name saves as `<stem>-<file id><ext>`; a second collision throws `file_exists`; an existing file is never modified - `test/slack-core.test.ts`, "downloadFile: file name safety and collisions"
 - Binary bytes are written exactly - `test/slack-core.test.ts`, "downloadFile: binary body round-trips byte for byte"
 - Relative `dir` resolves against the working directory; the typed result carries `path`, `file_id`, `name`, `mimetype`, `size`; the text line matches section 7 - `test/slack-config.test.ts`, "slack_download: dir, text, and structured result"

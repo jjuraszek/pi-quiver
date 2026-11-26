@@ -22,3 +22,4 @@ row 2 done | Messages without attachments still end at the message body, with no
 row 5 done | The Slack guide names files:read as the user-token scope for reading attachment contents. | Use the attachment example in doc/slack.md when documenting the download call.
 row 3 done | Starting from a message permalink, the agent can save the listed attachment's exact bytes without supplying a path. | Inject the byte transport into downloadFile to test file responses without contacting Slack.
 row 4 done | Refusals, redirects and unexpected HTML return errors instead of file contents, and missing_scope names the required scope. | Reuse the local redirect and HTML fixtures in test/slack-core.test.ts to check that rejected responses leave no file.
+amended | 1 item(s) | Private temp parent
