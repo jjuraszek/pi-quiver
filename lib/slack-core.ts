@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { ReadableStream } from "node:stream/web";
 import { resolveConfigFrom, settingsPathsFor } from "./settings-core.ts";
 
@@ -1003,7 +1003,7 @@ export async function downloadFile(
 	if (typeof file.size === "number" && file.size > DOWNLOAD_MAX_BYTES) throw tooLarge();
 	const name = [file.name, file.title].find((v): v is string => typeof v === "string" && v.length > 0) ?? fileId;
 	const mimetype = typeof file.mimetype === "string" ? file.mimetype : undefined;
-	let dir = args.dir ?? join(tmpdir(), "pi-slack");
+	let dir = args.dir ?? resolve(tmpdir(), "pi-slack");
 	try {
 		if (args.dir === undefined) {
 			try {

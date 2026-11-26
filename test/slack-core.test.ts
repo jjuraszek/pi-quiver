@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { chmodSync, lstatSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ReadableStream } from "node:stream/web";
 import {
 	makeApiCall,
@@ -507,19 +507,26 @@ test("downloadFile: cancel a sign-in page unread but save a real HTML file", asy
 	assert.equal(cancelled, 2);
 });
 
-test("downloadFile: default parent must be a safe real directory", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "quiver-download-parent-"));
+test("downloadFile: default parent must be safe and the saved path is absolute", async (t) => {
+	const root = mkdtempSync(resolve(tmpdir(), "quiver-download-parent-"));
+	const cwd = process.cwd();
+	process.chdir(root);
+	t.after(() => {
+		process.chdir(cwd);
+		rmSync(root, { recursive: true, force: true });
+	});
 	for (const key of ["TMPDIR", "TMP", "TEMP"]) {
 		const previous = process.env[key];
-		process.env[key] = root;
+		process.env[key] = ".";
 		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
 	}
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	assert.equal(tmpdir(), ".");
 	const parent = join(root, "pi-slack");
+	const bytes = Buffer.from([255]);
 	let requests = 0;
 	const deps = fileDeps(hostedFile, async () => {
 		requests++;
-		return { contentType: undefined, body: ReadableStream.from([]), cancel: async () => {} };
+		return { contentType: undefined, body: ReadableStream.from([bytes]), cancel: async () => {} };
 	});
 	const args = { fileId: "F123" };
 	const rejected = async (scenario: string) => {
@@ -533,7 +540,9 @@ test("downloadFile: default parent must be a safe real directory", async (t) => 
 	await rejected("symlink");
 	rmSync(parent);
 
-	await downloadFile(args, deps);
+	const result = await downloadFile(args, deps);
+	assert.ok(isAbsolute(result.path), `expected an absolute path, got ${result.path}`);
+	assert.deepEqual(readFileSync(result.path), bytes);
 	if (process.platform !== "win32") {
 		assert.equal(lstatSync(parent).mode & 0o077, 0, "new parent is private");
 		chmodSync(parent, 0o775);
