@@ -1079,6 +1079,7 @@ test("readThread compact: lists attached file names and IDs on parent and reply 
 			files: [{ id: "F1", name: "query.sql" }, { name: "no ID" }, { id: "F2", title: "results\n\tchart.png" }],
 		},
 		{ user: "U2", ts: "1.2", thread_ts: "1.1", text: "", files: [{ id: "F3" }] },
+		{ user: "U3", ts: "1.3", thread_ts: "1.1", text: "plain", files: [{ name: "no ID" }] },
 	];
 	const original = structuredClone(messages);
 	const deps = { apiCall: async () => ({ messages }), token: "t" };
@@ -1087,6 +1088,7 @@ test("readThread compact: lists attached file names and IDs on parent and reply 
 	assert.equal(result.output, [
 		"U1 | 1.1 | query and results | files: query.sql (F1), results chart.png (F2)",
 		"U2 | 1.2 |  | files: untitled (F3)",
+		"U3 | 1.3 | plain",
 	].join("\n"));
 	assert.deepEqual(result.messages, original);
 	assert.deepEqual(JSON.parse((await readThread({ ...args, raw: true }, deps)).output), original);
