@@ -430,15 +430,28 @@ test("downloadFile: file metadata decides whether the token can reach the file h
 	assert.equal(requests, 0);
 });
 
-test("downloadFile: file host refusals and redirects never deliver bytes or follow Location", async (t) => {
+test("defaultDownloadBytes: authenticated GET returns exact bytes; refusals and redirects never deliver bytes", async (t) => {
 	let followed = 0;
 	const signIn = await serve((_req, res) => { followed++; res.end("sign in"); });
 	t.after(signIn.close);
+	const bytes = Buffer.from([0, 255, 13, 10]);
+	let request: { method?: string; authorization?: string } | undefined;
 	const target = await serve((req, res) => {
+		if (req.url === "/200") {
+			request = { method: req.method, authorization: req.headers.authorization };
+			res.end(bytes);
+			return;
+		}
 		res.writeHead(Number(req.url!.slice(1)), { Location: `${signIn.url}/login?private-query` });
 		res.end("not a whole file");
 	});
 	t.after(target.close);
+	const { body } = await defaultDownloadBytes(`${target.url}/200`, "fixture-token");
+	const chunks: Uint8Array[] = [];
+	for await (const chunk of body) chunks.push(chunk);
+	assert.deepEqual(request, { method: "GET", authorization: "Bearer fixture-token" });
+	assert.deepEqual(Buffer.concat(chunks), bytes);
+
 	const dir = mkdtempSync(join(tmpdir(), "quiver-download-http-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	for (const [status, code] of [[403, "http_403"], [206, "http_206"], [302, "file_auth_redirect"]] as const) {
