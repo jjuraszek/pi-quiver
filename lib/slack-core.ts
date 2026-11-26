@@ -12,9 +12,10 @@
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, open, rm, rmdir } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
+import { ReadableStream } from "node:stream/web";
 import { resolveConfigFrom, settingsPathsFor } from "./settings-core.ts";
 
 export interface SlackConfig {
@@ -984,8 +985,20 @@ export async function downloadFile(
 	const mimetype = typeof file.mimetype === "string" ? file.mimetype : undefined;
 	let dir = args.dir ?? join(tmpdir(), "pi-slack");
 	try {
-		await mkdir(dir, { recursive: true });
-		if (args.dir === undefined) dir = await mkdtemp(join(dir, "download-"));
+		if (args.dir === undefined) {
+			try {
+				await mkdir(dir, { mode: 0o700 });
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			}
+			const parent = await lstat(dir);
+			if (!parent.isDirectory() || (process.getuid && (parent.uid !== process.getuid() || (parent.mode & 0o002) !== 0))) {
+				throw new Error(`Unsafe temp parent: ${dir} must be a real directory and, on POSIX, owned by the current user and not world-writable.`);
+			}
+			dir = await mkdtemp(join(dir, "download-"));
+		} else {
+			await mkdir(dir, { recursive: true });
+		}
 	} catch (err) {
 		throw new SlackError("invalid_dir", `Cannot create download directory: ${(err as Error).message}`);
 	}

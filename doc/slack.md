@@ -455,9 +455,12 @@ elsewhere; a relative directory starts at the session's working directory,
 and missing directories are created. The tool replaces unsafe filename
 characters, uses the file ID for reserved device names, and never overwrites:
 if `query.sql` exists, it tries `query-F123.sql`, then returns `file_exists`.
-Completed downloads stay on disk. `invalid_dir` identifies a directory
-problem, `write_failed` a file creation or write error, and `invalid_file_ref`
-a malformed ID or link. External, hidden, or unhosted files return
+Completed downloads stay on disk. `invalid_dir` means `dir` is not a directory
+or cannot be created, or the default temp folder cannot be created or its
+`pi-slack` parent is unsafe. The default parent must be a real directory, not
+a symlink; on POSIX it must belong to the current user and must not be
+world-writable. `write_failed` means a file creation or write error, and
+`invalid_file_ref` means a malformed ID or link. External, hidden, or unhosted files return
 `file_not_downloadable`; the tool does not substitute previews or exports.
 
 The byte transfer has a 120 s deadline and a 50,000,000-byte cap, independent

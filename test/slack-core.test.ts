@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ReadableStream } from "node:stream/web";
 import {
 	makeApiCall,
 	REQUEST_TIMEOUT_MS,
@@ -481,6 +482,51 @@ test("downloadFile: cancel a sign-in page unread but save a real HTML file", asy
 	assert.equal(readFileSync(result.path, "utf8"), html);
 	assert.equal(reads, 1);
 	assert.equal(cancelled, 2);
+});
+
+test("downloadFile: default parent must be a safe real directory", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "quiver-download-parent-"));
+	for (const key of ["TMPDIR", "TMP", "TEMP"]) {
+		const previous = process.env[key];
+		process.env[key] = root;
+		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+	}
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const parent = join(root, "pi-slack");
+	let requests = 0;
+	const deps = fileDeps(hostedFile, async () => {
+		requests++;
+		return { contentType: undefined, body: ReadableStream.from([]), cancel: async () => {} };
+	});
+	const args = { fileId: "F123" };
+	const rejected = async (scenario: string) => {
+		const previous = requests;
+		await assert.rejects(downloadFile(args, deps), { code: "invalid_dir" }, scenario);
+		assert.equal(requests, previous, scenario);
+	};
+
+	const target = mkdtempSync(join(root, "target-"));
+	symlinkSync(target, parent, "junction");
+	await rejected("symlink");
+	rmSync(parent);
+
+	await downloadFile(args, deps);
+	if (process.platform !== "win32") {
+		assert.equal(lstatSync(parent).mode & 0o077, 0, "new parent is private");
+		chmodSync(parent, 0o775);
+		await downloadFile(args, deps);
+		chmodSync(parent, 0o777);
+		await rejected("world-writable");
+		chmodSync(parent, 0o775);
+		const uid = lstatSync(parent).uid;
+		const getuid = process.getuid;
+		process.getuid = () => uid + 1;
+		try {
+			await rejected("different owner");
+		} finally {
+			process.getuid = getuid;
+		}
+	}
 });
 
 test("downloadFile: interrupted, oversized and short transfers remove partial files and temp folders", async (t) => {

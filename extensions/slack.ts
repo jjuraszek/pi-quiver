@@ -402,8 +402,10 @@ export default function slackExtension(pi: ExtensionAPI) {
 					const dir = params.dir === undefined ? undefined : resolve(ctx.cwd, params.dir);
 					const result = await downloadFile({ fileId, dir }, { ...deps, downloadBytes: defaultDownloadBytes });
 					const name = result.name.replace(/[\s\p{Cc}]+/gu, " ");
-					const type = result.mimetype ? `, ${result.mimetype}` : "";
-					const text = `Saved ${name} (${fileId}${type}, ${formatSize(result.size)}) to ${result.path}`;
+					const escapeLineBreaks = (value: string) => value.replace(/[\n\r\v\f\u0085\u2028\u2029]/g,
+						(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+					const type = result.mimetype ? `, ${escapeLineBreaks(result.mimetype)}` : "";
+					const text = `Saved ${name} (${fileId}${type}, ${formatSize(result.size)}) to ${escapeLineBreaks(result.path)}`;
 					return { content: [{ type: "text" as const, text }], structuredContent: result, details: result };
 				}, "user");
 			},

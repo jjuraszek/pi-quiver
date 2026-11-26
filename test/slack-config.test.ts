@@ -862,7 +862,7 @@ test("bot credential resolution ignores userTokenCommand and keeps the env workf
 
 // --- 18: registration gate (conditional tool registration from session_start) ---
 
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import slackExtension, {
 	formatToolError,
@@ -1473,7 +1473,9 @@ test("slack_download: permalink to thread read to saved contents", async (t) => 
 	const permalink = "https://example.slack.com/archives/C12345678/p1712345678000100";
 	const url = "https://files.slack.com/files-pri/T1-F0ABC123/download/query.sql";
 	const bytes = Buffer.from("select 42;\r\n");
-	const file = { id, name: "query.sql", size: bytes.length, url_private_download: url, mimetype: "text/plain" };
+	const file = { id, name: "query\u2028.sql", size: bytes.length, url_private_download: url, mimetype: "text/plain;\r\ncharset=utf-8" };
+	const relativeDir = process.platform === "win32" ? "down\u2029loads" : "down\nloads";
+	const displayedDir = process.platform === "win32" ? "down\\u2029loads" : "down\\u000aloads";
 	const calls = t.mock.method(globalThis, "fetch", async (input: string, init: RequestInit) => {
 		assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-download");
 		switch (input) {
@@ -1501,15 +1503,20 @@ test("slack_download: permalink to thread read to saved contents", async (t) => 
 		await handlers.session_start({}, makeFakeCtx(cwd));
 		const download = defs.find((d) => d.name === "slack_download");
 		assert.ok(download, "the download tool must be registered");
-		const run = (tool: ToolDefinition, params: Record<string, unknown>) => tool.execute("test", params, undefined, () => {}, makeFakeCtx(cwd));
+		const ctx: ExtensionToolContext = {
+			...makeFakeCtx(cwd),
+			tools: [],
+			executeTool: async () => { throw new Error("unexpected nested tool call"); },
+		};
+		const run = (tool: ToolDefinition, params: Record<string, unknown>) => tool.execute("test", params, undefined, () => {}, ctx);
 		await assert.rejects(run(download, { file: permalink }), /invalid_file_ref: .*slack_thread/);
 		assert.equal(calls.mock.callCount(), 0);
 		await withEnvToken(config.userTokenEnv, "fixture-download", async () => {
 			const thread = await run(defs.find((d) => d.name === "slack_thread")!, { permalink });
 			assert.equal(thread.content[0].type, "text");
-			const listed = /files: query\.sql \((F[A-Z0-9]+)\)/.exec(thread.content[0].text);
+			const listed = /files: query \.sql \((F[A-Z0-9]+)\)/.exec(thread.content[0].text);
 			assert.ok(listed);
-			for (const params of [{ file: listed[1] }, { file: `https://slack-files.com/T1-${id}-secret`, dir: "downloads" }]) {
+			for (const params of [{ file: listed[1] }, { file: `https://slack-files.com/T1-${id}-secret`, dir: relativeDir }]) {
 				const result = await run(download, params);
 				const data = result.structuredContent as { path: string };
 				assert.ok(Value.Check(download.outputSchema as TSchema, data));
@@ -1521,7 +1528,8 @@ test("slack_download: permalink to thread read to saved contents", async (t) => 
 				}
 				assert.deepEqual(readFileSync(data.path), bytes);
 				assert.deepEqual(data, { path: data.path, file_id: id, name: file.name, size: bytes.length, mimetype: file.mimetype });
-				assert.deepEqual(result.content, [{ type: "text", text: `Saved query.sql (${id}, text/plain, ${bytes.length}B) to ${data.path}` }]);
+				const displayedPath = join(params.dir ? join(cwd, displayedDir) : dirname(data.path), "query\\u2028.sql");
+				assert.deepEqual(result.content, [{ type: "text", text: `Saved query .sql (${id}, text/plain;\\u000d\\u000acharset=utf-8, ${bytes.length}B) to ${displayedPath}` }]);
 			}
 		});
 	});
